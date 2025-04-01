@@ -1,5 +1,6 @@
 import asyncio
 import aiohttp
+import traceback
 import discord
 import sys
 import re
@@ -9,6 +10,7 @@ import os
 import logging
 from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass
+from pydantic import BaseModel, Field
 
 from openai import OpenAI, AsyncOpenAI
 from pinecone import Pinecone
@@ -23,27 +25,34 @@ from agents import (
     InputGuardrailTripwireTriggered, MaxTurnsExceeded, AgentsException,
     RunConfig
 )
-from agents.models.interface import ModelProvider 
-from agents.items import ItemHelpers 
+from agents.models.interface import ModelProvider
+from agents.items import ItemHelpers
+from agents import input_guardrail
 
 sys.stdout = sys.stderr
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "key") 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "key") 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "key") 
-ALCHEMY_KEY = os.getenv("ALCHEMY_KEY", "kay") 
+ALCHEMY_KEY = os.getenv("ALCHEMY_KEY", "key") 
 
 PINECONE_INDEX_NAME = "INDEX_NAME"
 PINECONE_NAMESPACE = "NAMESPACE" 
 
-SUPPORT_USER_ID = "USER_ID" 
-TICKET_CATEGORY_ID = "CATEGORY_ID"
+SUPPORT_USER_ID = "id" 
+HUMAN_HANDOFF_TAG_PLACEHOLDER = "<@{SUPPORT_USER_ID}>" 
+TICKET_CATEGORY_ID = id 
 PUBLIC_TRIGGER_CHAR = "q" 
+PR_MARKETING_CHANNEL_ID = id 
 
 COOLDOWN_SECONDS = 5 
 MAX_TICKET_CONVERSATION_TURNS = 15 
 MAX_RESULTS_TO_SHOW = 5 
 STRATEGY_FETCH_CONCURRENCY = 10 
+
+class BDRedirectCheckOutput(BaseModel):
+    is_bd_pr_request: bool = Field(..., description="True if the input message appears to be a business development, partnership, marketing, or listing proposal.")
+    reasoning: str = Field(..., description="Brief explanation of why the message is classified as BD/PR or not.")
 
 set_default_openai_key(OPENAI_API_KEY)
 
@@ -86,7 +95,8 @@ for name, url in RPC_URLS.items():
     except Exception as e:
         print(f"Error initializing Web3 for {name}: {e}")
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
 CHAIN_NAME_TO_ID = {
     "ethereum": 1, "base": 8453, "polygon": 137,
@@ -107,7 +117,6 @@ except Exception as e:
     V1_VAULTS = []
 
 def resolve_ens(name: str) -> Optional[str]:
-    """Resolves an ENS name using the Ethereum Web3 instance."""
     name = name.strip()
 
     if Web3.is_address(name):
@@ -127,8 +136,6 @@ def resolve_ens(name: str) -> Optional[str]:
     return None 
 
 def extract_address_or_ens(text: str) -> Optional[str]:
-    """Extracts the first 0x address or .eth ENS name from text."""
-
     addr_match = re.search(r'(0x[a-fA-F0-9]{40})', text)
     if addr_match:
         return addr_match.group(1)
@@ -138,6 +145,40 @@ def extract_address_or_ens(text: str) -> Optional[str]:
         return ens_match.group(1)
     return None
 
+async def _fetch_vault_details(
+    session: aiohttp.ClientSession,
+    chain_id: int,
+    vault_address: str,
+    semaphore: asyncio.Semaphore
+) -> Optional[Dict]:
+    """Fetches full details for a single vault address, including its strategies list."""
+    if not chain_id or not vault_address:
+        logging.error(f"_fetch_vault_details called with invalid chain_id ({chain_id}) or address ({vault_address})")
+        return None
+    url = f"https://ydaemon.yearn.fi/{chain_id}/vaults/{vault_address}?strategiesDetails=withDetails&strategiesCondition=inQueue"
+    async with semaphore:
+        try:
+
+            logging.info(f"Fetching details for vault {vault_address} on chain {chain_id}")
+            async with session.get(url, timeout=10) as response:
+                status = response.status
+                response.raise_for_status()
+                data = await response.json()
+                logging.info(f"Successfully fetched details for vault {vault_address} (Status: {status})")
+                return data
+        except aiohttp.ClientResponseError as e:
+            logging.warning(f"HTTP Error {e.status} fetching details for vault {vault_address} on chain {chain_id}: {e.message}")
+            return None
+        except aiohttp.ClientError as e:
+            logging.warning(f"Client Error fetching details for vault {vault_address} on chain {chain_id}: {e}")
+            return None
+        except asyncio.TimeoutError:
+             logging.warning(f"Timeout fetching details for vault {vault_address} on chain {chain_id}")
+             return None
+        except Exception as e:
+            logging.error(f"Unexpected error processing details for vault {vault_address} on chain {chain_id}: {e}", exc_info=True) 
+            return None
+
 async def _fetch_strategy_description(
     session: aiohttp.ClientSession,
     chain_id: int,
@@ -145,26 +186,31 @@ async def _fetch_strategy_description(
     semaphore: asyncio.Semaphore
 ) -> Optional[str]:
     """Fetches the description for a single strategy address."""
-    if not chain_id or not strategy_address:
+    if not chain_id or not strategy_address or not isinstance(strategy_address, str) or not strategy_address.startswith('0x'):
+        logging.warning(f"Invalid input for fetching strategy description: chain={chain_id}, addr={strategy_address}")
         return None
+
     url = f"https://ydaemon.yearn.fi/{chain_id}/vaults/{strategy_address}?strategiesDetails=withDetails&strategiesCondition=inQueue"
     async with semaphore:
         try:
-            async with session.get(url, timeout=10) as response: 
-                response.raise_for_status() 
+            logging.info(f"Fetching description for strategy {strategy_address} on chain {chain_id}")
+            async with session.get(url, timeout=10) as response:
+                response.raise_for_status()
                 data = await response.json()
                 description = data.get("description")
-
+                logging.info(f"Fetched description for strategy {strategy_address}: {'Found' if description else 'Not Found'}")
                 return description if isinstance(description, str) and description.strip() else None
-        except aiohttp.ClientError as e:
-            logging.warning(f"HTTP Error fetching strategy {strategy_address} on chain {chain_id}: {e}")
+        except aiohttp.ClientResponseError as e:
+            logging.warning(f"HTTP Error {e.status} fetching description for strategy {strategy_address} on chain {chain_id}: {e.message}")
             return None
+        except aiohttp.ClientError as e:
+             logging.warning(f"Client Error fetching description for strategy {strategy_address} on chain {chain_id}: {e}")
+             return None
         except asyncio.TimeoutError:
-             logging.warning(f"Timeout fetching strategy {strategy_address} on chain {chain_id}")
+             logging.warning(f"Timeout fetching description for strategy {strategy_address} on chain {chain_id}")
              return None
         except Exception as e:
-
-            logging.warning(f"Error processing strategy {strategy_address} on chain {chain_id}: {e}")
+            logging.warning(f"Error processing description for strategy {strategy_address} on chain {chain_id}: {e}") 
             return None
 
 @function_tool
@@ -179,29 +225,27 @@ async def search_vaults_tool(
     Optionally filter by 'chain' (e.g., 'ethereum', 'base').
     Optionally sort by 'highest_apr' or 'lowest_apr' to get the top results based on net APR.
     If no sort is specified, results are sorted by TVL (descending).
-    Returns detailed information for the top matching vaults, including strategy names and descriptions.
+    Returns detailed information for the top matching vaults, including strategy names and their descriptions.
     """
     logging.info(f"[Tool:search_vaults] Query: '{query}', Chain: '{chain}', Sort By: '{sort_by}'")
-    initial_url = "https://ydaemon.yearn.fi/vaults/detected?limit=1000" 
+    initial_url = "https://ydaemon.yearn.fi/vaults/detected?limit=1000"
+    VAULT_DETAIL_CONCURRENCY = 5
+    STRATEGY_FETCH_CONCURRENCY = 10 
+    MAX_RESULTS_TO_SHOW = 5
 
     async with aiohttp.ClientSession() as session:
         try:
+
             async with session.get(initial_url, timeout=15) as response:
                 response.raise_for_status()
                 vaults_data = await response.json()
                 if not isinstance(vaults_data, list):
                     logging.error(f"[Tool:search_vaults] Unexpected yDaemon response format: {type(vaults_data)}")
                     return "Error: Received unexpected data format from vault API."
-                logging.info(f"[Tool:search_vaults] Retrieved {len(vaults_data)} vaults from yDaemon.")
-        except aiohttp.ClientError as e:
-            logging.error(f"[Tool:search_vaults] Error querying yDaemon initial list: {e}")
-            return f"Error: Could not reach the vault information service ({e})."
-        except asyncio.TimeoutError:
-             logging.error(f"[Tool:search_vaults] Timeout querying yDaemon initial list.")
-             return "Error: Timed out connecting to the vault information service."
+                logging.info(f"[Tool:search_vaults] Retrieved {len(vaults_data)} initial vaults from yDaemon.")
         except Exception as e:
-            logging.error(f"[Tool:search_vaults] Unexpected error during yDaemon initial fetch: {e}")
-            return f"Error: An unexpected error occurred while fetching vault data: {e}."
+            logging.error(f"[Tool:search_vaults] Error during yDaemon initial fetch: {e}")
+            return f"Error: An unexpected error occurred while fetching initial vault data: {e}."
 
         filtered_vaults = vaults_data
         query_chain_id = None
@@ -210,15 +254,15 @@ async def search_vaults_tool(
             query_chain_id = CHAIN_NAME_TO_ID.get(chain_lower)
             if query_chain_id:
                 filtered_vaults = [v for v in filtered_vaults if v.get("chainID") == query_chain_id]
-                logging.info(f"[Tool:search_vaults] Filtered to {len(filtered_vaults)} vaults for chain '{chain}' (ID {query_chain_id}).")
             else:
-                logging.warning(f"[Tool:search_vaults] Chain '{chain}' not recognized. No chain filter applied.")
+                 logging.warning(f"[Tool:search_vaults] Chain '{chain}' not recognized. No chain filter applied.")
 
         query_lower = query.lower()
-        matched_vaults_raw = []
+        matched_vaults_basic_info = []
         is_address_query = query_lower.startswith("0x") and len(query_lower) == 42
 
         for v in filtered_vaults:
+
             vault_address = v.get("address", "").lower()
             name = v.get("name", "").lower()
             symbol = v.get("symbol", "").lower()
@@ -233,7 +277,6 @@ async def search_vaults_tool(
             elif query_lower in name or query_lower in symbol or query_lower in token_name or query_lower in token_symbol: match = True
 
             if match:
-
                 apr_data = v.get("apr", {})
                 primary_apr = apr_data.get("netAPR")
                 fallback_apr = apr_data.get("forwardAPR", {}).get("netAPR")
@@ -245,96 +288,174 @@ async def search_vaults_tool(
                 try: v["_computedTVL"] = float(v.get('tvl', {}).get('tvl', 0))
                 except (ValueError, TypeError): v["_computedTVL"] = 0.0
 
-                matched_vaults_raw.append(v)
+                matched_vaults_basic_info.append(v)
 
-        logging.info(f"[Tool:search_vaults] Found {len(matched_vaults_raw)} vaults matching query '{query}'.")
+        logging.info(f"[Tool:search_vaults] Found {len(matched_vaults_basic_info)} vaults matching query '{query}' after initial filter.")
 
-        if not matched_vaults_raw:
+        if not matched_vaults_basic_info:
             return "No active vaults found matching your criteria."
 
-        final_list_to_process = []
+        final_list_basic_info = []
         sort_applied = "None"
-
         if sort_by in ["highest_apr", "lowest_apr"]:
             sort_applied = sort_by
-            vaults_with_apr = [v for v in matched_vaults_raw if v.get("_computedAPR", 0.0) != 0.0]
+            vaults_with_apr = [v for v in matched_vaults_basic_info if v.get("_computedAPR", 0.0) != 0.0]
             if not vaults_with_apr:
                 logging.warning(f"[Tool:search_vaults] No vaults with non-zero APR found for sorting by {sort_by}. Falling back to TVL sort.")
                 sort_by = None
             else:
                 reverse_sort = (sort_by == "highest_apr")
                 sorted_vaults = sorted(vaults_with_apr, key=lambda v: v.get("_computedAPR", 0.0), reverse=reverse_sort)
-                final_list_to_process = sorted_vaults[:MAX_RESULTS_TO_SHOW]
-                logging.info(f"[Tool:search_vaults] Sorted by {sort_by}, selected top {len(final_list_to_process)} vaults.")
+                final_list_basic_info = sorted_vaults[:MAX_RESULTS_TO_SHOW]
 
         if sort_by not in ["highest_apr", "lowest_apr"]:
             sort_applied = "TVL (Descending)"
             logging.info("[Tool:search_vaults] Sorting by TVL (desc).")
-            sorted_by_tvl = sorted(matched_vaults_raw, key=lambda v: v.get("_computedTVL", 0.0), reverse=True)
-            final_list_to_process = sorted_by_tvl[:MAX_RESULTS_TO_SHOW]
-            logging.info(f"[Tool:search_vaults] Selected top {len(final_list_to_process)} vaults by TVL.")
+            sorted_by_tvl = sorted(matched_vaults_basic_info, key=lambda v: v.get("_computedTVL", 0.0), reverse=True)
+            final_list_basic_info = sorted_by_tvl[:MAX_RESULTS_TO_SHOW]
+
+        logging.info(f"[Tool:search_vaults] Selected top {len(final_list_basic_info)} vaults based on {sort_applied}.")
+
+        detail_fetch_tasks = []
+        detail_semaphore = asyncio.Semaphore(VAULT_DETAIL_CONCURRENCY)
+        vaults_to_fetch_details_input = []
+        logging.info("Starting preparation loop for detail fetching.")
+
+        try:
+            for idx, v_basic in enumerate(final_list_basic_info):
+                chain_id = v_basic.get("chainID")
+                vault_address = v_basic.get("address")
+                vault_name_debug = v_basic.get('name', 'N/A')
+                logging.info(f"Prep #{idx}: Processing vault '{vault_name_debug}'") 
+
+                is_valid_for_fetch = isinstance(chain_id, int) and isinstance(vault_address, str) and vault_address.startswith('0x') and len(vault_address) == 42
+                if is_valid_for_fetch:
+                    vaults_to_fetch_details_input.append((chain_id, vault_address))
+                    logging.info(f"Prep #{idx}: Added vault '{vault_name_debug}' ({vault_address}) to fetch list.") 
+                else:
+                    logging.warning(f"Prep #{idx}: Skipping detail fetch for vault '{vault_name_debug}' due to missing/invalid chainID or address format.")
+            logging.info(f"Finished preparation loop. Vaults prepared for fetch: {len(vaults_to_fetch_details_input)}")
+        except Exception as e_prep:
+            logging.error(f"Unexpected error during detail fetch preparation loop: {e_prep}", exc_info=True)
+            return f"An internal error occurred while preparing vault details: {e_prep}"
+
+        if not vaults_to_fetch_details_input:
+             logging.warning("Preparation resulted in no vaults to fetch details for.")
+             return "Found matching vault(s), but couldn't verify their details (missing/invalid ID or address in initial data)."
+
+        logging.info(f"Attempting to fetch full details for {len(vaults_to_fetch_details_input)} prepared vaults.")
+        for chain_id, vault_address in vaults_to_fetch_details_input:
+             task = asyncio.create_task(
+                 _fetch_vault_details(session, chain_id, vault_address, detail_semaphore)
+             )
+             detail_fetch_tasks.append(task)
+
+        detailed_vault_results_raw = await asyncio.gather(*detail_fetch_tasks, return_exceptions=True)
+        logging.info(f"Finished fetching full vault details. Received {len(detailed_vault_results_raw)} results/exceptions.")
+
+        final_vault_details = []
+        vault_detail_map = {} 
+        for i, result_or_exc in enumerate(detailed_vault_results_raw):
+            original_chain_id, original_address = vaults_to_fetch_details_input[i]
+            if isinstance(result_or_exc, dict):
+                final_vault_details.append(result_or_exc)
+                vault_detail_map[original_address.lower()] = result_or_exc 
+            elif isinstance(result_or_exc, Exception):
+                logging.error(f"Exception fetching details for vault {original_address} on chain {original_chain_id}: {result_or_exc}")
+            else:
+                 logging.warning(f"Detail fetch for vault {original_address} on chain {original_chain_id} returned None or unexpected type ({type(result_or_exc)}).")
+
+        if not final_vault_details:
+             logging.warning("Failed to fetch details successfully for any selected vaults.")
+             return "Found matching vault(s), but could not retrieve their full details due to errors during fetch."
 
         strategy_fetch_tasks = []
-        strategy_mapping = {} 
-        semaphore = asyncio.Semaphore(STRATEGY_FETCH_CONCURRENCY)
+        strategy_results_map = {} 
+        strategy_semaphore = asyncio.Semaphore(STRATEGY_FETCH_CONCURRENCY)
+        strategies_to_fetch = [] 
 
-        for vault in final_list_to_process:
-            vault_addr = vault.get("address")
-            vault_chain_id = vault.get("chainID")
-            strategies = vault.get("strategies", [])
-            if not strategies or not vault_addr or not vault_chain_id:
+        logging.info("Preparing to fetch strategy descriptions.")
+        for vault_detail in final_vault_details:
+            vault_chain_id = vault_detail.get("chainID")
+            strategies = vault_detail.get("strategies", [])
+            if not vault_chain_id or not strategies:
                 continue
-
-            strategy_mapping[vault_addr] = []
             for strategy in strategies:
                 strat_addr = strategy.get("address")
-                strat_name = strategy.get("name", "Unnamed Strategy")
-                if strat_addr:
-                    task = asyncio.create_task(
-                        _fetch_strategy_description(session, vault_chain_id, strat_addr, semaphore)
-                    )
-                    strategy_fetch_tasks.append(task)
-                    strategy_mapping[vault_addr].append({"name": strat_name, "address": strat_addr, "task": task})
+                if strat_addr and isinstance(strat_addr, str) and strat_addr.startswith('0x'):
 
-        logging.info(f"Attempting to fetch descriptions for {len(strategy_fetch_tasks)} strategies concurrently.")
-        await asyncio.gather(*strategy_fetch_tasks, return_exceptions=True) 
-        logging.info("Finished fetching strategy descriptions.")
+                    if strat_addr.lower() not in strategy_results_map:
+                         strategies_to_fetch.append((vault_chain_id, strat_addr))
+                         strategy_results_map[strat_addr.lower()] = None 
+                else:
+                     logging.warning(f"Invalid strategy address found in vault {vault_detail.get('address')}: {strat_addr}")
+
+        if strategies_to_fetch:
+            logging.info(f"Attempting to fetch descriptions for {len(strategies_to_fetch)} unique strategies.")
+            for chain_id, strat_addr in strategies_to_fetch:
+                task = asyncio.create_task(
+                    _fetch_strategy_description(session, chain_id, strat_addr, strategy_semaphore)
+                )
+
+                strategy_fetch_tasks.append({"address": strat_addr, "task": task})
+
+            await asyncio.gather(*[t["task"] for t in strategy_fetch_tasks], return_exceptions=True)
+            logging.info("Finished fetching strategy descriptions.")
+
+            for item in strategy_fetch_tasks:
+                task = item["task"]
+                strat_addr_lower = item["address"].lower()
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    strategy_results_map[strat_addr_lower] = task.result() 
+                elif task.exception():
+                     logging.error(f"Exception fetching description for strategy {item['address']}: {task.exception()}")
+                     strategy_results_map[strat_addr_lower] = None 
+                else:
+
+                      strategy_results_map[strat_addr_lower] = None
 
         summaries = []
-        num_total_matches = len(matched_vaults_raw)
-        num_shown = len(final_list_to_process)
+        num_total_matches = len(matched_vaults_basic_info)
+        num_shown = len(final_vault_details)
 
         header = f"Found {num_total_matches} vault(s) matching '{query}'."
-        if num_total_matches > num_shown:
-            header += f" Showing top {num_shown} sorted by {sort_applied}."
-        elif num_total_matches > 0:
-            header += f" Sorted by {sort_applied}."
+        if num_total_matches > len(final_list_basic_info):
+             header += f" Showing top {num_shown} (of {len(final_list_basic_info)} selected by {sort_applied}) with details:"
+        elif num_shown > 0 :
+             header += f" Details for {num_shown} vault(s) (sorted by {sort_applied}):"
+        else:
+             header += " Could not retrieve details."
         summaries.append(header)
         summaries.append("---")
 
-        for i, v in enumerate(final_list_to_process):
-            vault_addr = v.get("address", "N/A")
+        for i, v_detail in enumerate(final_vault_details):
 
-            apr_value = v.get("_computedAPR", 0.0)
-            display_apr = apr_value * 100
-            vault_chain_id = v.get("chainID", "N/A")
+            vault_addr = v_detail.get("address", "N/A")
+            vault_chain_id = v_detail.get("chainID", "N/A")
             vault_url = f"https://yearn.fi/v3/{vault_chain_id}/{vault_addr}" if vault_addr != "N/A" and vault_chain_id != "N/A" else "N/A"
-            vault_name = v.get('name', 'Unknown Vault')
+            vault_name = v_detail.get('name', 'Unknown Vault')
             vault_name_link = f"[{vault_name}]({vault_url})" if vault_url != "N/A" else vault_name
-            token_info = v.get("token", {})
+            apr_data = v_detail.get("apr", {})
+            primary_apr = apr_data.get("netAPR")
+            fallback_apr = apr_data.get("forwardAPR", {}).get("netAPR")
+            apr_value = 0.0
+            if primary_apr is not None and isinstance(primary_apr, (int, float)): apr_value = float(primary_apr)
+            elif fallback_apr is not None and isinstance(fallback_apr, (int, float)): apr_value = float(fallback_apr)
+            display_apr = apr_value * 100
+            tvl_usd = v_detail.get('tvl', {}).get('tvl', 0)
+            try: tvl_display = f"${float(tvl_usd):,.2f}"
+            except (ValueError, TypeError): tvl_display = "$N/A"
+            token_info = v_detail.get("token", {})
             token_name = token_info.get("name", "N/A") if token_info else "N/A"
             token_symbol = token_info.get("symbol", "N/A") if token_info else "N/A"
-            desc = v.get("description", "No description available.")
+            desc = v_detail.get("description", "No description available.")
             if desc and len(desc) > 200: desc = desc[:197] + "..."
             chain_name_display = ID_TO_CHAIN_NAME.get(vault_chain_id, f"Unknown Chain ({vault_chain_id})")
-            tvl_usd = v.get('_computedTVL', 0.0)
-            try: tvl_display = f"${tvl_usd:,.2f}"
-            except (ValueError, TypeError): tvl_display = "$N/A"
-            risk_level = v.get('info', {}).get('riskLevel', 'N/A')
+            risk_level = v_detail.get('info', {}).get('riskLevel', 'N/A')
 
             summary_lines = [
                 f"**{i+1}. Vault:** {vault_name_link}",
-                f"   - Symbol: {v.get('symbol', 'N/A')}",
+                f"   - Symbol: {v_detail.get('symbol', 'N/A')}",
                 f"   - Address: `{vault_addr}`",
                 f"   - Chain: {chain_name_display}",
                 f"   - Token: {token_name} ({token_symbol})",
@@ -345,25 +466,25 @@ async def search_vaults_tool(
             ]
 
             strategy_details_list = []
-            if vault_addr in strategy_mapping:
-                for strat_info in strategy_mapping[vault_addr]:
-                    strat_name = strat_info["name"]
-                    task = strat_info["task"]
+            strategies = v_detail.get("strategies", [])
+            if strategies:
+                summary_lines.append(f"   - Strategies ({len(strategies)}):")
+                for strategy in strategies:
+                    strat_name = strategy.get("name", "Unnamed Strategy")
+                    strat_addr = strategy.get("address")
                     description = None
-                    if task.done() and not task.cancelled() and task.exception() is None:
-                        description = task.result() 
+                    if strat_addr and isinstance(strat_addr, str):
+
+                         description = strategy_results_map.get(strat_addr.lower())
 
                     if description:
+
                         strategy_details_list.append(f"     - **{strat_name}:** {description}")
                     else:
-
-                        strategy_details_list.append(f"     - **{strat_name}:** (No description available)")
-
-            if strategy_details_list:
-                summary_lines.append(f"   - Strategies ({len(strategy_details_list)}):")
+                        strategy_details_list.append(f"     - **{strat_name}:** (Description unavailable)")
                 summary_lines.extend(strategy_details_list)
             else:
-                 summary_lines.append("   - Strategies: None listed or details unavailable.")
+                 summary_lines.append("   - Strategies: None listed in details.")
 
             summaries.append("\n".join(summary_lines))
 
@@ -561,10 +682,11 @@ async def answer_from_docs_tool(user_query: str) -> str:
     """
     Answers questions based on Yearn's documentation using a vector search (Pinecone).
     Use this for general questions about how Yearn works, concepts, strategies, risks, or specific documentation details.
-    Do not use for vault data like APRs, TVL, or user balances.
+    Do not use for real-time data like APRs, TVL, or user balances.
     """
-    logging.info(f"[Tool:answer_from_docs] Query: {user_query}")
-    top_k = 15 
+    logging.info(f"[Tool:answer_from_docs] --- Tool Invoked ---")
+    logging.info(f"[Tool:answer_from_docs] Received query: '{user_query}'")
+    top_k = 15
 
     try:
         response = await asyncio.to_thread(
@@ -574,6 +696,7 @@ async def answer_from_docs_tool(user_query: str) -> str:
             encoding_format="float"
         )
         query_embedding = response.data[0].embedding
+        logging.info(f"[Tool:answer_from_docs] Successfully generated embedding for query.")
     except Exception as e:
         logging.error(f"[Tool:answer_from_docs] Error generating query embedding: {e}")
         return "Sorry, I couldn't process your question to search the documentation."
@@ -584,9 +707,24 @@ async def answer_from_docs_tool(user_query: str) -> str:
             namespace=PINECONE_NAMESPACE,
             vector=query_embedding,
             top_k=top_k,
-            include_metadata=True 
+            include_metadata=True
         )
         matches = search_results.get("matches", [])
+        logging.info(f"[Tool:answer_from_docs] Pinecone query returned {len(matches)} matches.")
+        if matches:
+
+             first_match_metadata = matches[0].metadata if matches[0].metadata else {}
+             logging.info(f"[Tool:answer_from_docs] Metadata keys of first match: {list(first_match_metadata.keys())}")
+             top_match_info = {
+                 "id": matches[0].id,
+                 "score": matches[0].score,
+
+                 "filename": first_match_metadata.get('filename', 'N/A'),
+                 "chunk_id": first_match_metadata.get('chunk_id', 'N/A'),
+                 "text_preview": (first_match_metadata.get('text_preview', '')[:100] + "...") if first_match_metadata.get('text_preview') else "N/A"
+             }
+             logging.info(f"[Tool:answer_from_docs] Top match details (using standalone keys): {top_match_info}")
+
     except Exception as e:
         logging.error(f"[Tool:answer_from_docs] Error querying Pinecone: {e}")
         return "Sorry, I encountered an error while searching the documentation."
@@ -595,40 +733,56 @@ async def answer_from_docs_tool(user_query: str) -> str:
     if matches:
         for match in matches:
             metadata = match.get("metadata", {})
-            text_chunk = metadata.get("text", "") 
-            source = metadata.get("source", "Unknown source") 
-            if text_chunk:
-                context_pieces.append(f"Source: {source}\nContent:\n{text_chunk}")
+
+            text_chunk = metadata.get("text_preview", "") 
+            filename = metadata.get("filename", "Unknown Source") 
+            chunk_id = metadata.get("chunk_id", "N/A") 
+
+            source_info = f"{filename} (Chunk: {chunk_id})"
+
+            if text_chunk: 
+                context_pieces.append(f"Source: {source_info}\nContent:\n{text_chunk}")
+            else:
+                 logging.warning(f"Match ID {match.id} had empty 'text_preview' in metadata.")
+
         context_text = "\n\n---\n\n".join(context_pieces)
-        logging.info(f"[Tool:answer_from_docs] Built context from {len(matches)} chunks.")
+        logging.info(f"[Tool:answer_from_docs] Built context string (length: {len(context_text)}). Preview:\n---\n{context_text[:500]}...\n---")
     else:
         logging.info("[Tool:answer_from_docs] No relevant documents found in Pinecone.")
+        logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (No Matches) ---")
         return "I couldn't find any relevant information in the documentation to answer that question."
+
+    if not context_text:
+         logging.warning("[Tool:answer_from_docs] Context string is empty even though matches were found. Check metadata keys ('text_preview', 'filename', 'chunk_id').")
+         logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (Empty Context Built) ---")
+         return "I found potential matches in the documentation, but couldn't extract the content correctly."
 
     system_prompt = (
         "You are an assistant answering questions based *only* on the provided Yearn documentation context. "
         "Use the information given below to answer the user's question accurately and concisely. "
-        "If the answer is not present in the context, state that clearly. Do not add external knowledge. "
+        "If the answer is not present in the context, state that clearly ('I couldn't find information about X in the provided context.'). Do not add external knowledge. "
         "Cite the source if possible (included in the context)."
     )
     messages_for_llm = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Documentation Context:\n{context_text}\n\nUser Question: {user_query}"}
     ]
+    logging.info(f"[Tool:answer_from_docs] Sending final prompt to LLM (gpt-4o-mini). User content length: {len(messages_for_llm[1]['content'])}")
 
     try:
-
         response = await openai_async_client.chat.completions.create(
-            model="gpt-4o-mini", 
+            model="gpt-4o-mini",
             messages=messages_for_llm,
-            temperature=0.2, 
-            max_tokens=500
+            temperature=0.2
+
         )
         final_answer = response.choices[0].message.content.strip()
-        logging.info(f"[Tool:answer_from_docs] Generated answer: {final_answer}")
+        logging.info(f"[Tool:answer_from_docs] Received final answer from LLM: '{final_answer}'")
+        logging.info(f"[Tool:answer_from_docs] --- Tool Execution Complete ---")
         return final_answer
     except Exception as e:
         logging.error(f"[Tool:answer_from_docs] Error generating final answer: {e}")
+        logging.info(f"[Tool:answer_from_docs] --- Tool Returning Error (LLM Call Failed) ---")
         return "Sorry, I found relevant documentation but encountered an error while formulating the final answer."
 
 TContext = Any
@@ -653,8 +807,8 @@ yearn_data_agent = Agent[TContext](
         query_v1_deposits_tool,
         query_active_deposits_tool
     ],
-    model="gpt-4o", 
-    model_settings=ModelSettings(temperature=0.3) 
+    model="o3-mini" 
+
 )
 
 docs_qa_agent = Agent[TContext](
@@ -670,27 +824,92 @@ docs_qa_agent = Agent[TContext](
     model_settings=ModelSettings(temperature=0.2)
 )
 
+bd_redirect_guardrail_agent = Agent[TContext](
+    name="BD/PR Guardrail Check",
+    instructions=(
+        "Analyze the user's message. Determine if it is primarily a business development proposal, partnership request, "
+        "marketing collaboration offer, token listing request, or similar commercial inquiry targeting Yearn. "
+        "Focus on the intent behind the message. Ignore simple questions about Yearn itself, even if from a project."
+        "Output 'is_bd_pr_request' as true ONLY if it's clearly one of these proposal types."
+    ),
+    output_type=BDRedirectCheckOutput,
+    model="gpt-4o-mini", 
+    model_settings=ModelSettings(temperature=0.1) 
+)
+
+@input_guardrail(name="BD/PR Redirect Guardrail")
+async def bd_pr_redirect_guardrail(
+    ctx: RunContextWrapper[TContext],
+    agent: Agent, 
+    input_data: Union[str, List[TResponseInputItem]]
+) -> GuardrailFunctionOutput:
+    """
+    Checks if the initial user input is a BD/PR request.
+    If it is, triggers a tripwire to stop the main agent flow.
+    """
+
+    if isinstance(input_data, str):
+        text_input = input_data
+    elif isinstance(input_data, list):
+
+        text_input = ""
+        for item in reversed(input_data):
+             if isinstance(item, dict) and item.get("role") == "user" and isinstance(item.get("content"), str):
+                 text_input = item["content"]
+                 break
+    else:
+        text_input = "" 
+
+    if not text_input:
+
+        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+
+    logging.info(f"[Guardrail:BD/PR] Analyzing input: '{text_input[:100]}...'")
+
+    try:
+
+        guardrail_runner = Runner() 
+        result = await guardrail_runner.run(
+            starting_agent=bd_redirect_guardrail_agent,
+            input=text_input,
+
+            run_config=RunConfig(workflow_name="BD/PR Guardrail Check", tracing_disabled=True) 
+        )
+        check_output = result.final_output_as(BDRedirectCheckOutput)
+
+        logging.info(f"[Guardrail:BD/PR] Check result: is_bd_pr={check_output.is_bd_pr_request}, Reasoning: {check_output.reasoning}")
+
+        return GuardrailFunctionOutput(
+            output_info=check_output, 
+            tripwire_triggered=check_output.is_bd_pr_request
+        )
+    except Exception as e:
+        logging.error(f"[Guardrail:BD/PR] Error during check: {e}", exc_info=True)
+
+        return GuardrailFunctionOutput(output_info={"error": str(e)}, tripwire_triggered=False)
+
 triage_agent = Agent[TContext](
     name="Support Triage Agent",
     instructions=(
-        "You are the first point of contact for Yearn support. Your goal is to understand the user's request and delegate it to the correct specialist agent using handoffs.\n"
-        "1. **Analyze the Request:** Determine if the user is asking for specific, real-time data about a vault or deposits (like vault details, APRs, TVL, **strategies**, user deposits, balances) OR a general question about how Yearn works, concepts, risks, or documentation content.\n" 
-        "2. **Identify Vault Context:** If the query mentions a specific vault name, symbol, address (like 'usdc vault', 'yvWETH', '0x...', 'usds-1'), OR asks about a component clearly related to a specific vault (like **'strategies of vault X'**, 'APR of vault Y', 'risk of vault Z'), treat it as a request for specific data.\n" 
-        "3. **Address/ENS Handling:** If an address or ENS name is mentioned, assume they might want deposit information unless the question is clearly about general concepts.\n"
-        "4. **Handoff:**\n"
-        "   - If the request is for specific data (vaults, deposits, balances, APR, TVL, strategies), handoff to the 'Yearn Data Specialist'.\n" 
-        "   - If the request is a general question about concepts, how things work, risks, or documentation content (and NOT tied to a specific vault's current state), handoff to the 'Yearn Docs QA Specialist'.\n"
-        "5. **Ambiguity:** If unsure whether a query like 'what is risk level 3?' refers to a general concept (Docs QA) or a specific vault's current risk (Data Specialist), ask the user to clarify if they mean in general or for a specific vault.\n" 
-        "6. **Greetings/Chit-chat:** Respond briefly and politely to simple greetings or off-topic messages without handing off.\n"
-        "7. **Farewells:** If the user says thank you or goodbye, respond politely and conclude the interaction."
+        "You are the first point of contact for Yearn support in Discord tickets. Your goal is to understand the user's request and either handle it directly, delegate it to a specialist agent, or request human assistance.\n\n"
+        "**Workflow:**\n"
+        "1.  **Analyze Request:** Determine the user's core need.\n"
+        "2.  **BD/PR/Marketing:** (Handled by Guardrail - You won't see these if detected early). If somehow a BD/PR message gets past the guardrail, state you cannot handle it and redirect them to the #pr-marketing channel, mentioning <@{BD_CONTACT_USER_ID}>.\n"
+        "3.  **Specific Data Request:** If the user asks for specific, real-time data (vault details, APRs, TVL, their deposits/balances), handoff to the 'Yearn Data Specialist'. If they provide an address/ENS, assume they want deposit info unless asked otherwise.\n"
+        "4.  **General/Docs Question:** If the user asks a general question about how Yearn works, concepts, risks, strategy types, or documentation details, handoff to the 'Yearn Docs QA Specialist'.\n"
+        "5.  **UI Errors/Bugs/Complex Issues:** If the user reports a UI error, a website issue, a transaction failure you cannot explain with tools (e.g., not just insufficient balance), mentions a GitHub issue, or asks a question requiring deep investigation or sensitive account review, state clearly that you cannot resolve this and that human support is needed. **Crucially, include the text '<@{SUPPORT_USER_ID}>' in your response** to ping the human support member.\n"
+        "6.  **Ambiguity:** If unsure about the user's need (Data vs. Docs vs. Bug), ask for clarification before handing off or requesting human help.\n"
+        "7.  **Greetings/Chit-chat:** Respond briefly and politely to simple greetings or off-topic messages without handing off or requesting human help.\n"
+        "8.  **Farewells:** If the user says thank you, goodbye, or indicates the issue is resolved, respond politely and conclude the interaction (e.g., 'Glad I could help! Let us know if you need anything else.')."
     ),
     handoffs=[
-
-        handoff(yearn_data_agent, tool_description_override="Handoff to specialist for specific Yearn data (vault details, APR, TVL, strategies, user deposits)."),
-        handoff(docs_qa_agent, tool_description_override="Handoff to specialist for questions based on Yearn documentation (general concepts, how-to, risks).")
+        handoff(yearn_data_agent, tool_description_override="Handoff to specialist for specific Yearn data (vaults, deposits, APR, TVL)."),
+        handoff(docs_qa_agent, tool_description_override="Handoff to specialist for questions based on Yearn documentation (concepts, how-to, risks).")
     ],
-    model="gpt-4o", 
-    model_settings=ModelSettings(temperature=0.5)
+
+    input_guardrails=[bd_pr_redirect_guardrail],
+    model="gpt-4o-mini", 
+    model_settings=ModelSettings(temperature=0.4) 
 )
 
 conversation_threads: Dict[int, List[TResponseInputItem]] = {} 
@@ -759,21 +978,39 @@ class TicketBot(discord.Client):
                                 run_config=run_config
 
                             )
-                            reply_content = result.final_output if result.final_output else "I couldn't determine a response."
+
+                            raw_reply_content = result.final_output if result.final_output else "I couldn't determine a response."
+                            actual_mention = f"<@{SUPPORT_USER_ID}>" 
+                            reply_content = raw_reply_content.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
 
                             await original_message.reply(reply_content, suppress_embeds=True)
                             logging.info(f"Sent public reply to {original_message.id} in {message.channel.id}")
 
-                        except (MaxTurnsExceeded, InputGuardrailTripwireTriggered) as e:
-                             logging.warning(f"Agent run stopped for public query (Original msg ID: {original_message.id}): {e}")
-                             await original_message.reply(f"Sorry, I couldn't complete the request due to internal limits. ({type(e).__name__})")
+                        except InputGuardrailTripwireTriggered as e:
+                            logging.warning(f"BD/PR Input Guardrail triggered for public query (Original msg ID: {original_message.id}). Guardrail Output: {e.guardrail_result.output.output_info}")
+                            reply_content = ( 
+                                f"Thank you for your interest! For partnership, marketing, listing, or business development proposals, "
+                                f"please post your message in the <#{PR_MARKETING_CHANNEL_ID}> channel and tag **name**. "
+                                f"They handle these inquiries."
+                            )
+                            await original_message.reply(reply_content) 
+
+                        except MaxTurnsExceeded as e:
+                             logging.warning(f"Max turns exceeded for public query (Original msg ID: {original_message.id}): {e}")
+                             reply_content = f"Sorry, the request took too long to process. Please try simplifying or ask <@{SUPPORT_USER_ID}> for help." 
+                             await original_message.reply(reply_content) 
+
                         except AgentsException as e:
                              logging.error(f"Agent SDK error during public query (Original msg ID: {original_message.id}): {e}")
-                             await original_message.reply("Sorry, an error occurred while processing your request.")
+                             reply_content = f"Sorry, an error occurred while processing your request ({type(e).__name__})." 
+                             await original_message.reply(reply_content) 
                         except Exception as e:
                              logging.error(f"Unexpected error during public query processing (Original msg ID: {original_message.id}): {e}", exc_info=True)
-                             await original_message.reply("An unexpected error occurred.")
+
+                             await original_message.reply(reply_content) 
+
                     return 
+
             except discord.NotFound:
                 logging.warning(f"Original message for reply {message.id} not found.")
             except discord.Forbidden:
@@ -825,22 +1062,18 @@ class TicketBot(discord.Client):
         aggregated_text = pending_messages.pop(channel_id, None)
         pending_tasks.pop(channel_id, None)
 
-        if not aggregated_text:
-            logging.warning(f"No aggregated text found for channel {channel_id} after cooldown.")
-            return 
-
+        if not aggregated_text: return
         channel = self.get_channel(channel_id)
-        if not isinstance(channel, discord.TextChannel):
-            logging.error(f"Could not find TextChannel for ID {channel_id}")
-            return
+        if not isinstance(channel, discord.TextChannel): return
+        current_history = conversation_threads.get(channel_id, [])
+        input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": aggregated_text}]
 
         logging.info(f"Processing aggregated text for ticket {channel_id}: '{aggregated_text[:100]}...'")
 
-        current_history = conversation_threads.get(channel_id, [])
-
-        input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": aggregated_text}]
-
         async with channel.typing():
+            final_reply = "An unexpected error occurred." 
+            should_stop_processing = False 
+
             try:
 
                 run_config = RunConfig(
@@ -848,7 +1081,7 @@ class TicketBot(discord.Client):
                     group_id=str(channel_id) 
                 )
                 result: RunResult = await self.runner.run(
-                    starting_agent=triage_agent,
+                    starting_agent=triage_agent, 
                     input=input_list,
                     max_turns=MAX_TICKET_CONVERSATION_TURNS,
                     run_config=run_config
@@ -857,52 +1090,72 @@ class TicketBot(discord.Client):
 
                 conversation_threads[channel_id] = result.to_input_list()
 
-                final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
+                raw_final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
 
-                farewell_keywords = ["thank", "bye", "goodbye", "stop talking", "that's all"]
+                actual_mention = f"<@{SUPPORT_USER_ID}>" 
+                final_reply = raw_final_reply.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+
+                if actual_mention in final_reply:
+                    logging.info(f"Human handoff tag detected in response for channel {channel_id}.")
+                    should_stop_processing = True 
+
+                farewell_keywords = ["thank", "bye", "goodbye", "stop talking", "that's all", "resolved", "worked", "fixed"]
                 user_said_farewell = any(kw in aggregated_text.lower() for kw in farewell_keywords)
+                agent_said_farewell = "glad i could help" in final_reply.lower() or "concluding interaction" in final_reply.lower() 
 
-                if user_said_farewell: 
-                    final_reply += "\n\n*(Conversation ended. Use `/stop` to clear history or just start a new query.)*"
-                    stopped_channels.add(channel_id)
-                    logging.info(f"Conversation ended naturally in channel {channel_id}.")
+                if user_said_farewell or agent_said_farewell:
+                    if not should_stop_processing: 
+                         final_reply += "\n\n*(Conversation ended. Use `/stop` to clear history or just start a new query.)*"
+                    should_stop_processing = True
+                    logging.info(f"Conversation ended naturally or by farewell in channel {channel_id}.")
 
-                await channel.send(final_reply, suppress_embeds=True)
-                logging.info(f"Sent ticket reply in channel {channel_id}")
+            except InputGuardrailTripwireTriggered as e:
+
+                 logging.warning(f"BD/PR Input Guardrail triggered in channel {channel_id}. Guardrail Output: {e.guardrail_result.output.output_info}")
+
+                 final_reply = (
+                     f"Thank you for your interest! For partnership, marketing, or business development proposals, "
+                     f"please post your message in the <#{PR_MARKETING_CHANNEL_ID}> channel and tag **name**. "
+                     f"They handle these inquiries."
+                 )
+                 should_stop_processing = True 
+
+                 conversation_threads.pop(channel_id, None) 
 
             except MaxTurnsExceeded:
                  logging.warning(f"Max turns ({MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                 stopped_channels.add(channel_id)
+                 final_reply = f"This conversation has reached its maximum length. <@{SUPPORT_USER_ID}> may need to intervene."
+                 should_stop_processing = True
                  conversation_threads.pop(channel_id, None) 
-                 await channel.send(f"This conversation has reached its maximum length. Please use `/stop` to clear history and start fresh if needed. <@{SUPPORT_USER_ID}> may need to intervene.")
-            except InputGuardrailTripwireTriggered as e:
-                 logging.warning(f"Input guardrail triggered in channel {channel_id}: {e}")
-                 stopped_channels.add(channel_id) 
-                 await channel.send(f"My safety checks prevented processing that request. <@{SUPPORT_USER_ID}> has been notified.") 
+
             except AgentsException as e:
                  logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                 await channel.send(f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{SUPPORT_USER_ID}>.")
+                 final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{SUPPORT_USER_ID}>."
+
             except Exception as e:
                  logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                 await channel.send(f"An unexpected error occurred. Please notify <@{SUPPORT_USER_ID}>.")
+                 final_reply = f"An unexpected error occurred. Please notify <@{SUPPORT_USER_ID}>."
+                 should_stop_processing = True 
+
+            try:
+                await channel.send(final_reply)
+                logging.info(f"Sent ticket reply in channel {channel_id}. Stop processing: {should_stop_processing}")
+                if should_stop_processing:
+                    stopped_channels.add(channel_id)
+                    logging.info(f"Added channel {channel_id} to stopped channels.")
+
+            except discord.Forbidden:
+                 logging.error(f"Missing permissions to send message in channel {channel_id}")
+                 stopped_channels.add(channel_id) 
+            except Exception as e:
+                 logging.error(f"Failed to send final reply to channel {channel_id}: {e}")
+
             finally:
 
                  pending_messages.pop(channel_id, None)
                  pending_tasks.pop(channel_id, None)
 
 if __name__ == "__main__":
-    if not OPENAI_API_KEY or "YOUR_OPENAI_API_KEY" in OPENAI_API_KEY:
-        print("Error: OPENAI_API_KEY is not set or is using the placeholder value.")
-        sys.exit(1)
-    if not DISCORD_BOT_TOKEN or "YOUR_BOT_TOKEN" in DISCORD_BOT_TOKEN:
-        print("Error: DISCORD_BOT_TOKEN is not set or is using the placeholder value.")
-        sys.exit(1)
-    if not PINECONE_API_KEY or "YOUR_PINECONE_API_KEY" in PINECONE_API_KEY:
-        print("Error: PINECONE_API_KEY is not set or is using the placeholder value.")
-        sys.exit(1)
-    if not ALCHEMY_KEY or "YOUR_ALCHEMY_KEY" in ALCHEMY_KEY:
-        print("Warning: ALCHEMY_KEY is not set or is using the placeholder value. Web3 features may fail.")
-
     intents = discord.Intents.default()
     intents.message_content = True 
     intents.guilds = True          
