@@ -51,7 +51,7 @@ YEARN_PINECONE_NAMESPACE = "namespace"
 BEARN_PINECONE_NAMESPACE = "namespace" 
 
 SUPPORT_USER_ID = "id" 
-HUMAN_HANDOFF_TAG_PLACEHOLDER = "%%SUPPORT_TAG_ME%%" 
+HUMAN_HANDOFF_TAG_PLACEHOLDER = "{HUMAN_HANDOFF_TAG_PLACEHOLDER}" 
 YEARN_TICKET_CATEGORY_ID = id
 BEARN_TICKET_CATEGORY_ID = id
 YEARN_PUBLIC_TRIGGER_CHAR = "y"
@@ -88,6 +88,55 @@ class GuardrailResponseMessageException(AgentsException):
         super().__init__(message)
         self.message = message
         self.guardrail_output = guardrail_output 
+
+class StopBotView(View):
+    def __init__(self, *, timeout=None): 
+        super().__init__(timeout=timeout)
+
+    @button(label="Stop Bot", style=discord.ButtonStyle.secondary, custom_id="stop_bot_button")
+    async def stop_button_callback(self, interaction: discord.Interaction, button: Button):
+        channel_id = interaction.channel.id
+        user_who_clicked = interaction.user
+
+        logging.info(f"Stop Bot button clicked in channel {channel_id} by {user_who_clicked.name} ({user_who_clicked.id})")
+
+        await interaction.response.defer()
+
+        stopped_channels.add(channel_id)
+        conversation_threads.pop(channel_id, None) 
+        pending_messages.pop(channel_id, None)     
+        if channel_id in pending_tasks:
+            try:
+                pending_tasks.pop(channel_id).cancel() 
+                logging.info(f"Cancelled pending task for channel {channel_id} due to Stop Bot button.")
+            except KeyError:
+                pass
+            except Exception as e:
+                 logging.error(f"Error cancelling pending task for {channel_id} during Stop Bot button: {e}")
+
+        try:
+
+            disabled_view = StopBotView()
+
+            for item in disabled_view.children:
+                if isinstance(item, Button) and item.custom_id == "stop_bot_button":
+                    item.disabled = True
+                    break
+            await interaction.edit_original_response(view=disabled_view) 
+            logging.info(f"Disabled Stop Bot button on message {interaction.message.id}")
+        except discord.HTTPException as e:
+            logging.warning(f"Could not disable Stop Bot button on message {interaction.message.id}: {e.status} {e.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error disabling Stop Bot button on message {interaction.message.id}: {e}", exc_info=True)
+
+        confirmation_message = f"Support bot stopped for this channel. ySupport contributors are available for further inquiries."
+        try:
+            await interaction.followup.send(confirmation_message, ephemeral=False) 
+            logging.info(f"Sent stop confirmation to channel {channel_id}")
+        except discord.HTTPException as e:
+            logging.error(f"Failed to send stop confirmation followup in {channel_id}: {e.status} {e.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error sending stop confirmation followup in {channel_id}: {e}", exc_info=True)
 
 set_default_openai_key(OPENAI_API_KEY)
 openai_async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -178,10 +227,12 @@ except Exception as e:
 
 async def send_long_message(
     target: Union[discord.TextChannel, discord.Message],
-    text: str
+    text: str,
+
+    view: Optional[View] = None
 ):
     """Sends a potentially long message, splitting it into chunks if necessary."""
-    if not text: 
+    if not text:
         return
 
     chunks = []
@@ -214,18 +265,25 @@ async def send_long_message(
              chunks.append(text[:MAX_DISCORD_MESSAGE_LENGTH - 3] + "...")
 
     first_message = True
+    sent_view = False 
     try:
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             if not chunk.strip(): continue
+
+            current_view = view if (i == len(chunks) - 1 and view and not sent_view) else None
+
             if first_message:
                 if isinstance(target, discord.Message):
-                    await target.reply(chunk, suppress_embeds=True)
+                    await target.reply(chunk, suppress_embeds=True, view=current_view)
                 elif isinstance(target, discord.TextChannel):
-                    await target.send(chunk, suppress_embeds=True)
+                    await target.send(chunk, suppress_embeds=True, view=current_view)
                 first_message = False
             else:
                 channel = target.channel if isinstance(target, discord.Message) else target
-                await channel.send(chunk, suppress_embeds=True)
+                await channel.send(chunk, suppress_embeds=True, view=current_view)
+
+            if current_view:
+                sent_view = True 
 
             await asyncio.sleep(0.3)
     except discord.HTTPException as e:
@@ -1360,7 +1418,7 @@ async def answer_from_docs_tool(
     logging.info(f"[Tool:answer_from_docs] --- Tool Invoked ---")
     logging.info(f"[Tool:answer_from_docs] Received query: '{user_query}'")
     logging.info(f"[Tool:answer_from_docs] Project context from wrapper: '{project_context}'") 
-    top_k = 15
+    top_k = 8
 
     if project_context == "yearn":
         namespace_to_query = YEARN_PINECONE_NAMESPACE
@@ -1375,7 +1433,7 @@ async def answer_from_docs_tool(
     try:
         response = await asyncio.to_thread(
             openai_sync_client.embeddings.create,
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             input=[user_query],
             encoding_format="float"
         )
@@ -1404,7 +1462,7 @@ async def answer_from_docs_tool(
         for match in matches:
             metadata = match.get("metadata", {})
 
-            text_chunk = metadata.get("text_preview", "") 
+            text_chunk = metadata.get("text", "") 
             filename = metadata.get("filename", "Unknown Source") 
             chunk_id = metadata.get("chunk_id", "N/A") 
 
@@ -1442,7 +1500,7 @@ async def answer_from_docs_tool(
     
     try:
         response = await openai_async_client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=messages_for_llm,
             temperature=0.2
         )
@@ -1485,53 +1543,81 @@ def add_project_context_to_handoff_input(
 yearn_data_agent = Agent[BotRunContext](
     name="Yearn Data Specialist",
     instructions=(
-        "You are activated when a user needs specific Yearn data or withdrawal help. Your primary goal is to use tools to fetch data or provide instructions.\n\n"
-        "**Workflow:**\n"
+        "# Role and Objective\n"
+        "You are activated when a user needs specific Yearn data or withdrawal help. Your primary goal is to use tools to fetch data or provide instructions accurately and efficiently.\n\n"
+        "# Workflow\n"
         "1.  **Analyze History & Request:** Review the conversation history. Identify the core need: checking deposits, finding vaults, or getting withdrawal help for a *specific* vault.\n"
-        "2.  **Deposit Checks:** If the request is about general deposits/balances for an address, **IMMEDIATELY use the `check_all_deposits_tool`** with the user's address. Present the combined results.\n"
+        "2.  **Deposit Checks:** If the request is about general deposits/balances for an address, use the `check_all_deposits_tool` with the user's address. Present the combined results.\n"
         "3.  **Vault Search:** If the request is to find vaults based on criteria (token, name, APR sort), use the `search_vaults_tool`.\n"
         "4.  **Specific Withdrawal Help:** If the user asks how to withdraw or has trouble withdrawing, and provides:\n"
         "    a.  **A specific vault address AND chain:** Use the `get_withdrawal_instructions_tool` directly.\n"
-        "    b.  **A vault identifier (name/symbol like 'st-ycrv') BUT NOT a specific address/chain:** First, use the `search_vaults_tool` with the identifier to find the exact vault address and chain. If exactly one vault is found, proceed to use `get_withdrawal_instructions_tool` with the found address/chain and the user's address. If multiple vaults match the identifier, list them briefly and ask the user to confirm which one they mean before generating instructions. If no vault is found, report that.\n"
+        "    b.  **A vault identifier (name/symbol like 'st-ycrv') BUT NOT a specific address/chain:** First, use the `search_vaults_tool` with the identifier to find the exact vault address and chain. \n"
+        "        - If exactly one vault is found, proceed to use `get_withdrawal_instructions_tool` with the found address/chain and the user's address.\n"
+        "        - If multiple vaults match the identifier, list them briefly (e.g., 'Vault Name (Chain)') and ask the user to confirm which specific vault (address or unique name/chain combo) they mean before proceeding.\n"
+        "        - If no vault is found, report that.\n"
         "5.  **Address Resolution:** Ensure any ENS name provided is resolved to an address before using deposit or withdrawal tools.\n"
-        "6.  **Direct Answers:** Answer directly based *only* on the output from the tools. Do not add speculation.\n"
-        "7.  **Missing Info:** If necessary information (like an address for deposit checks, or vault address/chain for withdrawal instructions) is missing, ask the user clearly for it.\n"
-        "8.  **Tool Errors:** If a tool returns an error message, relay that error message to the user.\n"
-        f"9.  **Escalation:** If you cannot resolve the issue using tools (e.g., tool error persists, complex problem), state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**"
-        "\n\n**CRITICAL:** Prioritize using the most appropriate tool based on the available information. Use `check_all_deposits_tool` for general balance checks. Use `get_withdrawal_instructions_tool` ONLY when a specific vault address is provided for withdrawal help."
+
+        "# Rules & Agentic Behavior\n"
+        "- **Persistence:** You are an active agent. Keep working with the user, potentially asking clarifying questions or using multiple tools sequentially as needed according to the workflow, until their specific Yearn data or withdrawal request is fully addressed or escalation is required. Only conclude your turn when the immediate step is complete or you are waiting for user input.\n"
+        "- **Tool Reliance:** You MUST strictly rely on your tools (`search_vaults_tool`, `check_all_deposits_tool`, `get_withdrawal_instructions_tool`) for all data, vault information, and withdrawal instructions. Do NOT provide information from memory, guess, or speculate.\n"
+        "- **Planning & Reflection (Think Step-by-Step):**\n"
+        "    - Before calling any tool, state your plan and which tool you are using and why (e.g., 'To check your deposits, I need your address. Once provided, I will use the `check_all_deposits_tool`.', or 'To get withdrawal instructions for vault 0xabc..., I will use `get_withdrawal_instructions_tool`.').\n"
+        "    - After receiving tool output, analyze it. If the workflow requires another step (e.g., search result feeds into withdrawal tool), explain that step before proceeding.\n"
+        "    - Think carefully about the workflow steps, especially for withdrawals.\n"
+        "- **Direct & Concise Output:** Answer directly based *only* on the output from the tools. Present information clearly. Avoid unnecessary conversational filler.\n"
+        "- **Missing Info:** If necessary information (like an address for deposit checks, or a *specific confirmed* vault address/chain for withdrawal instructions) is missing according to the workflow, ask the user clearly for it.\n"
+        "- **Tool Errors:** If a tool returns an error message, relay that specific error message to the user and indicate you cannot proceed with that action.\n"
+        "- **Tool Priority:** Prioritize using the most appropriate tool based on the workflow and available information. Use `check_all_deposits_tool` for general balance checks. Use `get_withdrawal_instructions_tool` ONLY when a specific vault address/chain is confirmed for withdrawal help.\n"
+
+        f"# Escalation\n"
+        "- If you cannot resolve the issue using tools (e.g., tool error persists after retry if applicable, the problem is clearly beyond tool capabilities, user indicates a complex bug), state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**\n"
     ),
     tools=[
         search_vaults_tool,
         check_all_deposits_tool,
         get_withdrawal_instructions_tool,
     ],
-    model="o3-mini", 
+    model="gpt-4.1", 
+    model_settings=ModelSettings(temperature=0.2)
 )
 
 yearn_docs_qa_agent = Agent[BotRunContext]( 
     name="Yearn Docs QA Specialist",
     instructions=(
+        "# Role and Objective\n"
         "You answer questions based *only* on Yearn documentation using the 'answer_from_docs_tool'.\n"
-        "1. **IMMEDIATELY** use the `answer_from_docs_tool` with the user's query\n" 
-        "2. Relay the answer or 'not found' message from the tool directly.\n"
-        "4. Do NOT answer questions about real-time data (APR, TVL, balances) or specific user issues - state these require other specialists or human help.\n"
-        f"5. If the question is complex even for the docs or seems like a bug report, state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**"
+        "# Workflow\n"
+        "1. Confirm you understand the user's question is about Yearn documentation.\n"
+        "2. Use the `answer_from_docs_tool` with the user's exact query.\n"
+        "3. Relay the answer or 'not found' message from the tool directly.\n"
+
+        "# Rules\n"
+        "- **Tool Exclusivity:** You MUST rely *exclusively* on the information returned by the `answer_from_docs_tool`. If the tool finds no answer, state that clearly ('I couldn't find information on that in the Yearn documentation.').\n"
+        "- **Do NOT Supplement:** Do NOT add information from your own knowledge, guess, or speculate.\n"
+        "- **Scope Limit:** Do NOT answer questions about real-time data (APR, TVL, balances), specific user account issues, Bearn-specific topics, or provide financial advice. State these are outside your scope.\n"
+
+        f"# Escalation\n"
+        "- If the question is complex even for the docs (e.g., requires interpretation beyond retrieval), seems like a bug report, or the tool fails, state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**\n"
     ),
     tools=[answer_from_docs_tool],
-    model="gpt-4o-mini", 
+    model="gpt-4.1-mini", 
     model_settings=ModelSettings(temperature=0.2)
 )
 
 bd_priority_guardrail_agent = Agent[BotRunContext]( 
     name="BD/PR/Listing Guardrail Check",
     instructions=(
+        "# Role and Objective\n"
         "Analyze the user's message to classify its primary intent regarding Yearn. Use the following categories for the 'request_type' field:\n"
+        "# Classification Categories\n"
         "- 'listing': The user is asking Yearn to list their token on an exchange OR asking Yearn to provide liquidity for their token.\n"
         "- 'partnership': The user is proposing a technical integration, collaboration, or joint venture with Yearn.\n"
         "- 'marketing': The user is proposing a joint marketing campaign, AMA, or promotional activity.\n"
         "- 'other_bd': Other business development inquiries not covered above (e.g., grants, general BD contact).\n"
-        "- 'not_bd_pr': This is a standard user support request, a question about using Yearn, a bug report, or unrelated chat.\n\n"
-        "Focus on the main goal. If a message mentions multiple things, classify based on the primary ask. Be precise."
+        "- 'not_bd_pr': This is a standard user support request, a question about using Yearn/Bearn, a bug report, or unrelated chat.\n\n"
+        "# Rules\n"
+        "Focus on the main goal. If a message mentions multiple things, classify based on the primary ask. Be precise.\n"
+        "Output *only* the classification in the specified `BDPriorityCheckOutput` format. Do not add any explanation or conversational text.\n"
     ),
     output_type=BDPriorityCheckOutput, 
     model="gpt-4o-mini",
@@ -1541,7 +1627,9 @@ bd_priority_guardrail_agent = Agent[BotRunContext](
 bearn_data_agent = Agent[BotRunContext]( 
     name="Bearn Data Specialist",
     instructions=(
-        "You handle requests for specific data related to the Bearn sub-project on Berachain.\n"
+        "# Role and Objective\n"
+        "You handle requests for specific data related to Bearn on Berachain.\n"
+        "Your goal is to accurately retrieve and present Bearn vault or deposit information using the provided tools.\n\n"
         "**Workflow:**\n"
         "1.  **Analyze Request:** Determine if the user wants to find Bearn vaults or check their deposits.\n"
         "2.  **Vault Search:** If the user asks to find vaults (e.g., 'list bearn vaults', 'find HONEY/WBERA vault', 'show vaults for 0x... token'), use the `search_bearn_tool`. Pass the user's query ('all', address, or pair) and optionally the vault type ('compounding', 'bgt_earner').\n"
@@ -1549,24 +1637,44 @@ bearn_data_agent = Agent[BotRunContext](
         "4.  **Present Results:** Relay the information returned by the tool directly and clearly. If a tool search returns no results, state that.\n"
         "5.  **Vault Not on UI:** If `search_bearn_tool` finds a vault but the user says it's not on the website, confirm it exists on-chain, provide the Berascan link, and explain the UI might lag.\n"
         "6.  **Tool Errors:** If a tool returns an error message, relay that error to the user.\n"
-        f"7.  **Escalation:** For complex issues beyond vault searching/deposit checking, or if tools consistently fail, state human help is needed and include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'."
+
+        "# Rules & Agentic Behavior\n"
+        "- **Persistence:** Keep working until the user's specific data request is fully addressed using your tools, or until escalation is necessary. Only conclude your turn when the immediate task is complete.\n"
+        "- **Tool Reliance:** You MUST use your tools (`search_bearn_tool`, `check_bearn_deposits_tool`) to answer data requests. Do NOT guess, make up answers, or use knowledge outside of the tool outputs.\n"
+        "- **Planning & Reflection:** Think step-by-step. Before calling a tool, briefly state your plan (e.g., 'Okay, I need to find Bearn vaults matching HONEY/WBERA. I will use the `search_bearn_tool`.'). After receiving the tool output, analyze it before presenting the final answer to the user.\n"
+        "- **Conciseness:** Present the tool output directly and concisely. Avoid adding extra conversational filler unless necessary for clarity or to explain the result.\n"
+        "- **Address Requirement:** Always ensure you have the user's wallet address before attempting to use `check_bearn_deposits_tool`. Ask if missing.\n"
+
+        f"# Escalation\n"
+        "- For complex issues beyond vault searching/deposit checking, or if tools consistently fail or return errors you cannot resolve, state that human help is needed and include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.\n"
     ),
     tools=[search_bearn_tool, check_bearn_deposits_tool], 
-    model="o3-mini", 
+    model="gpt-4.1", 
+    model_settings=ModelSettings(temperature=0.3)
 
 )
 
 bearn_docs_qa_agent = Agent[BotRunContext]( 
     name="Bearn Docs QA Specialist",
+
     instructions=(
+        "# Role and Objective\n"
         "You answer questions based *only* on **Bearn** documentation using the 'answer_from_docs_tool'.\n"
-        "1. **IMMEDIATELY** use the `answer_from_docs_tool` with the user's query.\n" 
-        "2. Relay the answer or 'not found' message from the tool directly.\n"
-        "3. Do NOT answer about real-time data or Yearn-specific topics.\n"
-        f"4. Escalate complex issues, bugs, or tool failures by including the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'."
+        "# Workflow\n"
+        "1. Confirm you understand the user's question is about Bearn documentation.\n"
+        "2. Use the `answer_from_docs_tool` with the user's exact query.\n"
+        "3. Relay the answer or 'not found' message from the tool directly.\n"
+
+        "# Rules\n"
+        "- **Tool Exclusivity:** You MUST rely *exclusively* on the information returned by the `answer_from_docs_tool`. If the tool finds no answer, state that clearly ('I couldn't find information on that in the Bearn documentation.').\n"
+        "- **Do NOT Supplement:** Do NOT add information from your own knowledge, guess, or speculate.\n"
+        "- **Scope Limit:** Do NOT answer about real-time data (like APR, TVL, balances), specific user account issues, or Yearn-specific topics. State these are outside your scope.\n"
+
+        f"# Escalation\n"
+        "- Escalate complex issues beyond simple documentation lookup, apparent bugs, or if the `answer_from_docs_tool` fails consistently by stating human help is needed and including the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.\n"
     ),
     tools=[answer_from_docs_tool],
-    model="gpt-4o-mini",
+    model="gpt-4.1-mini",
     model_settings=ModelSettings(temperature=0.2)
 )
 
@@ -1652,7 +1760,9 @@ async def bd_priority_guardrail(
 triage_agent = Agent[BotRunContext](
     name="Support Triage Agent",
     instructions=(
+        "# Role and Objective\n"
         "You are the primary Yearn & Bearn support agent. Your task is to determine the **project context** (Yearn or Bearn) and the **request type**, then take immediate action based *first* on the project context.\n\n"
+        "# Workflow\n"
         "**1. Determine Project Context:**\n"
         "   - Check the `project_context` provided (Yearn or Bearn). This is the most reliable indicator.\n"
         "   - If context is 'unknown', analyze the message for keywords ('bearn', 'bera', 'bgt', specific Yearn names) to infer context. Default to 'yearn' if still unsure.\n\n"
@@ -1661,10 +1771,10 @@ triage_agent = Agent[BotRunContext](
         "   **--- IF Project Context is YEARN: ---**\n"
         "   a. **BD/PR/Marketing/Listing:** (Handled by Guardrail - You won't see these).\n"
         "   b. **Initial Address Handling:** If user provides an address (0x...) without specifying type: ASK them to clarify (wallet or vault) before proceeding.\n"
-        "   c. **Data or Specific Withdrawal Request:** If the request is about finding vaults, checking deposits/balances, or asking how to withdraw from a specific vault address, AND the user's wallet address is known/confirmed: **IMMEDIATELY use `transfer_to_yearn_data_specialist` handoff.**\n"
+        "   c. **Data or Specific Withdrawal Request:** If the request is about finding vaults, checking deposits/balances, or asking how to withdraw from a specific vault address, AND the user's wallet address is known/confirmed: **IMMEDIATELY execute the `transfer_to_yearn_data_specialist` handoff.**\n"
         "   d. **Address Needed:** If user address is needed for (c) but missing: Ask clearly for the user's wallet address/ENS. Do NOT hand off yet.\n"
-        "   e. **Handling Address Refusal:** If you asked for user address (for c) after they confirmed providing a vault address, and they refuse: Respond ONCE: 'Okay, I understand. Without your wallet address, I can't check your specific deposit balance. However, I *can* provide general withdrawal instructions for the vault `[Vault Address Provided By User]`. Would you like those instructions?' If yes, **IMMEDIATELY use `transfer_to_yearn_data_specialist` handoff.**\n"
-        "   f. **General/Docs Question:** **IMMEDIATELY use `transfer_to_yearn_docs_qa_specialist` handoff.**\n"
+        "   e. **Handling Address Refusal:** If you asked for user address (for c) after they confirmed providing a vault address, and they refuse: Respond ONCE: 'Okay, I understand. Without your wallet address, I can't check your specific deposit balance. However, I *can* provide general withdrawal instructions for the vault `[Vault Address Provided By User]`. Would you like those instructions?' If yes, **IMMEDIATELY execute the `transfer_to_yearn_data_specialist` handoff.**\n"
+        "   f. **General/Docs Question:** **IMMEDIATELY execute the `transfer_to_yearn_docs_qa_specialist` handoff.**\n"
         "   g. **UI Errors/Bugs/Complex Issues:** Respond that human support is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.** Do NOT hand off.\n"
         "   h. **Ambiguity:** If request type (Data vs Docs vs Bug) is unclear: Ask ONE clarifying question.\n"
         "   i. **Greetings/Chit-chat:** Respond briefly.\n\n"
@@ -1672,15 +1782,21 @@ triage_agent = Agent[BotRunContext](
         "   **--- ELSE IF Project Context is BEARN: ---**\n"
         "   a. **BD/PR/Marketing/Listing:** (Handled by Guardrail - You won't see these).\n"
         "   b. **Initial Address Handling:** If user provides an address (0x...) without specifying type: ASK them to clarify (wallet or vault) before proceeding.\n"
-        "   c. **Data Request:** If the request is about finding vaults or checking deposits/balances: **IMMEDIATELY use `transfer_to_bearn_data_specialist` handoff.** (Requires user address for deposit checks).\n"
+        "   c. **Data Request:** If the request is about finding vaults or checking deposits/balances: **IMMEDIATELY execute the `transfer_to_bearn_data_specialist` handoff.** (Requires user address for deposit checks).\n"
         "   d. **Address Needed:** If user address is needed for (c) but missing: Ask clearly for the user's wallet address/ENS. Do NOT hand off yet.\n"
 
-        "   e. **General/Docs Question:** **IMMEDIATELY use `transfer_to_bearn_docs_qa_specialist` handoff.**\n"
+        "   e. **General/Docs Question:** **IMMEDIATELY execute the `transfer_to_bearn_docs_qa_specialist` handoff.**\n"
         "   f. **UI Errors/Bugs/Complex Issues:** Respond that human support is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.** Do NOT hand off.\n"
         "   g. **Ambiguity:** If request type (Data vs Docs vs Bug) is unclear: Ask ONE clarifying question.\n"
         "   h. **Greetings/Chit-chat:** Respond briefly.\n\n"
 
-        "**CRITICAL:** Always determine context first (Step 1). Then strictly follow the workflow for THAT context (Step 2). Execute handoffs immediately when conditions within the context's workflow are met. Do not describe the handoff."
+        "# Rules\n"
+        "**CRITICAL:** Always determine context first (Step 1). Then strictly follow the workflow for THAT context (Step 2). Execute handoffs immediately when conditions within the context's workflow are met. Do not describe the handoff.\n"
+        "- You are a routing agent. Your goal is to classify the request and either respond simply, ask for clarification, or hand off to a specialist.\n"
+        "- Complete your analysis and required action (response, question, or handoff) based on the workflow before concluding your turn. Do not leave the task unfinished.\n"
+        "- Only use the specifically defined handoff tools (`transfer_to_...`). Do not attempt to answer questions that require specialist tools yourself.\n"
+        "- Do not ask follow-up questions unless explicitly allowed by the workflow (e.g., address clarification, ambiguity resolution).\n"
+        "- Do not provide any information about the handoff process or the specialist agents. Your role is to route the request, not to explain the routing.\n"
     ),
     handoffs=[
         handoff(yearn_data_agent, tool_name_override="transfer_to_yearn_data_specialist", tool_description_override="Handoff for specific YEARN data (vaults, deposits, APR, TVL, balances, withdrawal instructions)."),
@@ -1689,14 +1805,15 @@ triage_agent = Agent[BotRunContext](
         handoff(bearn_docs_qa_agent, tool_name_override="transfer_to_bearn_docs_qa_specialist", tool_description_override="Handoff for general questions about BEARN concepts or documentation.")
     ],
     input_guardrails=[bd_priority_guardrail],
-    model="gpt-4o",
+    model="gpt-4.1",
     model_settings=ModelSettings(temperature=0.1) 
 )
 
 conversation_threads: Dict[int, List[TResponseInputItem]] = {} 
 stopped_channels: set[int] = set() 
 pending_messages: Dict[int, str] = {} 
-pending_tasks: Dict[int, asyncio.Task] = {} 
+pending_tasks: Dict[int, asyncio.Task] = {}
+monitored_new_channels: set[int] = set()
 
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
@@ -1712,25 +1829,30 @@ class TicketBot(discord.Client):
         print("------")
 
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
+
         if isinstance(channel, discord.TextChannel) and channel.category:
             if channel.category.id in CATEGORY_CONTEXT_MAP:
-                project_context = CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown") 
+                project_context = CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown")
                 logging.info(f"New {project_context.capitalize()} ticket channel created: {channel.name} (ID: {channel.id}). Initializing state.")
                 conversation_threads[channel.id] = []
-                stopped_channels.discard(channel.id) 
+                stopped_channels.discard(channel.id)
                 pending_messages.pop(channel.id, None)
-
                 if channel.id in pending_tasks:
                     try:
                         pending_tasks.pop(channel.id).cancel()
                     except Exception as e:
                         logging.warning(f"Error cancelling task during channel create for {channel.id}: {e}")
 
+                monitored_new_channels.add(channel.id)
+                logging.info(f"Added channel {channel.id} to monitored_new_channels set.")
+
     async def on_message(self, message: discord.Message):
+
         if message.author.bot or message.author.id == self.user.id:
             return
 
         run_context = BotRunContext(channel_id=message.channel.id) 
+
         is_reply = message.reference is not None
         trigger_char = message.content.strip()
         is_support_trigger = str(message.author.id) == SUPPORT_USER_ID and trigger_char in TRIGGER_CONTEXT_MAP
@@ -1814,49 +1936,19 @@ class TicketBot(discord.Client):
 
         channel_id = message.channel.id
 
+        if channel_id not in monitored_new_channels:
+
+            return
+
         run_context.category_id = message.channel.category.id
         run_context.project_context = CATEGORY_CONTEXT_MAP.get(message.channel.category.id, "unknown")
 
         if run_context.project_context == "unknown":
+
              return
 
-        if message.content.strip().lower() == "%stop":
-            logging.info(f"%stop command received in channel {channel_id} from {message.author.name}")
-            try:
-                await message.delete()
-                logging.info(f"Deleted %stop command message {message.id}")
-            except discord.Forbidden:
-                logging.warning(f"Missing permissions to delete %stop message {message.id} in {channel_id}. Proceeding with stop.")
-            except discord.NotFound:
-                logging.warning(f"%stop message {message.id} already deleted.")
-            except Exception as e:
-                logging.error(f"Error deleting %stop message {message.id}: {e}. Proceeding with stop.")
-
-            stopped_channels.add(channel_id)
-            conversation_threads.pop(channel_id, None) 
-            pending_messages.pop(channel_id, None)     
-            if channel_id in pending_tasks:
-                try:
-                    pending_tasks.pop(channel_id).cancel() 
-                    logging.info(f"Cancelled pending task for channel {channel_id} due to %stop.")
-                except KeyError:
-                    pass 
-                except Exception as e:
-                     logging.error(f"Error cancelling pending task for {channel_id} during %stop: {e}")
-
-            confirmation_message = "Support bot stopped for this channel. ySupport contributors are available for other further inquiries."
-            try:
-                await message.channel.send(confirmation_message)
-                logging.info(f"Sent stop confirmation to channel {channel_id}")
-            except discord.Forbidden:
-                logging.error(f"Missing permissions to send stop confirmation in channel {channel_id}")
-            except Exception as e:
-                logging.error(f"Error sending stop confirmation to channel {channel_id}: {e}")
-
-            return 
-
         if channel_id in stopped_channels:
-            logging.info(f"Ignoring message in stopped channel {channel_id}")
+
             return
 
         logging.info(f"Processing ticket message in {channel_id} from {message.author.name}")
@@ -1879,7 +1971,7 @@ class TicketBot(discord.Client):
             await asyncio.sleep(COOLDOWN_SECONDS)
         except asyncio.CancelledError:
             logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
-            return 
+            return
 
         aggregated_text = pending_messages.pop(channel_id, None)
         pending_tasks.pop(channel_id, None)
@@ -1902,88 +1994,24 @@ class TicketBot(discord.Client):
         logging.info(f"Processing aggregated text for ticket {channel_id} (Context: {project_ctx}): '{aggregated_text[:100]}...'")
 
         async with channel.typing():
-            final_reply = "An unexpected error occurred." 
+            final_reply = "An unexpected error occurred."
             should_stop_processing = False 
+
             try:
+
                 run_config = RunConfig(
-                    workflow_name=f"Ticket Channel {channel_id} ({project_ctx})", 
-                    group_id=str(channel_id) 
+                    workflow_name=f"Ticket Channel {channel_id} ({project_ctx})",
+                    group_id=str(channel_id)
                 )
                 result: RunResult = await self.runner.run(
                     starting_agent=triage_agent,
                     input=input_list,
                     max_turns=MAX_TICKET_CONVERSATION_TURNS,
                     run_config=run_config,
-                    context=run_context 
+                    context=run_context
                 )
-
                 conversation_threads[channel_id] = result.to_input_list()
                 raw_final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
-                actual_mention = f"<@{SUPPORT_USER_ID}>" 
-                final_reply = raw_final_reply.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
-
-                if actual_mention in final_reply:
-                    logging.info(f"Human handoff tag detected and replaced/present in response for channel {channel_id}.")
-                    should_stop_processing = True
-                elif HUMAN_HANDOFF_TAG_PLACEHOLDER in raw_final_reply:
-                     logging.warning(f"Handoff placeholder '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' found in raw reply but not replaced in channel {channel_id}.")
-
-                farewell_keywords = ["thank", "bye", "goodbye", "stop talking", "that's all", "resolved", "worked", "fixed"]
-                user_said_farewell = any(kw in aggregated_text.lower() for kw in farewell_keywords)
-                agent_said_farewell = "glad i could help" in final_reply.lower() or "concluding interaction" in final_reply.lower() 
-
-                if user_said_farewell or agent_said_farewell:
-                    if not should_stop_processing: 
-                         final_reply += "\n\n*(Conversation ended. ySupport contributors will answer any follow up questions, or this ticket may be closed if no further assistance is needed..)*"
-                    should_stop_processing = True
-                    logging.info(f"Conversation ended naturally or by farewell in channel {channel_id}.")
-
-            except InputGuardrailTripwireTriggered as e: 
-                 logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
-                 guardrail_info = e.guardrail_result.output.output_info
-                 if isinstance(guardrail_info, dict) and "message" in guardrail_info:
-                     final_reply = guardrail_info["message"]
-
-                     if "classification" in guardrail_info and isinstance(guardrail_info["classification"], dict):
-                          logging.info(f"Guardrail classification: {guardrail_info['classification'].get('request_type', 'Unknown')}")
-                 else:
-                     logging.error("Guardrail triggered but message not found in output_info!")
-                     final_reply = "Your request could not be processed due to input checks."
-
-                 should_stop_processing = True
-                 conversation_threads.pop(channel_id, None) 
-
-            except MaxTurnsExceeded:
-                 logging.warning(f"Max turns ({MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                 final_reply = f"This conversation has reached its maximum length. <@{SUPPORT_USER_ID}> may need to intervene."
-                 should_stop_processing = True
-                 conversation_threads.pop(channel_id, None) 
-
-            except AgentsException as e:
-                 logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                 final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{SUPPORT_USER_ID}>."
-
-            except Exception as e:
-                 logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                 final_reply = f"An unexpected error occurred. Please notify <@{SUPPORT_USER_ID}>."
-                 should_stop_processing = True 
-
-            try:
-                await send_long_message(channel, final_reply) 
-                logging.info(f"Sent ticket reply/replies in channel {channel_id}. Stop processing: {should_stop_processing}")
-                if should_stop_processing:
-                    stopped_channels.add(channel_id)
-                    logging.info(f"Added channel {channel_id} to stopped channels.")
-
-            except discord.Forbidden:
-                 logging.error(f"Missing permissions to send message in channel {channel_id}")
-                 stopped_channels.add(channel_id) 
-            except Exception as e:
-                 logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
-
-            finally:
-                 pending_messages.pop(channel_id, None)
-                 pending_tasks.pop(channel_id, None)
 
 if __name__ == "__main__":
     intents = discord.Intents.default()
