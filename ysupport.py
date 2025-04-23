@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import traceback
 import discord
+from discord.ui import View, Button, button
 import sys
 import re
 import json
@@ -79,8 +80,8 @@ BERACHAIN_CHAIN_ID = 80094
 BEARN_FACTORY_ADDRESS = "0x70b14cd0Cf7BD442DABEf5Cb0247aA478B82fcbb"
 BEARN_UI_CONTROL_ADDRESS = "0xD36e0A4Ae7258Dd1FfE0D7f9f851461369a1AA0E"
 
-class BDPriorityCheckOutput(BaseModel): 
-    request_type: Literal["listing", "partnership", "marketing", "other_bd", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'other_bd' (other business development), or 'not_bd_pr' (standard support request or unrelated).")
+class BDPriorityCheckOutput(BaseModel):
+    request_type: Literal["listing", "partnership", "marketing", "other_bd", "job_inquiry", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'other_bd' (other business development), 'job_inquiry' (asking to work for/contribute to Yearn, grant requests), or 'not_bd_pr' (standard support request or unrelated).")
     reasoning: str = Field(..., description="Brief explanation for the classification.")
 
 class GuardrailResponseMessageException(AgentsException):
@@ -199,12 +200,6 @@ BLOCK_EXPLORER_URLS = {
     "berachain": "https://berascan.com" 
 }
 
-ERC20_ABI = [
-    {"constant": True, "inputs": [{"name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
-    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"},
-    {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"} 
-]
-
 BEARN_FACTORY_ABI = [{"inputs":[{"internalType":"address","name":"_authorizer","type":"address"},{"internalType":"address","name":"_beraVaultFactory","type":"address"},{"internalType":"address","name":"_yBGT","type":"address"},{"internalType":"address","name":"_keeper","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"AlreadyExists","type":"error"},{"inputs":[],"name":"NoBeraVault","type":"error"},{"inputs":[],"name":"NotInitialized","type":"error"},{"anonymous":False,"inputs":[{"indexed":False,"internalType":"address","name":"newAuctionFactory","type":"address"}],"name":"NewAuctionFactory","type":"event"},{"anonymous":False,"inputs":[{"indexed":False,"internalType":"address","name":"newVaultManager","type":"address"}],"name":"NewVaultManager","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"stakingToken","type":"address"},{"indexed":False,"internalType":"address","name":"compoundingVault","type":"address"},{"indexed":False,"internalType":"address","name":"yBGTVault","type":"address"}],"name":"NewVaults","type":"event"},{"inputs":[],"name":"AUTHORIZER","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bearnAuctionFactory","outputs":[{"internalType":"contract IBearnAuctionFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bearnVaultManager","outputs":[{"internalType":"contract IBearnVaultManager","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"beraVaultFactory","outputs":[{"internalType":"contract IRewardVaultFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"}],"name":"createVaults","outputs":[{"internalType":"address","name":"compoundingVault","type":"address"},{"internalType":"address","name":"yBGTVault","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"getAllBgtEarnerVaults","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllBgtEarnerVaultsLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllCompoundingVaults","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllCompoundingVaultsLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getBgtEarnerVault","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getCompoundingVault","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"bearnVaults","type":"address"}],"name":"isBearnVault","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"keeper","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_newAuctionFactory","type":"address"}],"name":"setAuctionFactory","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_newBearnVaultManager","type":"address"}],"name":"setVaultManager","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"}],"name":"stakingToBGTEarnerVaults","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"}],"name":"stakingToCompoundingVaults","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"yBGT","outputs":[{"internalType":"contract ERC20","name":"","type":"address"}],"stateMutability":"view","type":"function"}]
 
 BEARN_UI_CONTROL_ABI = [{"inputs":[{"internalType":"address","name":"_authorizer","type":"address"},{"internalType":"address","name":"_styBGT","type":"address"},{"internalType":"address","name":"_bearnVaultFactory","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"UnequalLengths","type":"error"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"stakingToken","type":"address"},{"indexed":False,"internalType":"bool","name":"state","type":"bool"}],"name":"WhitelistChanged","type":"event"},{"inputs":[],"name":"AUTHORIZER","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"},{"internalType":"bool","name":"state","type":"bool"}],"name":"adjustWhitelist","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address[]","name":"stakingTokens","type":"address[]"},{"internalType":"bool[]","name":"states","type":"bool[]"}],"name":"adjustWhitelists","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"bearnAuctionFactory","outputs":[{"internalType":"contract IBearnAuctionFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bearnVaultFactory","outputs":[{"internalType":"contract IBearnVaultFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bexVault","outputs":[{"internalType":"contract IBexVault","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"burrVault","outputs":[{"internalType":"contract IBexVault","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllWhitelistedStakes","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllWhitelistedStakesLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"bearnVault","type":"address"}],"name":"getApr","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"bexPool","type":"address"}],"name":"getBexLpPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"burrPool","type":"address"}],"name":"getBurrBearLpPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"hypervisor","type":"address"}],"name":"getHypervisorPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"kodiakIsland","type":"address"}],"name":"getKodiakIslandPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"kodiakV2Pair","type":"address"}],"name":"getKodiakV2Price","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"getPythPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakeToken","type":"address"}],"name":"getStakePrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"address[]","name":"vaults","type":"address[]"}],"name":"getUserScaledAssets","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"address","name":"vault","type":"address"}],"name":"getUserScaledAssets","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"address[]","name":"vaults","type":"address[]"}],"name":"getUserUpdatedEarneds","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getWhitelistedStake","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getYBGTPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"honey","outputs":[{"internalType":"contract ERC20","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"kodiakFactory","outputs":[{"internalType":"contract IUniswapV3Factory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stake","type":"address"}],"name":"nameOverrides","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"pythOracle","outputs":[{"internalType":"contract IPythOracle","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"pythOracleIds","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"},{"internalType":"string","name":"name","type":"string"}],"name":"setNameOverride","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address[]","name":"stakingTokens","type":"address[]"},{"internalType":"string[]","name":"names","type":"string[]"}],"name":"setNameOverrides","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"},{"internalType":"bytes32","name":"oracleId","type":"bytes32"}],"name":"setPythOracleId","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"},{"internalType":"address","name":"destinationAddress","type":"address"}],"name":"setTokenAddressOverride","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"styBGT","outputs":[{"internalType":"contract IStakedBearnBGT","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"styBGTApr","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"tokenAddressOverrides","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"wbera","outputs":[{"internalType":"contract ERC20","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"yBGT","outputs":[{"internalType":"contract IBearnBGT","name":"","type":"address"}],"stateMutability":"view","type":"function"}]
@@ -215,6 +210,12 @@ BEARN_VAULT_ABI = [
     {"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"}, 
 
     {"inputs":[],"name":"exit","outputs":[],"stateMutability":"nonpayable","type":"function"} 
+]
+
+ERC20_ABI = [
+    {"constant": True, "inputs": [{"name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"}
 ]
 
 
@@ -1418,7 +1419,7 @@ async def answer_from_docs_tool(
     logging.info(f"[Tool:answer_from_docs] --- Tool Invoked ---")
     logging.info(f"[Tool:answer_from_docs] Received query: '{user_query}'")
     logging.info(f"[Tool:answer_from_docs] Project context from wrapper: '{project_context}'") 
-    top_k = 8
+    top_k = 10
 
     if project_context == "yearn":
         namespace_to_query = YEARN_PINECONE_NAMESPACE
@@ -1459,50 +1460,66 @@ async def answer_from_docs_tool(
 
     context_pieces = []
     if matches:
-        for match in matches:
+        logging.info(f"[Tool:answer_from_docs] Processing {len(matches)} matches to build context...")
+        for i, match in enumerate(matches):
             metadata = match.get("metadata", {})
+            text_chunk = metadata.get("text") 
 
-            text_chunk = metadata.get("text", "") 
-            filename = metadata.get("filename", "Unknown Source") 
-            chunk_id = metadata.get("chunk_id", "N/A") 
+            filename = metadata.get("filename", "Unknown Filename")
+            doc_title = metadata.get("doc_title", "Unknown Document")
+            section_heading = metadata.get("section_heading", "Unknown Section")
+            chunk_id = metadata.get("chunk_id", "N/A")
+            source_path = metadata.get("source_path", filename) 
 
-            source_info = f"{filename} (Chunk: {chunk_id})"
+            if text_chunk:
 
-            if text_chunk: 
-                context_pieces.append(f"Source: {source_info}\nContent:\n{text_chunk}")
+                source_description = (
+                    f"Source Document: {doc_title} ({source_path})\n"
+                    f"Section: {section_heading}\n"
+
+                )
+                context_pieces.append(f"{source_description}\nContent:\n{text_chunk}")
+                logging.debug(f"[Tool:answer_from_docs] Added context piece {i+1}: Title='{doc_title}', Section='{section_heading}', Path='{source_path}', Chunk={chunk_id}")
             else:
-                 logging.warning(f"Match ID {match.id} had empty 'text_preview' in metadata.")
+                 logging.warning(f"[Tool:answer_from_docs] Match ID {match.get('id', 'N/A')} (Source: {source_path}, Chunk: {chunk_id}) had empty 'text' in metadata.")
 
-        context_text = "\n\n---\n\n".join(context_pieces)
-        logging.info(f"[Tool:answer_from_docs] Built context string (length: {len(context_text)}). Preview:\n---\n{context_text[:500]}...\n---")
+        context_text = "\n\n---\n\n".join(context_pieces) 
+        logging.info(f"[Tool:answer_from_docs] Built context string (length: {len(context_text)}).")
+
+        context_preview = context_text.replace('\n', ' ')[:500]
+        logging.debug(f"[Tool:answer_from_docs] Context Preview:\n---\n{context_preview}...\n---")
+
     else:
         logging.info("[Tool:answer_from_docs] No relevant documents found in Pinecone.")
         logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (No Matches) ---")
-        return "I couldn't find any relevant information in the documentation to answer that question."
+
+        return f"I couldn't find any relevant information in the {project_context.capitalize()} documentation to answer that specific question."
 
     if not context_text:
-         logging.warning("[Tool:answer_from_docs] Context string is empty even though matches were found. Check metadata keys ('text_preview', 'filename', 'chunk_id').")
+         logging.warning("[Tool:answer_from_docs] Context string is empty even though matches were found. All matched chunks might have had empty 'text' metadata.")
          logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (Empty Context Built) ---")
-         return "I found potential matches in the documentation, but couldn't extract the content correctly."
+         return f"I found potential matches in the {project_context.capitalize()} documentation, but couldn't extract the content correctly."
 
     system_prompt = (
-        f"You are an assistant specialized in answering questions based **ONLY** on the provided {project_context.capitalize()} documentation context below. "
-        "Your goal is to synthesize a comprehensive and accurate answer using *only* the information present in the 'Documentation Context' section.\n"
-        "Use the information given below to answer the user's question accurately and concisely. "
-        "If the answer is not present in the context, state that clearly ('I couldn't find information about X in the provided context.'). Do not add external knowledge. "
-        "Cite the source if possible (included in the context)."
+        f"You are an expert assistant specialized in the {project_context.capitalize()} project. "
+        f"Your task is to answer the user's question based **ONLY** on the provided documentation context below. "
+        "Synthesize a comprehensive and accurate answer using *only* the information present in the 'Documentation Context' section.\n"
+        "Structure your answer clearly. If the context provides specific details, include them.\n"
+        "**Crucially:** If the answer is not found within the provided context, state that clearly (e.g., 'The provided documentation context does not contain information about X.'). Do **NOT** use any external knowledge or make assumptions.\n"
+        "**Citation:** When possible, implicitly reference the source by mentioning the topic or section discussed (e.g., 'According to the section on Vault Strategies...', or 'The documentation about {section_heading} states...'). You can use the 'Source Document' and 'Section' information provided with each context piece to guide your response."
     )
+
     messages_for_llm = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Documentation Context:\n{context_text}\n\nUser Question: {user_query}"}
+        {"role": "user", "content": f"Please answer the following question based *only* on the documentation context provided below.\n\nUser Question: {user_query}\n\nDocumentation Context:\n---\n{context_text}\n---"}
     ]
-    logging.info(f"[Tool:answer_from_docs] Sending final prompt to LLM. User content length: {len(messages_for_llm[1]['content'])}")
-    
+    logging.info(f"[Tool:answer_from_docs] Sending final prompt to LLM. User content length approx: {len(messages_for_llm[1]['content'])}")
+
     try:
         response = await openai_async_client.chat.completions.create(
             model="gpt-4.1",
             messages=messages_for_llm,
-            temperature=0.2
+            temperature=0.1
         )
         final_answer = response.choices[0].message.content.strip()
         logging.info(f"[Tool:answer_from_docs] Received final answer from LLM: '{final_answer}'")
@@ -1511,7 +1528,7 @@ async def answer_from_docs_tool(
     except Exception as e:
         logging.error(f"[Tool:answer_from_docs] Error generating final answer: {e}")
         logging.info(f"[Tool:answer_from_docs] --- Tool Returning Error (LLM Call Failed) ---")
-        return f"Sorry, I found relevant {project_context.capitalize()} documentation but encountered an error while formulating the final answer."
+        return f"Sorry, I found relevant {project_context.capitalize()} documentation but encountered an error while formulating the final answer based on it."
 
 def add_project_context_to_handoff_input(
     handoff_input_data: HandoffInputData,
@@ -1620,7 +1637,7 @@ bd_priority_guardrail_agent = Agent[BotRunContext](
         "Output *only* the classification in the specified `BDPriorityCheckOutput` format. Do not add any explanation or conversational text.\n"
     ),
     output_type=BDPriorityCheckOutput, 
-    model="gpt-4o-mini",
+    model="gpt-4.1-mini",
     model_settings=ModelSettings(temperature=0.1)
 )
 
@@ -1679,20 +1696,26 @@ bearn_docs_qa_agent = Agent[BotRunContext](
 )
 
 LISTING_DENIAL_MESSAGE = ( 
-    "Thank you for your interest. Yearn Finance ($YFI) is permissionlessly listable on exchanges. "
-    "Yearn does not pay listing fees, nor does it provide liquidity for exchange listings. "
+    "Thank you for your interest! "
+    "Yearn Finance ($YFI) is permissionlessly listable on exchanges. Yearn does not pay listing fees, nor does it provide liquidity for exchange listings. "
     "No proposal is necessary for listing.\n\n"
-    "Conversation ended. No follow up inquiries or responses necessary."
+    "No follow up inquiries or responses necessary."
 )
 
 STANDARD_REDIRECT_MESSAGE = ( 
-     f"Thank you for your interest! For partnership, marketing, or other business development proposals, "
-     f"Go to <#{PR_MARKETING_CHANNEL_ID}>, share your proposal in **5 sentences** describing how it benefits both parties. "
-     f"And tag **corn**. They handle these inquiries.\n\n"
-     f"Conversation ended. No follow up inquiries or responses necessary."
+     f"Thank you for your interest! "
+     f"For partnership, marketing, or other business development proposals, go to <#{PR_MARKETING_CHANNEL_ID}>, share your proposal in **5 sentences** describing how it benefits both parties, and tag **corn**.\n\n"
+     f"No follow up inquiries or responses necessary."
 )
 
-@input_guardrail(name="BD/PR/Listing Guardrail")
+JOB_INQUIRY_REDIRECT_MESSAGE = (
+    "Thank you for your interest in contributing to or working with Yearn!\n\n"
+    "Yearn operates with project-based grants. You can find full details about the process in the [Yearn Docs](https://docs.yearn.finance/contributing/operations/budget).\n"
+    "You may also work on open issues, report bugs, suggest improvements, write documentation, and more by visiting our [GitHub repository](https://github.com/yearn), where anyone is welcome to contribute.\n\n"
+    "No follow up inquiries or responses necessary."
+)
+
+@input_guardrail(name="BD/PR/Listing/Job Guardrail")
 async def bd_priority_guardrail(
     ctx: RunContextWrapper[BotRunContext],
     agent: Agent,
@@ -1719,10 +1742,11 @@ async def bd_priority_guardrail(
 
     try:
         guardrail_runner = Runner()
+        run_config_guardrail = RunConfig(workflow_name="BD/Priority Guardrail Check", tracing_disabled=True)
         result = await guardrail_runner.run(
             starting_agent=bd_priority_guardrail_agent,
             input=text_input,
-            run_config=RunConfig(workflow_name="BD/Priority Guardrail Check", tracing_disabled=True)
+            run_config=run_config_guardrail 
         )
         check_output = result.final_output_as(BDPriorityCheckOutput)
         logging.info(f"[Guardrail:BD/Priority] Check result: type={check_output.request_type}, Reasoning: {check_output.reasoning}")
@@ -1734,6 +1758,9 @@ async def bd_priority_guardrail(
             should_trigger = True
         elif check_output.request_type in ["partnership", "marketing", "other_bd"]:
             message_to_send = STANDARD_REDIRECT_MESSAGE
+            should_trigger = True
+        elif check_output.request_type == "job_inquiry":
+            message_to_send = JOB_INQUIRY_REDIRECT_MESSAGE
             should_trigger = True
 
         output_info_dict = {
@@ -1863,7 +1890,7 @@ class TicketBot(discord.Client):
             try:
                 original_message = await message.channel.fetch_message(message.reference.message_id)
                 if original_message and not original_message.author.bot:
-                    logging.info(f"Public trigger '{PUBLIC_TRIGGER_CHAR}' detected by {message.author.name} in reply to user {original_message.author.name} in channel {message.channel.id}")
+                    logging.info(f"Public trigger detected by {message.author.name} in reply to user {original_message.author.name} in channel {message.channel.id}")
 
                     try:
                         await message.delete()
@@ -1901,11 +1928,14 @@ class TicketBot(discord.Client):
 
                         except InputGuardrailTripwireTriggered as e:
                             logging.warning(f"BD/PR Input Guardrail triggered for public query (Original msg ID: {original_message.id}). Guardrail Output: {e.guardrail_result.output.output_info}")
-                            reply_content = (
-                                f"Thank you for your interest! For partnership, marketing, or business development proposals, "
-                                f"please post your message in the <#{PR_MARKETING_CHANNEL_ID}> channel and tag **corn**. "
-                                f"They handle these inquiries."
-                            )
+                            guardrail_info = e.guardrail_result.output.output_info
+                            if isinstance(guardrail_info, dict) and "message" in guardrail_info:
+                                reply_content = guardrail_info["message"]
+                                if "classification" in guardrail_info and isinstance(guardrail_info["classification"], dict):
+                                    logging.info(f"Guardrail classification (public query): {guardrail_info['classification'].get('request_type', 'Unknown')}")
+                            else:
+                                logging.error("Guardrail triggered (public query) but message not found in output_info!")
+                                reply_content = "Your request could not be processed due to input checks. Please contact support directly."
                             await send_long_message(target_message_for_reply, reply_content) 
 
                         except MaxTurnsExceeded as e:
@@ -2012,6 +2042,62 @@ class TicketBot(discord.Client):
                 )
                 conversation_threads[channel_id] = result.to_input_list()
                 raw_final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
+                actual_mention = f"<@{SUPPORT_USER_ID}>"
+                final_reply = raw_final_reply.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+
+                if actual_mention in final_reply:
+                    logging.info(f"Human handoff tag detected and replaced/present in response for channel {channel_id}.")
+                    should_stop_processing = True 
+                elif HUMAN_HANDOFF_TAG_PLACEHOLDER in raw_final_reply:
+                     logging.warning(f"Handoff placeholder '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' found in raw reply but not replaced in channel {channel_id}.")
+                     should_stop_processing = True 
+
+            except InputGuardrailTripwireTriggered as e:
+                 logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
+                 guardrail_info = e.guardrail_result.output.output_info
+                 if isinstance(guardrail_info, dict) and "message" in guardrail_info:
+                     final_reply = guardrail_info["message"]
+                     if "classification" in guardrail_info and isinstance(guardrail_info["classification"], dict):
+                          logging.info(f"Guardrail classification: {guardrail_info['classification'].get('request_type', 'Unknown')}")
+                 else:
+                     logging.error("Guardrail triggered but message not found in output_info!")
+                     final_reply = "Your request could not be processed due to input checks."
+                 should_stop_processing = True
+                 conversation_threads.pop(channel_id, None)
+
+            except MaxTurnsExceeded:
+                 logging.warning(f"Max turns ({MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
+                 final_reply = f"This conversation has reached its maximum length. <@{SUPPORT_USER_ID}> may need to intervene."
+                 should_stop_processing = True
+                 conversation_threads.pop(channel_id, None)
+
+            except AgentsException as e:
+                 logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
+                 final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{SUPPORT_USER_ID}>."
+                 should_stop_processing = True 
+
+            except Exception as e:
+                 logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
+                 final_reply = f"An unexpected error occurred. Please notify <@{SUPPORT_USER_ID}>."
+                 should_stop_processing = True
+
+            try:
+
+                reply_view = StopBotView() if not should_stop_processing else None
+                await send_long_message(channel, final_reply, view=reply_view) 
+
+                logging.info(f"Sent ticket reply/replies in channel {channel_id}. Stop processing flag: {should_stop_processing}")
+                if should_stop_processing:
+
+                    if channel_id not in stopped_channels:
+                         stopped_channels.add(channel_id)
+                         logging.info(f"Added channel {channel_id} to stopped channels due to error/handoff tag.")
+
+            except discord.Forbidden:
+                 logging.error(f"Missing permissions to send message in channel {channel_id}")
+                 stopped_channels.add(channel_id)
+            except Exception as e:
+                 logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
 
 if __name__ == "__main__":
     intents = discord.Intents.default()
