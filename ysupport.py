@@ -47,38 +47,155 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "token")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "key") 
 ALCHEMY_KEY = os.getenv("ALCHEMY_KEY", "key") 
 
-PINECONE_INDEX_NAME = "index" 
-YEARN_PINECONE_NAMESPACE = "namespace" 
-BEARN_PINECONE_NAMESPACE = "namespace" 
+# --- Pinecone ---
+PINECONE_INDEX_NAME = "index"
+YEARN_PINECONE_NAMESPACE = "namespace"
 
-SUPPORT_USER_ID = "id" 
-HUMAN_HANDOFF_TAG_PLACEHOLDER = "{HUMAN_HANDOFF_TAG_PLACEHOLDER}" 
-YEARN_TICKET_CATEGORY_ID = id
-BEARN_TICKET_CATEGORY_ID = id
+PUBLIC_TRIGGER_USER_IDS = {
+    "id"
+}
+YEARN_TICKET_CATEGORY_ID = category id
 YEARN_PUBLIC_TRIGGER_CHAR = "y"
-BEARN_PUBLIC_TRIGGER_CHAR = "b"
+HUMAN_HANDOFF_TARGET_USER_ID = "user id"
+HUMAN_HANDOFF_TAG_PLACEHOLDER = "{HUMAN_HANDOFF_TAG_PLACEHOLDER}" # The literal string in the instructions
 
+
+# Map category IDs to project contexts
 CATEGORY_CONTEXT_MAP = {
     YEARN_TICKET_CATEGORY_ID: "yearn",
-    BEARN_TICKET_CATEGORY_ID: "bearn",
 }
 
+# Map trigger chars to project contexts
 TRIGGER_CONTEXT_MAP = {
     YEARN_PUBLIC_TRIGGER_CHAR: "yearn",
-    BEARN_PUBLIC_TRIGGER_CHAR: "bearn",
 }
 
-PR_MARKETING_CHANNEL_ID = id 
-MAX_DISCORD_MESSAGE_LENGTH = 1990 
+PR_MARKETING_CHANNEL_ID = channel id
+MAX_DISCORD_MESSAGE_LENGTH = 1990
 
-COOLDOWN_SECONDS = 5 
-MAX_TICKET_CONVERSATION_TURNS = 15 
-MAX_RESULTS_TO_SHOW = 5 
-STRATEGY_FETCH_CONCURRENCY = 10 
+# --- Bot Behavior ---
+COOLDOWN_SECONDS = 5 # Debounce time for user messages in tickets
+MAX_TICKET_CONVERSATION_TURNS = 10 # Limit conversation length in tickets
+MAX_RESULTS_TO_SHOW = 5 # Define how many results to show by default or when sorted
+STRATEGY_FETCH_CONCURRENCY = 10 # Limit concurrent requests for strategy details
+PUBLIC_TRIGGER_TIMEOUT_MINUTES = 10 # Timeout in minutes
 
-BERACHAIN_CHAIN_ID = 80094
-BEARN_FACTORY_ADDRESS = "0x70b14cd0Cf7BD442DABEf5Cb0247aA478B82fcbb"
-BEARN_UI_CONTROL_ADDRESS = "0xD36e0A4Ae7258Dd1FfE0D7f9f851461369a1AA0E"
+# --- State to track channels awaiting button press ---
+channels_awaiting_initial_button_press: set[int] = set()
+channel_intent_after_button: Dict[int, str] = {}
+
+@dataclass
+class PublicConversation:
+    """Stores the state for a temporary public conversation."""
+    history: List[TResponseInputItem]
+    last_interaction_time: datetime
+
+public_conversations: Dict[int, PublicConversation] = {}
+
+class InitialInquiryView(View):
+    def __init__(self, *, timeout=None):
+        super().__init__(timeout=timeout)
+
+    async def handle_button_click_and_prompt(self, interaction: discord.Interaction, button_custom_id: str, prompt_message: str, intent_category: str):
+        await interaction.response.defer()
+
+        try:
+            view_to_disable = View.from_message(interaction.message)
+            if view_to_disable:
+                for child_button in view_to_disable.children:
+                    if isinstance(child_button, Button):
+                        child_button.disabled = True
+                await interaction.edit_original_response(view=view_to_disable)
+        except Exception as e:
+            logging.warning(f"Could not disable initial inquiry buttons in {interaction.channel_id} on message {interaction.message.id if interaction.message else 'Unknown'}: {e}")
+
+        channels_awaiting_initial_button_press.discard(interaction.channel.id)
+        channel_intent_after_button[interaction.channel.id] = intent_category
+
+        if interaction.channel:
+            await interaction.channel.send(prompt_message)
+        else:
+            await interaction.followup.send(prompt_message, ephemeral=False)
+
+        logging.info(f"Button '{button_custom_id}' clicked in {interaction.channel.id}. Intent set to '{intent_category}'. Sent follow-up prompt.")
+
+    @button(label="ℹ️ Vault Info", style=discord.ButtonStyle.secondary, custom_id="initial_find_vaults", row=0)
+    async def find_vaults_button(self, interaction: discord.Interaction, button: Button):
+        prompt = "Okay, you want to find vaults. What token, vault, or criteria (e.g., 'current APY for yvUSDS', 'highest APY for USDC on Ethereum') are you looking for? Please be as specific as possible for the best results."
+        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "data_vault_search")
+
+    @button(label="🔍 My Deposits/Where are my funds?", style=discord.ButtonStyle.secondary, custom_id="initial_check_deposits", row=0)
+    async def check_deposits_button(self, interaction: discord.Interaction, button: Button):
+        prompt = "Understood. To check your deposits, please provide your wallet address (it starts with 0x)."
+        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "data_deposit_check")
+
+    @button(label="💸 Withdrawal Help/Issues", style=discord.ButtonStyle.secondary, custom_id="initial_withdrawal_help", row=1)
+    async def withdrawal_help_button(self, interaction: discord.Interaction, button: Button):
+        prompt = "Okay, I can help with withdrawal instructions. Please provide your wallet addres (0x...). I can then check your deposits and you can tell me which one you want to withdraw from."
+        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "data_withdrawal_flow_start")
+
+    @button(label="📖 General Info/How-To", style=discord.ButtonStyle.secondary, custom_id="initial_general_info", row=1)
+    async def general_info_button(self, interaction: discord.Interaction, button: Button):
+        project_ctx_name = "Yearn"
+        if interaction.channel.category and interaction.channel.category.id in CATEGORY_CONTEXT_MAP:
+            project_ctx_name = CATEGORY_CONTEXT_MAP[interaction.channel.category.id].capitalize()
+        prompt = f"Great! What specific information or product are you looking for, or what how-to question do you have about {project_ctx_name}?"
+        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "docs_qa")
+
+    @button(label="🐞 Bug Report/UI Issue", style=discord.ButtonStyle.secondary, custom_id="initial_bug_report", row=2)
+    async def bug_report_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_button_click(interaction, button.custom_id)
+        actual_mention = f"<@{HUMAN_HANDOFF_TARGET_USER_ID}>"
+        response_message = (
+            "Thank you for reporting this. To help us investigate, please describe the bug or UI problem in detail. "
+            "Include steps to reproduce it if possible, and mention which device/browser you are using. "
+            f"{actual_mention} will review your report."
+        )
+        if interaction.channel: await interaction.channel.send(response_message)
+        else: await interaction.followup.send(response_message, ephemeral=False)
+        stopped_channels.add(interaction.channel.id)
+        logging.info(f"Bug report initiated in {interaction.channel.id}. Bot stopped.")
+
+    @button(label="🤝 Business/Partnerships/Marketing", style=discord.ButtonStyle.secondary, custom_id="initial_bd_partner", row=2)
+    async def bd_partner_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_button_click(interaction, button.custom_id)
+        if interaction.channel: await interaction.channel.send(STANDARD_REDIRECT_MESSAGE)
+        else: await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False)
+        stopped_channels.add(interaction.channel.id)
+        logging.info(f"BD/Partner inquiry redirected in {interaction.channel.id}. Bot stopped.")
+
+    @button(label="🛠️ Contribute/Work/Grants", style=discord.ButtonStyle.secondary, custom_id="initial_contribute_work", row=3)
+    async def contribute_work_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_button_click(interaction, button.custom_id)
+        if interaction.channel: await interaction.channel.send(JOB_INQUIRY_REDIRECT_MESSAGE)
+        else: await interaction.followup.send(JOB_INQUIRY_REDIRECT_MESSAGE, ephemeral=False)
+        stopped_channels.add(interaction.channel.id)
+        logging.info(f"Contribute/Work inquiry redirected in {interaction.channel.id}. Bot stopped.")
+
+    @button(label="❓ Other/My Issue Isn't Listed", style=discord.ButtonStyle.secondary, custom_id="initial_other_issue", row=3)
+    async def other_issue_button(self, interaction: discord.Interaction, button: Button):
+        await self.handle_button_click(interaction, button.custom_id)
+        prompt = "Okay, please describe your issue or question in detail below. I'll do my best to assist or find the right help for you."
+        if interaction.channel: await interaction.channel.send(prompt)
+        else: await interaction.followup.send(prompt, ephemeral=False)
+        channel_intent_after_button[interaction.channel.id] = "other_free_form"
+        logging.info(f"User selected 'Other' in {interaction.channel.id}. Awaiting free-form input.")
+
+    async def handle_button_click(self, interaction: discord.Interaction, button_custom_id: str):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        try:
+            view_to_disable = View.from_message(interaction.message)
+            if view_to_disable:
+                for child_button in view_to_disable.children:
+                    if isinstance(child_button, Button):
+                        child_button.disabled = True
+                await interaction.edit_original_response(view=view_to_disable)
+        except Exception as e:
+            logging.warning(f"Could not disable initial inquiry buttons in {interaction.channel_id} on message {interaction.message.id if interaction.message else 'Unknown'}: {e}")
+        channels_awaiting_initial_button_press.discard(interaction.channel.id)
+        logging.info(f"Button '{button_custom_id}' clicked in {interaction.channel.id}. Channel removed from awaiting_initial_button_press.")
+
 
 class BDPriorityCheckOutput(BaseModel):
     request_type: Literal["listing", "partnership", "marketing", "other_bd", "job_inquiry", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'other_bd' (other business development), 'job_inquiry' (asking to work for/contribute to Yearn, grant requests), or 'not_bd_pr' (standard support request or unrelated).")
@@ -88,10 +205,10 @@ class GuardrailResponseMessageException(AgentsException):
     def __init__(self, message: str, guardrail_output: Optional[BDPriorityCheckOutput] = None):
         super().__init__(message)
         self.message = message
-        self.guardrail_output = guardrail_output 
+        self.guardrail_output = guardrail_output
 
 class StopBotView(View):
-    def __init__(self, *, timeout=None): 
+    def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
 
     @button(label="Stop Bot", style=discord.ButtonStyle.secondary, custom_id="stop_bot_button")
@@ -104,11 +221,11 @@ class StopBotView(View):
         await interaction.response.defer()
 
         stopped_channels.add(channel_id)
-        conversation_threads.pop(channel_id, None) 
-        pending_messages.pop(channel_id, None)     
+        conversation_threads.pop(channel_id, None)
+        pending_messages.pop(channel_id, None)
         if channel_id in pending_tasks:
             try:
-                pending_tasks.pop(channel_id).cancel() 
+                pending_tasks.pop(channel_id).cancel()
                 logging.info(f"Cancelled pending task for channel {channel_id} due to Stop Bot button.")
             except KeyError:
                 pass
@@ -116,36 +233,38 @@ class StopBotView(View):
                  logging.error(f"Error cancelling pending task for {channel_id} during Stop Bot button: {e}")
 
         try:
-
             disabled_view = StopBotView()
-
             for item in disabled_view.children:
                 if isinstance(item, Button) and item.custom_id == "stop_bot_button":
                     item.disabled = True
                     break
-            await interaction.edit_original_response(view=disabled_view) 
+            await interaction.edit_original_response(view=disabled_view)
             logging.info(f"Disabled Stop Bot button on message {interaction.message.id}")
         except discord.HTTPException as e:
             logging.warning(f"Could not disable Stop Bot button on message {interaction.message.id}: {e.status} {e.text}")
         except Exception as e:
             logging.error(f"Unexpected error disabling Stop Bot button on message {interaction.message.id}: {e}", exc_info=True)
 
+
         confirmation_message = f"Support bot stopped for this channel. ySupport contributors are available for further inquiries."
         try:
-            await interaction.followup.send(confirmation_message, ephemeral=False) 
+            await interaction.followup.send(confirmation_message, ephemeral=False)
             logging.info(f"Sent stop confirmation to channel {channel_id}")
         except discord.HTTPException as e:
             logging.error(f"Failed to send stop confirmation followup in {channel_id}: {e.status} {e.text}")
         except Exception as e:
             logging.error(f"Unexpected error sending stop confirmation followup in {channel_id}: {e}", exc_info=True)
 
+
+#  Clients
 set_default_openai_key(OPENAI_API_KEY)
+
 openai_async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 openai_sync_client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index_list_response = pc.list_indexes()
-
 index_names = [index_info['name'] for index_info in index_list_response.get('indexes', [])]
 
 if PINECONE_INDEX_NAME not in index_names:
@@ -155,12 +274,13 @@ if PINECONE_INDEX_NAME not in index_names:
 
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 print(f"Successfully connected to Pinecone index '{PINECONE_INDEX_NAME}'.")
-
 try:
     print(f"Index stats: {pinecone_index.describe_index_stats()}")
 except Exception as e:
     print(f"Warning: Could not fetch index stats for '{PINECONE_INDEX_NAME}': {e}")
 
+
+# Web3
 WEB3_INSTANCES = {}
 RPC_URLS = {
     "ethereum": f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
@@ -169,7 +289,8 @@ RPC_URLS = {
     "arbitrum": f"https://arb-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
     "op": f"https://opt-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
     "fantom": f"https://fantom-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "berachain": f"https://berachain-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}" 
+    "fantom": f"https://fantom-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
+    "katana": f"https://rpc.katana.network",
 }
 for name, url in RPC_URLS.items():
     try:
@@ -179,14 +300,16 @@ for name, url in RPC_URLS.items():
     except Exception as e:
         print(f"Error initializing Web3 for {name}: {e}")
 
+# Logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-logging.getLogger("httpx").setLevel(logging.WARNING) 
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# Constants & Mappings
 CHAIN_NAME_TO_ID = {
     "ethereum": 1, "base": 8453, "polygon": 137,
     "arbitrum": 42161, "op": 10, "fantom": 250,
-    "berachain": 80094, 
+    "sonic": 146, "katana": 747474
 }
 ID_TO_CHAIN_NAME = {v: k.capitalize() for k, v in CHAIN_NAME_TO_ID.items()}
 
@@ -197,25 +320,19 @@ BLOCK_EXPLORER_URLS = {
     "base": "https://basescan.org",
     "arbitrum": "https://arbiscan.io",
     "fantom": "https://ftmscan.com",
-    "berachain": "https://berascan.com" 
+    "sonic": "https://sonicscan.org",
+    "katana": "https://explorer.katanarpc.com",
 }
-
-BEARN_FACTORY_ABI = [{"inputs":[{"internalType":"address","name":"_authorizer","type":"address"},{"internalType":"address","name":"_beraVaultFactory","type":"address"},{"internalType":"address","name":"_yBGT","type":"address"},{"internalType":"address","name":"_keeper","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"AlreadyExists","type":"error"},{"inputs":[],"name":"NoBeraVault","type":"error"},{"inputs":[],"name":"NotInitialized","type":"error"},{"anonymous":False,"inputs":[{"indexed":False,"internalType":"address","name":"newAuctionFactory","type":"address"}],"name":"NewAuctionFactory","type":"event"},{"anonymous":False,"inputs":[{"indexed":False,"internalType":"address","name":"newVaultManager","type":"address"}],"name":"NewVaultManager","type":"event"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"stakingToken","type":"address"},{"indexed":False,"internalType":"address","name":"compoundingVault","type":"address"},{"indexed":False,"internalType":"address","name":"yBGTVault","type":"address"}],"name":"NewVaults","type":"event"},{"inputs":[],"name":"AUTHORIZER","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bearnAuctionFactory","outputs":[{"internalType":"contract IBearnAuctionFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bearnVaultManager","outputs":[{"internalType":"contract IBearnVaultManager","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"beraVaultFactory","outputs":[{"internalType":"contract IRewardVaultFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"}],"name":"createVaults","outputs":[{"internalType":"address","name":"compoundingVault","type":"address"},{"internalType":"address","name":"yBGTVault","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"getAllBgtEarnerVaults","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllBgtEarnerVaultsLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllCompoundingVaults","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllCompoundingVaultsLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getBgtEarnerVault","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getCompoundingVault","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"bearnVaults","type":"address"}],"name":"isBearnVault","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"keeper","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_newAuctionFactory","type":"address"}],"name":"setAuctionFactory","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_newBearnVaultManager","type":"address"}],"name":"setVaultManager","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"}],"name":"stakingToBGTEarnerVaults","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"}],"name":"stakingToCompoundingVaults","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"yBGT","outputs":[{"internalType":"contract ERC20","name":"","type":"address"}],"stateMutability":"view","type":"function"}]
-
-BEARN_UI_CONTROL_ABI = [{"inputs":[{"internalType":"address","name":"_authorizer","type":"address"},{"internalType":"address","name":"_styBGT","type":"address"},{"internalType":"address","name":"_bearnVaultFactory","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"UnequalLengths","type":"error"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"stakingToken","type":"address"},{"indexed":False,"internalType":"bool","name":"state","type":"bool"}],"name":"WhitelistChanged","type":"event"},{"inputs":[],"name":"AUTHORIZER","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"},{"internalType":"bool","name":"state","type":"bool"}],"name":"adjustWhitelist","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address[]","name":"stakingTokens","type":"address[]"},{"internalType":"bool[]","name":"states","type":"bool[]"}],"name":"adjustWhitelists","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"bearnAuctionFactory","outputs":[{"internalType":"contract IBearnAuctionFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bearnVaultFactory","outputs":[{"internalType":"contract IBearnVaultFactory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"bexVault","outputs":[{"internalType":"contract IBexVault","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"burrVault","outputs":[{"internalType":"contract IBexVault","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllWhitelistedStakes","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAllWhitelistedStakesLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"bearnVault","type":"address"}],"name":"getApr","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"bexPool","type":"address"}],"name":"getBexLpPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"burrPool","type":"address"}],"name":"getBurrBearLpPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"hypervisor","type":"address"}],"name":"getHypervisorPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"kodiakIsland","type":"address"}],"name":"getKodiakIslandPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"kodiakV2Pair","type":"address"}],"name":"getKodiakV2Price","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"getPythPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakeToken","type":"address"}],"name":"getStakePrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"address[]","name":"vaults","type":"address[]"}],"name":"getUserScaledAssets","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"address","name":"vault","type":"address"}],"name":"getUserScaledAssets","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"address[]","name":"vaults","type":"address[]"}],"name":"getUserUpdatedEarneds","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getWhitelistedStake","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getYBGTPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"honey","outputs":[{"internalType":"contract ERC20","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"kodiakFactory","outputs":[{"internalType":"contract IUniswapV3Factory","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stake","type":"address"}],"name":"nameOverrides","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"pythOracle","outputs":[{"internalType":"contract IPythOracle","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"pythOracleIds","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"},{"internalType":"string","name":"name","type":"string"}],"name":"setNameOverride","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address[]","name":"stakingTokens","type":"address[]"},{"internalType":"string[]","name":"names","type":"string[]"}],"name":"setNameOverrides","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"},{"internalType":"bytes32","name":"oracleId","type":"bytes32"}],"name":"setPythOracleId","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"stakingToken","type":"address"},{"internalType":"address","name":"destinationAddress","type":"address"}],"name":"setTokenAddressOverride","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"styBGT","outputs":[{"internalType":"contract IStakedBearnBGT","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"styBGTApr","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"tokenAddressOverrides","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"wbera","outputs":[{"internalType":"contract ERC20","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"yBGT","outputs":[{"internalType":"contract IBearnBGT","name":"","type":"address"}],"stateMutability":"view","type":"function"}]
-
-BEARN_VAULT_ABI = [
-    {"inputs":[],"name":"symbol","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},
-    {"inputs":[],"name":"stakingAsset","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
-    {"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"}, 
-
-    {"inputs":[],"name":"exit","outputs":[],"stateMutability":"nonpayable","type":"function"} 
-]
 
 ERC20_ABI = [
     {"constant": True, "inputs": [{"name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
     {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"},
-    {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"}
+    {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"} # Added symbol
+]
+
+GAUGE_ABI = [
+    {"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+    {"inputs":[{"internalType":"uint256","name":"_shares","type":"uint256"}],"name":"convertToAssets","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}
 ]
 
 
@@ -226,16 +343,18 @@ except Exception as e:
     logging.warning(f"Could not load v1_vaults.json: {e}. V1 deposit checks will fail.")
     V1_VAULTS = []
 
+
+# Helpers
 async def send_long_message(
     target: Union[discord.TextChannel, discord.Message],
     text: str,
-
     view: Optional[View] = None
 ):
     """Sends a potentially long message, splitting it into chunks if necessary."""
     if not text:
         return
 
+    # --- Splitting ---
     chunks = []
     if len(text) <= MAX_DISCORD_MESSAGE_LENGTH:
         chunks.append(text)
@@ -266,11 +385,12 @@ async def send_long_message(
              chunks.append(text[:MAX_DISCORD_MESSAGE_LENGTH - 3] + "...")
 
     first_message = True
-    sent_view = False 
+    sent_view = False
     try:
         for i, chunk in enumerate(chunks):
             if not chunk.strip(): continue
 
+            # --- Attach view ONLY to the LAST chunk ---
             current_view = view if (i == len(chunks) - 1 and view and not sent_view) else None
 
             if first_message:
@@ -284,7 +404,7 @@ async def send_long_message(
                 await channel.send(chunk, suppress_embeds=True, view=current_view)
 
             if current_view:
-                sent_view = True 
+                sent_view = True
 
             await asyncio.sleep(0.3)
     except discord.HTTPException as e:
@@ -297,778 +417,334 @@ async def send_long_message(
     except Exception as e:
          logging.error(f"Unexpected error in send_long_message: {e}", exc_info=True)
 
+
 def resolve_ens(name: str) -> Optional[str]:
-    """Resolves an ENS name using the Ethereum Web3 instance."""
-    name = name.strip()
+    """
+    Resolves an ENS name or a SAFE-style prefixed address (e.g., 'eth:0x...') to a standard checksummed address.
+    Returns the checksummed address if valid, otherwise None.
+    """
+    if not isinstance(name, str):
+        return None
+        
+    address_to_check = name.strip()
 
-    if Web3.is_address(name):
-        return Web3.to_checksum_address(name)
+    # --- Handle SAFE-style prefixes (e.g., 'eth:', 'base:') ---
+    if ':' in address_to_check:
+        parts = address_to_check.split(':', 1)
+        if len(parts) == 2:
+            prefix, potential_address = parts
+            logging.info(f"Detected prefixed address. Prefix: '{prefix}', Address part: '{potential_address}'")
+            address_to_check = potential_address.strip()
 
-    if name.endswith(".eth") and "ethereum" in WEB3_INSTANCES:
+    # Basic address check
+    if Web3.is_address(address_to_check):
         try:
-            resolved = WEB3_INSTANCES["ethereum"].ens.address(name)
+            return Web3.to_checksum_address(address_to_check)
+        except ValueError:
+            logging.warning(f"Address '{address_to_check}' has invalid checksum.")
+            return None
+
+    # ENS check
+    if address_to_check.endswith(".eth") and "ethereum" in WEB3_INSTANCES:
+        try:
+            logging.info(f"Attempting to resolve ENS name: '{address_to_check}'")
+            resolved = WEB3_INSTANCES["ethereum"].ens.address(address_to_check)
             if resolved and Web3.is_address(resolved):
+                logging.info(f"Successfully resolved ENS '{address_to_check}' to '{resolved}'")
                 return Web3.to_checksum_address(resolved)
             else:
-                 logging.warning(f"ENS name '{name}' did not resolve to a valid address.")
+                 logging.warning(f"ENS name '{address_to_check}' did not resolve to a valid address.")
                  return None
         except Exception as e:
-            logging.error(f"Error resolving ENS '{name}': {e}")
+            logging.error(f"Error resolving ENS '{address_to_check}': {e}")
             return None
-    return None 
+            
+    logging.warning(f"Input '{name}' could not be resolved to a valid address.")
+    return None
+
+
+def is_message_primarily_address(text: str) -> bool:
+    """
+    Checks if a message string consists mainly of one or more Ethereum-style addresses.
+    Handles optional prefixes like 'eth:'.
+    """
+    normalized_text = text.lower().strip()
+    for word in ['vault', 'wallet', 'address', 'is', 'my', 'for', 'check', 'the']:
+        normalized_text = normalized_text.replace(word, '')
+    
+    addresses_found = re.findall(r'(?:[a-z]+:)?(0x[a-f0-9]{40})', normalized_text)
+    
+    if not addresses_found:
+        return False
+        
+    total_address_length = sum(len(addr) for addr in addresses_found)
+    
+    if total_address_length / len(normalized_text.replace(" ", "").replace(":", "")) > 0.7:
+        return True
+        
+    return False
 
 def extract_address_or_ens(text: str) -> Optional[str]:
     """Extracts the first 0x address or .eth ENS name from text."""
-
     addr_match = re.search(r'(0x[a-fA-F0-9]{40})', text)
     if addr_match:
         return addr_match.group(1)
-
     ens_match = re.search(r'\b([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.eth)\b', text, re.IGNORECASE)
     if ens_match:
         return ens_match.group(1)
     return None
 
-async def _fetch_vault_details(
-    session: aiohttp.ClientSession,
-    chain_id: int,
-    vault_address: str,
-    semaphore: asyncio.Semaphore
-) -> Optional[Dict]:
-    """Fetches full details for a single vault address, including its strategies list."""
-    if not chain_id or not vault_address:
-        logging.error(f"_fetch_vault_details called with invalid chain_id ({chain_id}) or address ({vault_address})")
-        return None
-    url = f"https://ydaemon.yearn.fi/{chain_id}/vaults/{vault_address}?strategiesDetails=withDetails&strategiesCondition=inQueue"
-    async with semaphore:
-        try:
-            logging.info(f"Fetching details for vault {vault_address} on chain {chain_id}")
-            async with session.get(url, timeout=10) as response:
-                status = response.status
-                response.raise_for_status()
-                data = await response.json()
-                logging.info(f"Successfully fetched details for vault {vault_address} (Status: {status})")
-                return data
-        except aiohttp.ClientResponseError as e:
-            logging.warning(f"HTTP Error {e.status} fetching details for vault {vault_address} on chain {chain_id}: {e.message}")
-            return None
-        except aiohttp.ClientError as e:
-            logging.warning(f"Client Error fetching details for vault {vault_address} on chain {chain_id}: {e}")
-            return None
-        except asyncio.TimeoutError:
-             logging.warning(f"Timeout fetching details for vault {vault_address} on chain {chain_id}")
-             return None
-        except Exception as e:
-            logging.error(f"Unexpected error processing details for vault {vault_address} on chain {chain_id}: {e}", exc_info=True) 
-            return None
-
-async def _fetch_strategy_description(
-    session: aiohttp.ClientSession,
-    chain_id: int,
-    strategy_address: str,
-    semaphore: asyncio.Semaphore
-) -> Optional[str]:
-    """Fetches the description for a single strategy address."""
-    if not chain_id or not strategy_address or not isinstance(strategy_address, str) or not strategy_address.startswith('0x'):
-        logging.warning(f"Invalid input for fetching strategy description: chain={chain_id}, addr={strategy_address}")
-        return None
-
-    url = f"https://ydaemon.yearn.fi/{chain_id}/vaults/{strategy_address}?strategiesDetails=withDetails&strategiesCondition=inQueue"
-    async with semaphore:
-        try:
-            logging.info(f"Fetching description for strategy {strategy_address} on chain {chain_id}")
-            async with session.get(url, timeout=10) as response:
-                response.raise_for_status()
-                data = await response.json()
-                description = data.get("description")
-                logging.info(f"Fetched description for strategy {strategy_address}: {'Found' if description else 'Not Found'}")
-                return description if isinstance(description, str) and description.strip() else None
-        except aiohttp.ClientResponseError as e:
-            logging.warning(f"HTTP Error {e.status} fetching description for strategy {strategy_address} on chain {chain_id}: {e.message}")
-            return None
-        except aiohttp.ClientError as e:
-             logging.warning(f"Client Error fetching description for strategy {strategy_address} on chain {chain_id}: {e}")
-             return None
-        except asyncio.TimeoutError:
-             logging.warning(f"Timeout fetching description for strategy {strategy_address} on chain {chain_id}")
-             return None
-        except Exception as e:
-            logging.warning(f"Error processing description for strategy {strategy_address} on chain {chain_id}: {e}") 
-            return None
-
-async def _get_token_symbol(web3_instance: Web3, token_address: str) -> str:
-    """Safely fetches ERC20 symbol."""
-    if not web3_instance or not Web3.is_address(token_address):
+def format_timestamp_to_readable(timestamp: Optional[Union[int, float, str]]) -> str:
+    if timestamp is None:
         return "N/A"
     try:
-        checksum_addr = Web3.to_checksum_address(token_address)
-        contract = web3_instance.eth.contract(address=checksum_addr, abi=ERC20_ABI)
-        symbol = await asyncio.to_thread(contract.functions.symbol().call)
-        return symbol
-    except Exception as e:
-        logging.warning(f"Could not fetch symbol for token {token_address}: {e}")
-        return "N/A"
+        dt_object = datetime.fromtimestamp(int(timestamp), timezone.utc)
+        return dt_object.strftime('%Y-%m-%d %H:%M:%S UTC')
+    except (ValueError, TypeError):
+        return str(timestamp)
 
-async def _get_token_decimals(web3_instance: Web3, token_address: str) -> int:
-    """Safely fetches ERC20 decimals, defaulting to 18."""
-    if not web3_instance or not Web3.is_address(token_address):
-        return 18
+
+# -------------
+# Tool Function
+# -------------
+def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
+    output_lines = []
+    name = data.get('name', 'N/A')
+    symbol = data.get('symbol', 'N/A')
+    address = data.get('address', 'N/A')
+    api_version_str = data.get('version', 'Unknown')
+    simplified_version = "Unknown"
+    yearn_ui_link = "N/A"
+
+    if api_version_str.startswith("3."):
+        simplified_version = f"V3 (API: {api_version_str})"
+        yearn_ui_link = f"https://yearn.fi/v3/{chain_id_for_url}/{address}"
+    elif api_version_str.startswith("0."):
+        simplified_version = f"V2 (API: {api_version_str})"
+        yearn_ui_link = f"https://yearn.fi/vaults/{chain_id_for_url}/{address}"
+
+    output_lines.append(f"Vault: {name} ({symbol})")
+    output_lines.append(f"Address: `{address}`")
+    if yearn_ui_link != "N/A":
+        output_lines.append(f"Yearn UI Link: {yearn_ui_link}")
+    output_lines.append(f"Version: {simplified_version}")
+    output_lines.append(f"Kind: {data.get('kind', 'N/A')}")
+    description = data.get('description', 'No description available.')
+    if description and len(description) > 250: description = description[:247] + "..."
+    output_lines.append(f"Description: {description}")
+
+    token_info = data.get('token', {})
+    underlying_name = token_info.get('name', 'N/A')
+    underlying_symbol = token_info.get('symbol', 'N/A')
+    underlying_address = token_info.get('address', 'N/A')
+    tvl_data = data.get('tvl', {})
+    underlying_price = tvl_data.get('price', 0.0)
+    output_lines.append(f"Underlying Token: {underlying_name} ({underlying_symbol}) - `{underlying_address}` - Price: ${underlying_price:,.4f}")
+    output_lines.append("")
+
+    output_lines.append("TVL & Share Price:")
+    output_lines.append(f"  TVL (USD): ${tvl_data.get('tvl', 0.0):,.2f}")
+    raw_pps = data.get('pricePerShare', '0')
     try:
-        checksum_addr = Web3.to_checksum_address(token_address)
-        contract = web3_instance.eth.contract(address=checksum_addr, abi=ERC20_ABI)
-        decimals = await asyncio.to_thread(contract.functions.decimals().call)
-        return int(decimals)
-    except Exception as e:
-        logging.warning(f"Could not fetch decimals for token {token_address}: {e}. Defaulting to 18.")
-        return 18
+        vault_decimals = int(data.get('decimals', 18))
+        scaled_pps = float(raw_pps) / (10**vault_decimals)
+        output_lines.append(f"  Vault Token Price Per Share (in underlying): {scaled_pps:.6f} (Raw: {raw_pps})")
+    except (ValueError, TypeError):
+        output_lines.append(f"  Vault Token Price Per Share (Raw): {raw_pps}")
+    output_lines.append("")
 
-async def _fetch_bearn_vault_details(
-    web3_bera: Web3,
-    ui_contract, 
-    vault_address: str,
-    vault_type: Literal["Compounding", "BGT Earner"]
-) -> Optional[Dict]:
-    """Fetches details for a single Bearn vault."""
-    if not web3_bera or not ui_contract or not Web3.is_address(vault_address):
-        return None
+    apr_data = data.get('apr', {})
+    output_lines.append("APY Information:")
+    net_apy = apr_data.get('netAPR', 0.0) * 100
+    output_lines.append(f"  Current Net APY (compounded): {net_apy:.2f}% (Type: {apr_data.get('type', 'N/A')})")
+    forward_apr_data = apr_data.get('forwardAPR', {})
+    if forward_apr_data and forward_apr_data.get('netAPR') is not None:
+        forward_net_apy = forward_apr_data.get('netAPR', 0.0) * 100
+        output_lines.append(f"  Estimated Forward APY (projection): {forward_net_apy:.2f}% (Type: {forward_apr_data.get('type', 'N/A')})")
+    fees = apr_data.get('fees', {})
+    perf_fee = fees.get('performance', 0.0) * 100
+    mgmt_fee = fees.get('management', 0.0) * 100
+    output_lines.append(f"  Vault Fees: Performance={perf_fee:.2f}%, Management={mgmt_fee:.2f}%")
+    points = apr_data.get('points', {})
+    week_ago_apy = points.get('weekAgo', 0.0) * 100
+    month_ago_apy = points.get('monthAgo', 0.0) * 100
+    inception_apy = points.get('inception', 0.0) * 100
+    output_lines.append(f"  Historical Net APY: Week Ago={week_ago_apy:.2f}%, Month Ago={month_ago_apy:.2f}%, Inception={inception_apy:.2f}%")
+    output_lines.append("")
 
-    try:
-        vault_checksum = Web3.to_checksum_address(vault_address)
-        vault_contract = web3_bera.eth.contract(address=vault_checksum, abi=BEARN_VAULT_ABI)
+    output_lines.append("Other Info:")
+    output_lines.append(f"  Featuring Score: {data.get('featuringScore', 'N/A')}")
+    info_obj = data.get('info', {})
+    output_lines.append(f"  Risk Level: {info_obj.get('riskLevel', 'N/A')}")
+    output_lines.append(f"  Status Flags: Retired={info_obj.get('isRetired', False)}, Boosted={info_obj.get('isBoosted', False)}, Highlighted={info_obj.get('isHighlighted', False)}")
+    migration_data = data.get('migration', {})
+    output_lines.append(f"  Migration Available: {migration_data.get('available', False)}")
+    if migration_data.get('available', False):
+        output_lines.append(f"    Migration Target Address: `{migration_data.get('address', 'N/A')}`")
+    output_lines.append("")
 
-        symbol_task = asyncio.create_task(asyncio.to_thread(vault_contract.functions.symbol().call))
-        asset_addr_task = asyncio.create_task(asyncio.to_thread(vault_contract.functions.stakingAsset().call))
-        apr_task = asyncio.create_task(asyncio.to_thread(ui_contract.functions.getApr(vault_checksum).call))
-
-        vault_symbol, underlying_asset_addr, apr_raw = await asyncio.gather(
-            symbol_task, asset_addr_task, apr_task, return_exceptions=True
-        )
-
-        if isinstance(vault_symbol, Exception):
-            logging.warning(f"Error fetching symbol for Bearn vault {vault_address}: {vault_symbol}")
-            vault_symbol = "Error"
-        if isinstance(underlying_asset_addr, Exception):
-            logging.warning(f"Error fetching stakingAsset for Bearn vault {vault_address}: {underlying_asset_addr}")
-            underlying_asset_addr = None
-        if isinstance(apr_raw, Exception):
-            logging.warning(f"Error fetching APR for Bearn vault {vault_address}: {apr_raw}")
-            apr_raw = 0
-
-        underlying_symbol = "N/A"
-        underlying_price_usd = 0.0
-        if underlying_asset_addr and Web3.is_address(underlying_asset_addr):
-            underlying_symbol = await _get_token_symbol(web3_bera, underlying_asset_addr)
-            try:
-                price_raw = await asyncio.to_thread(ui_contract.functions.getStakePrice(underlying_asset_addr).call)
-
-                underlying_price_usd = float(price_raw) / 1e18
-            except Exception as e:
-                logging.warning(f"Error fetching stake price for {underlying_asset_addr}: {e}")
-                underlying_price_usd = 0.0
-        else:
-             underlying_asset_addr = "N/A" 
-
-        apr_percent = (float(apr_raw) / 1e18) * 100 if apr_raw else 0.0
-
-        return {
-            "address": vault_checksum,
-            "symbol": vault_symbol,
-            "type": vault_type,
-            "apr_percent": apr_percent,
-            "underlying_address": underlying_asset_addr,
-            "underlying_symbol": underlying_symbol,
-            "underlying_price_usd": underlying_price_usd,
-            "chain_id": BERACHAIN_CHAIN_ID,
-        }
-
-    except Exception as e:
-        logging.error(f"Unexpected error fetching details for Bearn vault {vault_address}: {e}", exc_info=True)
-        return None
-
-@function_tool
-async def search_bearn_tool(
-    query: str,
-
-    vault_type: Optional[Literal["compounding", "bgt_earner", "both"]] 
-) -> str:
-    """
-    Search for active Bearn vaults on Berachain.
-    Provide a search query:
-    - 'all': Lists all vaults.
-    - Underlying Token Address (0x...): Finds the Compounding and BGT Earner vaults for that specific token.
-    - Token Pair (e.g., 'OOGA/WBERA', 'HONEY-USDC'): Attempts to find vaults by matching token symbols within the vault's symbol (best-effort).
-    Optionally filter by 'vault_type' ('compounding', 'bgt_earner', or 'both'). If omitted, defaults to 'both'.
-    Returns details for matching vaults: Address, Symbol, Type, Underlying Asset, Underlying Price (USD), APR (%), and Berascan link.
-    """
-
-    effective_vault_type = vault_type if vault_type is not None else "both"
-
-    logging.info(f"[Tool:search_bearn] Query: '{query}', Type requested: '{vault_type}', Effective type: '{effective_vault_type}'")
-
-    web3_bera = WEB3_INSTANCES.get("berachain")
-    if not web3_bera or not web3_bera.is_connected():
-        return "Error: Berachain connection is not available."
-
-    try:
-        factory_contract = web3_bera.eth.contract(address=BEARN_FACTORY_ADDRESS, abi=BEARN_FACTORY_ABI)
-        ui_contract = web3_bera.eth.contract(address=BEARN_UI_CONTROL_ADDRESS, abi=BEARN_UI_CONTROL_ABI)
-    except Exception as e:
-        logging.error(f"Error instantiating Bearn contracts: {e}")
-        return "Error: Could not set up Bearn contracts."
-
-    vaults_to_check: Dict[str, Literal["Compounding", "BGT Earner"]] = {} 
-
-    query_lower = query.lower().strip()
-    search_mode = "all" 
-
-    if Web3.is_address(query):
-        search_mode = "address"
-        logging.info(f"[Tool:search_bearn] Search mode: address ({query})")
-    elif query_lower == "all":
-        search_mode = "all"
-        logging.info("[Tool:search_bearn] Search mode: all")
-    elif "/" in query or "-" in query or " " in query: 
-        search_mode = "pair_symbol"
-        logging.info(f"[Tool:search_bearn] Search mode: pair_symbol ({query})")
-        pair_symbols = [s.strip().lower() for s in re.split(r'[/ -]', query) if s.strip()]
-        if len(pair_symbols) < 2:
-            return f"Error: Could not reliably extract two token symbols from pair query '{query}'. Please use format like 'TOKEN1/TOKEN2' or 'TOKEN1-TOKEN2'."
-        logging.info(f"[Tool:search_bearn] Extracted pair symbols: {pair_symbols}")
+    strategies = data.get('strategies', [])
+    if strategies:
+        output_lines.append(f"Strategies ({len(strategies)}):")
+        for i, strat in enumerate(strategies):
+            strat_name = strat.get('name', 'Unnamed Strategy')
+            strat_addr = strat.get('address', 'N/A')
+            strat_status = strat.get('status', 'N/A')
+            strat_apy = strat.get('netAPR', 0.0) * 100
+            strat_details = strat.get('details', {})
+            debt_ratio_raw = strat_details.get('debtRatio')
+            debt_ratio_percent = "N/A"
+            if debt_ratio_raw is not None:
+                try: debt_ratio_percent = f"{float(debt_ratio_raw) / 100:.2f}%" # Assuming 10000 = 100%
+                except (ValueError, TypeError): pass
+            last_report = format_timestamp_to_readable(strat_details.get('lastReport'))
+            output_lines.append(f"  {i+1}. Name: {strat_name} (`{strat_addr}`)")
+            output_lines.append(f"     Status: {strat_status}")
+            output_lines.append(f"     Individual APY: {strat_apy:.2f}%")
+            output_lines.append(f"     Allocation (Debt Ratio): {debt_ratio_percent}")
+            output_lines.append(f"     Last Report: {last_report}")
     else:
-        search_mode = "single_symbol"
-        logging.info(f"[Tool:search_bearn] Search mode: single_symbol ({query}) - will search all vault symbols.")
+        output_lines.append("Strategies: None listed.")
+    output_lines.append("")
 
-    try:
-        comp_vaults = []
-        bgt_vaults = []
-
-        if search_mode == "address":
-            underlying_addr = Web3.to_checksum_address(query)
-            comp_task = asyncio.create_task(asyncio.to_thread(factory_contract.functions.stakingToCompoundingVaults(underlying_addr).call))
-            bgt_task = asyncio.create_task(asyncio.to_thread(factory_contract.functions.stakingToBGTEarnerVaults(underlying_addr).call))
-            comp_addr, bgt_addr = await asyncio.gather(comp_task, bgt_task)
-
-            if comp_addr and not comp_addr.startswith("0x00"): comp_vaults.append(comp_addr)
-            if bgt_addr and not bgt_addr.startswith("0x00"): bgt_vaults.append(bgt_addr)
-
-        elif search_mode in ["all", "pair_symbol", "single_symbol"]:
-            comp_task = asyncio.create_task(asyncio.to_thread(factory_contract.functions.getAllCompoundingVaults().call))
-            bgt_task = asyncio.create_task(asyncio.to_thread(factory_contract.functions.getAllBgtEarnerVaults().call))
-            comp_vaults, bgt_vaults = await asyncio.gather(comp_task, bgt_task)
-
-        if effective_vault_type != "bgt_earner":
-            for addr in comp_vaults: vaults_to_check[addr] = "Compounding"
-        if effective_vault_type != "compounding":
-            for addr in bgt_vaults: vaults_to_check[addr] = "BGT Earner"
-
-        if not vaults_to_check:
-            if search_mode == "address":
-                 return f"No Bearn vaults found for underlying token address: {query}"
-            else:
-                 return "No Bearn vaults found matching the criteria."
-
-        logging.info(f"[Tool:search_bearn] Initial vault list size (after type filter): {len(vaults_to_check)}")
-
-    except Exception as e:
-        logging.error(f"Error fetching vault list from factory: {e}", exc_info=True)
-        return f"Error: Could not retrieve vault list from Bearn factory contract: {e}"
-
-    tasks = []
-    semaphore = asyncio.Semaphore(10)
-    detailed_results_list = []
-    vault_addresses_to_fetch = list(vaults_to_check.keys())
-
-    if search_mode in ["pair_symbol", "single_symbol"]:
-        logging.info(f"[Tool:search_bearn] Performing symbol filtering for mode '{search_mode}'...")
-        symbol_tasks = {}
-        for addr in vault_addresses_to_fetch:
-            try:
-                vault_contract = web3_bera.eth.contract(address=Web3.to_checksum_address(addr), abi=BEARN_VAULT_ABI)
-                symbol_tasks[addr] = asyncio.create_task(asyncio.to_thread(vault_contract.functions.symbol().call))
-            except Exception as e:
-                 logging.warning(f"Could not create symbol task for {addr}: {e}")
-                 symbol_tasks[addr] = None
-
-        await asyncio.gather(*[task for task in symbol_tasks.values() if task is not None], return_exceptions=True)
-
-        filtered_addresses = []
-        for addr, task in symbol_tasks.items():
-            if task and task.done() and not task.cancelled() and task.exception() is None:
-                vault_symbol = task.result().lower()
-                match = False
-                if search_mode == "pair_symbol":
-                    if all(p_sym in vault_symbol for p_sym in pair_symbols):
-                        match = True
-                elif search_mode == "single_symbol":
-                     if query_lower in vault_symbol:
-                         match = True
-                if match:
-                    filtered_addresses.append(addr)
-
-            elif task and task.exception():
-                 logging.warning(f"Error fetching symbol for filtering vault {addr}: {task.exception()}")
-
-        logging.info(f"[Tool:search_bearn] Symbol filtering reduced list from {len(vault_addresses_to_fetch)} to {len(filtered_addresses)}")
-        vault_addresses_to_fetch = filtered_addresses
-        if not vault_addresses_to_fetch:
-             return f"No Bearn vaults found whose symbols match '{query}'."
-
-    logging.info(f"[Tool:search_bearn] Fetching full details for {len(vault_addresses_to_fetch)} vaults.")
-    for address in vault_addresses_to_fetch:
-        vault_type_val = vaults_to_check.get(address)
-        if not vault_type_val: 
-            logging.warning(f"Could not determine vault type for address {address} during detail fetch.")
-            continue
-        async with semaphore:
-            task = asyncio.create_task(_fetch_bearn_vault_details(web3_bera, ui_contract, address, vault_type_val))
-            tasks.append(task)
-
-    results_raw = await asyncio.gather(*tasks)
-    detailed_results_list = [res for res in results_raw if res is not None]
-
-    if not detailed_results_list:
-        if search_mode in ["pair_symbol", "single_symbol"] and not vault_addresses_to_fetch:
-             return f"No Bearn vaults found whose symbols match '{query}'." 
-        else:
-             return "Found matching Bearn vault(s), but failed to retrieve their details."
-
-    summaries = []
-    num_shown = len(detailed_results_list)
-
-    header = f"Found {num_shown} Bearn vault(s) matching your query '{query}' (Type filter: {effective_vault_type}):"
-    summaries.append(header)
-    summaries.append("---")
-
-    detailed_results_list.sort(key=lambda x: x.get('apr_percent', 0.0), reverse=True)
-
-    for i, v_detail in enumerate(detailed_results_list):
-        vault_addr = v_detail.get("address", "N/A")
-        chain_name_display = ID_TO_CHAIN_NAME.get(v_detail.get("chain_id"), "Unknown")
-        explorer_link = f"{BLOCK_EXPLORER_URLS.get('berachain', '')}/address/{vault_addr}" if BLOCK_EXPLORER_URLS.get('berachain') else "N/A"
-        vault_symbol = v_detail.get("symbol", "N/A")
-        vault_type_display = v_detail.get("type", "N/A")
-        apr_display = v_detail.get("apr_percent", 0.0)
-        underlying_symbol = v_detail.get("underlying_symbol", "N/A")
-        underlying_price = v_detail.get("underlying_price_usd", 0.0)
-        underlying_addr = v_detail.get("underlying_address", "N/A")
-
-        summary_lines = [
-            f"**{i+1}. Vault Symbol:** {vault_symbol}",
-            f"   - Address: `{vault_addr}`",
-            f"   - Type: {vault_type_display}",
-            f"   - Chain: {chain_name_display}",
-            f"   - Underlying: {underlying_symbol} (`{underlying_addr}`)",
-            f"   - Underlying Price: ${underlying_price:,.4f}",
-            f"   - APR: {apr_display:.2f}%",
-            f"   - Explorer: {explorer_link if explorer_link != 'N/A' else 'Link unavailable'}"
-        ]
-        summaries.append("\n".join(summary_lines))
-
-    result_text = "\n\n".join(summaries)
-    logging.info(f"[Tool:search_bearn] Formatted Result:\n{result_text}")
-    return result_text
-
-@function_tool
-async def check_bearn_deposits_tool(user_address_or_ens: str) -> str:
-    """
-    Checks a user's deposits across ALL active Bearn vaults (Compounding and BGT Earner) on Berachain.
-    Provide the user's wallet address or ENS name.
-    Returns a summary of vaults where the user has a non-zero balance.
-    """
-    logging.info(f"[Tool:check_bearn_deposits] Checking for {user_address_or_ens}")
-    resolved_address = resolve_ens(user_address_or_ens)
-    if not resolved_address:
-        return f"Could not resolve '{user_address_or_ens}' to a valid Ethereum-style address."
-
-    web3_bera = WEB3_INSTANCES.get("berachain")
-    if not web3_bera or not web3_bera.is_connected():
-        return "Error: Berachain connection is not available."
-
-    try:
-        user_checksum_addr = Web3.to_checksum_address(resolved_address)
-        factory_contract = web3_bera.eth.contract(address=BEARN_FACTORY_ADDRESS, abi=BEARN_FACTORY_ABI)
-        ui_contract = web3_bera.eth.contract(address=BEARN_UI_CONTROL_ADDRESS, abi=BEARN_UI_CONTROL_ABI)
-    except ValueError:
-         return f"Invalid address format after resolving: {resolved_address}"
-    except Exception as e:
-        logging.error(f"Error instantiating Bearn contracts: {e}")
-        return "Error: Could not set up Bearn contracts."
-
-    all_vault_addresses = []
-    try:
-        comp_task = asyncio.create_task(asyncio.to_thread(factory_contract.functions.getAllCompoundingVaults().call))
-        bgt_task = asyncio.create_task(asyncio.to_thread(factory_contract.functions.getAllBgtEarnerVaults().call))
-        comp_vaults, bgt_vaults = await asyncio.gather(comp_task, bgt_task)
-        all_vault_addresses.extend(comp_vaults)
-        all_vault_addresses.extend(bgt_vaults)
-
-        all_vault_addresses = [addr for addr in all_vault_addresses if Web3.is_address(addr) and not addr.startswith("0x00")]
-        logging.info(f"[Tool:check_bearn_deposits] Found {len(all_vault_addresses)} total Bearn vaults.")
-        if not all_vault_addresses:
-            return "No active Bearn vaults found in the factory contract."
-    except Exception as e:
-        logging.error(f"Error fetching all vault lists from factory: {e}", exc_info=True)
-        return f"Error: Could not retrieve vault lists from Bearn factory contract: {e}"
-
-    balances_raw = []
-    try:
-        checksummed_vaults = [Web3.to_checksum_address(addr) for addr in all_vault_addresses]
-        logging.info(f"[Tool:check_bearn_deposits] Calling getUserScaledAssets for {len(checksummed_vaults)} vaults and user {user_checksum_addr}.")
-        balances_raw = await asyncio.to_thread(
-            ui_contract.functions.getUserScaledAssets(user_checksum_addr, checksummed_vaults).call
-        )
-        logging.info(f"[Tool:check_bearn_deposits] Received {len(balances_raw)} balances.")
-        if len(balances_raw) != len(all_vault_addresses):
-             logging.warning("Mismatch between number of vaults queried and balances received!")
-             return "Error: Received an inconsistent number of balances from the contract."
-
-    except Exception as e:
-        logging.error(f"Error calling getUserScaledAssets: {e}", exc_info=True)
-        return f"Error: Failed to fetch user balances from Bearn UI contract: {e}"
-
-    deposits_found = []
-    vaults_with_balance_addr = []
-    vault_balances_map = {} 
-    vault_decimals_map = {} 
-
-    for i, balance_int in enumerate(balances_raw):
-        if balance_int > 0:
-            vault_addr = all_vault_addresses[i]
-            vaults_with_balance_addr.append(vault_addr)
-            vault_balances_map[vault_addr] = balance_int
-
-    if not vaults_with_balance_addr:
-        return f"No deposits found in any active Bearn vaults for address {resolved_address}."
-
-    logging.info(f"[Tool:check_bearn_deposits] Found {len(vaults_with_balance_addr)} vaults with non-zero balance. Fetching symbols/decimals...")
-
-    symbol_tasks = {}
-    decimal_tasks = {}
-    for addr in vaults_with_balance_addr:
-        try:
-            vault_contract = web3_bera.eth.contract(address=Web3.to_checksum_address(addr), abi=BEARN_VAULT_ABI)
-            symbol_tasks[addr] = asyncio.create_task(asyncio.to_thread(vault_contract.functions.symbol().call))
-            decimal_tasks[addr] = asyncio.create_task(asyncio.to_thread(vault_contract.functions.decimals().call))
-        except Exception as e:
-            logging.warning(f"Could not create symbol/decimal task for {addr}: {e}")
-            symbol_tasks[addr] = None
-            decimal_tasks[addr] = None
-
-    await asyncio.gather(*[task for task in symbol_tasks.values() if task], return_exceptions=True)
-    await asyncio.gather(*[task for task in decimal_tasks.values() if task], return_exceptions=True)
-
-    for addr in vaults_with_balance_addr:
-        symbol = "N/A"
-        decimals = 18 
-        balance_int = vault_balances_map.get(addr, 0)
-
-        sym_task = symbol_tasks.get(addr)
-        if sym_task and sym_task.done() and not sym_task.cancelled() and sym_task.exception() is None:
-            symbol = sym_task.result()
-        elif sym_task and sym_task.exception():
-             logging.warning(f"Error fetching symbol for deposit vault {addr}: {sym_task.exception()}")
-
-        dec_task = decimal_tasks.get(addr)
-        if dec_task and dec_task.done() and not dec_task.cancelled() and dec_task.exception() is None:
-            try:
-                decimals = int(dec_task.result())
-            except ValueError:
-                 logging.warning(f"Invalid decimal value for deposit vault {addr}: {dec_task.result()}")
-        elif dec_task and dec_task.exception():
-             logging.warning(f"Error fetching decimals for deposit vault {addr}: {dec_task.exception()}")
-
-        try:
-            display_balance = float(balance_int) / (10 ** decimals)
-            explorer_link = f"{BLOCK_EXPLORER_URLS.get('berachain', '')}/address/{addr}" if BLOCK_EXPLORER_URLS.get('berachain') else "N/A"
-            deposit_info = (
-                f"**Vault:** {symbol} (`{addr}`)\n"
-                f"  Balance: {display_balance:.6f} shares\n" 
-                f"  Explorer: {explorer_link if explorer_link != 'N/A' else 'Link unavailable'}"
-            )
-            deposits_found.append(deposit_info)
-        except Exception as e:
-            logging.error(f"Error formatting deposit info for vault {addr}: {e}")
-
-    if deposits_found:
-        return f"**Active Bearn Deposits Found for {resolved_address}:**\n\n" + "\n\n".join(deposits_found)
-    else:
-        return f"Found vaults with balance for {resolved_address}, but encountered errors formatting the details."
+    staking_info = data.get('staking')
+    if staking_info and staking_info.get('available'):
+        output_lines.append("Staking Opportunity: Yes")
+        output_lines.append(f"  Source: {staking_info.get('source', 'N/A')}")
+        output_lines.append(f"  Staking Contract: `{staking_info.get('address', 'N/A')}`")
+        rewards_list = staking_info.get('rewards', [])
+        if rewards_list:
+            output_lines.append(f"  Rewards ({len(rewards_list)}):")
+            for rew_idx, reward in enumerate(rewards_list):
+                rew_name = reward.get('name', 'N/A'); rew_sym = reward.get('symbol', 'N/A'); rew_addr = reward.get('address', 'N/A')
+                rew_apy = reward.get('apr', 0.0) * 100; rew_finished = reward.get('isFinished', False)
+                rew_ends = format_timestamp_to_readable(reward.get('finishedAt'))
+                output_lines.append(f"    - Token: {rew_name} ({rew_sym}) `{rew_addr}`")
+                output_lines.append(f"      APY: {rew_apy:.2f}%")
+                output_lines.append(f"      Status: {'Finished' if rew_finished else 'Ongoing'} (Ends: {rew_ends})")
+        else: output_lines.append("  Rewards: None listed.")
+    else: output_lines.append("Staking Opportunity: No")
+    return "\n".join(output_lines)
 
 @function_tool
 async def search_vaults_tool(
     query: str,
     chain: Optional[str] = None,
-    sort_by: Optional[str] = None 
+    sort_by: Optional[str] = None
 ) -> str:
     """
     Search for active Yearn vaults (v2/v3) using yDaemon API.
     Provide a search query (like token symbol 'USDC', vault name fragment 'staked eth', or vault address).
     Optionally filter by 'chain' (e.g., 'ethereum', 'base').
-    Optionally sort by 'highest_apr' or 'lowest_apr' to get the top results based on net APR.
+    Optionally sort by 'highest_apr' or 'lowest_apr' to get the top results based on net APY.
     If no sort is specified, results are sorted by TVL (descending).
-    Returns detailed information for the top matching vaults, including strategy names and their descriptions.
+    Returns detailed information for the top matching vaults.
     """
     logging.info(f"[Tool:search_vaults] Query: '{query}', Chain: '{chain}', Sort By: '{sort_by}'")
-    initial_url = "https://ydaemon.yearn.fi/vaults/detected?limit=1000"
-    VAULT_DETAIL_CONCURRENCY = 5
-    STRATEGY_FETCH_CONCURRENCY = 10 
-    MAX_RESULTS_TO_SHOW = 5
+    api_url = "https://ydaemon.yearn.fi/vaults/detected?limit=2000"
+    MAX_RESULTS_TO_SHOW = 3
 
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(initial_url, timeout=15) as response:
+            logging.info(f"[Tool:search_vaults] Fetching data from {api_url}")
+            async with session.get(api_url, timeout=25) as response:
                 response.raise_for_status()
-                vaults_data = await response.json()
-                if not isinstance(vaults_data, list):
-                    logging.error(f"[Tool:search_vaults] Unexpected yDaemon response format: {type(vaults_data)}")
+                all_vaults_data_list = await response.json()
+                if not isinstance(all_vaults_data_list, list):
+                    logging.error(f"[Tool:search_vaults] Unexpected yDaemon response format: {type(all_vaults_data_list)}")
                     return "Error: Received unexpected data format from vault API."
-                logging.info(f"[Tool:search_vaults] Retrieved {len(vaults_data)} initial vaults from yDaemon.")
+                logging.info(f"[Tool:search_vaults] Retrieved {len(all_vaults_data_list)} full vault details from yDaemon.")
         except Exception as e:
-            logging.error(f"[Tool:search_vaults] Error during yDaemon initial fetch: {e}")
-            return f"Error: An unexpected error occurred while fetching initial vault data: {e}."
+            logging.error(f"[Tool:search_vaults] Error during yDaemon fetch: {e}", exc_info=True)
+            return f"Error: An unexpected error occurred while fetching vault data: {e}."
 
-        filtered_vaults = vaults_data
+        # --- Filtering ---
+        filtered_vaults_full_data = all_vaults_data_list
         query_chain_id = None
         if chain:
             chain_lower = chain.lower()
             query_chain_id = CHAIN_NAME_TO_ID.get(chain_lower)
             if query_chain_id:
-                filtered_vaults = [v for v in filtered_vaults if v.get("chainID") == query_chain_id]
-            else:
-                 logging.warning(f"[Tool:search_vaults] Chain '{chain}' not recognized. No chain filter applied.")
+                filtered_vaults_full_data = [v for v in filtered_vaults_full_data if v.get("chainID") == query_chain_id]
 
         query_lower = query.lower()
-        matched_vaults_basic_info = []
-        is_address_query = query_lower.startswith("0x") and len(query_lower) == 42
+        matched_vaults_full_data = []
+        is_address_query = Web3.is_address(query_lower)
 
-        for v in filtered_vaults:
-            vault_address = v.get("address", "").lower()
-            name = v.get("name", "").lower()
-            symbol = v.get("symbol", "").lower()
-            token_info = v.get("token", {})
+        for v_data in filtered_vaults_full_data:
+            vault_address = v_data.get("address", "").lower()
+            name = v_data.get("name", "").lower()
+            symbol = v_data.get("symbol", "").lower()
+            token_info = v_data.get("token", {})
             token_name = token_info.get("name", "").lower() if token_info else ""
             token_symbol = token_info.get("symbol", "").lower() if token_info else ""
+            underlying_address = token_info.get("address", "").lower() if token_info else ""
 
             match = False
             if is_address_query:
-                if query_lower == vault_address: match = True
+                if query_lower == vault_address or query_lower == underlying_address: match = True
             elif query_lower == symbol or query_lower == token_symbol: match = True
-            elif query_lower in name or query_lower in symbol or query_lower in token_name or query_lower in token_symbol: match = True
-
+            elif query_lower in name or query_lower in token_name: match = True
+            
             if match:
-                apr_data = v.get("apr", {})
+                apr_data = v_data.get("apr", {})
                 primary_apr = apr_data.get("netAPR")
-                fallback_apr = apr_data.get("forwardAPR", {}).get("netAPR")
+                forward_apr_data = apr_data.get("forwardAPR", {})
+                fallback_apr = forward_apr_data.get("netAPR") if forward_apr_data else None
                 apr_value = 0.0
-                if primary_apr is not None and isinstance(primary_apr, (int, float)): apr_value = float(primary_apr)
-                elif fallback_apr is not None and isinstance(fallback_apr, (int, float)): apr_value = float(fallback_apr)
-                v["_computedAPR"] = apr_value
+                if primary_apr is not None: apr_value = float(primary_apr)
+                elif fallback_apr is not None: apr_value = float(fallback_apr)
+                v_data["_computedAPY"] = apr_value * 100
+                try: v_data["_computedTVL_USD"] = float(v_data.get('tvl', {}).get('tvl', 0))
+                except: v_data["_computedTVL_USD"] = 0.0
+                matched_vaults_full_data.append(v_data)
 
-                try: v["_computedTVL"] = float(v.get('tvl', {}).get('tvl', 0))
-                except (ValueError, TypeError): v["_computedTVL"] = 0.0
 
-                matched_vaults_basic_info.append(v)
+        logging.info(f"[Tool:search_vaults] Found {len(matched_vaults_full_data)} vaults matching query '{query}' after filter.")
+        if not matched_vaults_full_data:
+            return "No active Yearn vaults found matching your criteria."
 
-        logging.info(f"[Tool:search_vaults] Found {len(matched_vaults_basic_info)} vaults matching query '{query}' after initial filter.")
-
-        if not matched_vaults_basic_info:
-            return "No active vaults found matching your criteria."
-
-        final_list_basic_info = []
-        sort_applied = "None"
-        if sort_by in ["highest_apr", "lowest_apr"]:
-            sort_applied = sort_by
-            vaults_with_apr = [v for v in matched_vaults_basic_info if v.get("_computedAPR", 0.0) != 0.0]
-            if not vaults_with_apr:
-                logging.warning(f"[Tool:search_vaults] No vaults with non-zero APR found for sorting by {sort_by}. Falling back to TVL sort.")
-                sort_by = None
-            else:
-                reverse_sort = (sort_by == "highest_apr")
-                sorted_vaults = sorted(vaults_with_apr, key=lambda v: v.get("_computedAPR", 0.0), reverse=reverse_sort)
-                final_list_basic_info = sorted_vaults[:MAX_RESULTS_TO_SHOW]
-
-        if sort_by not in ["highest_apr", "lowest_apr"]:
-            sort_applied = "TVL (Descending)"
-            logging.info("[Tool:search_vaults] Sorting by TVL (desc).")
-            sorted_by_tvl = sorted(matched_vaults_basic_info, key=lambda v: v.get("_computedTVL", 0.0), reverse=True)
-            final_list_basic_info = sorted_by_tvl[:MAX_RESULTS_TO_SHOW]
-
-        logging.info(f"[Tool:search_vaults] Selected top {len(final_list_basic_info)} vaults based on {sort_applied}.")
-
-        detail_fetch_tasks = []
-        detail_semaphore = asyncio.Semaphore(VAULT_DETAIL_CONCURRENCY)
-        vaults_to_fetch_details_input = []
-        logging.info("Starting preparation loop for detail fetching.")
-
-        try:
-            for idx, v_basic in enumerate(final_list_basic_info):
-                chain_id = v_basic.get("chainID")
-                vault_address = v_basic.get("address")
-                vault_name_debug = v_basic.get('name', 'N/A')
-                logging.info(f"Prep #{idx}: Processing vault '{vault_name_debug}'") 
-
-                is_valid_for_fetch = isinstance(chain_id, int) and isinstance(vault_address, str) and vault_address.startswith('0x') and len(vault_address) == 42
-                if is_valid_for_fetch:
-                    vaults_to_fetch_details_input.append((chain_id, vault_address))
-                    logging.info(f"Prep #{idx}: Added vault '{vault_name_debug}' ({vault_address}) to fetch list.") 
-                else:
-                    logging.warning(f"Prep #{idx}: Skipping detail fetch for vault '{vault_name_debug}' due to missing/invalid chainID or address format.")
-            logging.info(f"Finished preparation loop. Vaults prepared for fetch: {len(vaults_to_fetch_details_input)}")
-        except Exception as e_prep:
-            logging.error(f"Unexpected error during detail fetch preparation loop: {e_prep}", exc_info=True)
-            return f"An internal error occurred while preparing vault details: {e_prep}"
-
-        if not vaults_to_fetch_details_input:
-             logging.warning("Preparation resulted in no vaults to fetch details for.")
-             return "Found matching vault(s), but couldn't verify their details (missing/invalid ID or address in initial data)."
-
-        logging.info(f"Attempting to fetch full details for {len(vaults_to_fetch_details_input)} prepared vaults.")
-        for chain_id, vault_address in vaults_to_fetch_details_input:
-             task = asyncio.create_task(
-                 _fetch_vault_details(session, chain_id, vault_address, detail_semaphore)
-             )
-             detail_fetch_tasks.append(task)
-
-        detailed_vault_results_raw = await asyncio.gather(*detail_fetch_tasks, return_exceptions=True)
-        logging.info(f"Finished fetching full vault details. Received {len(detailed_vault_results_raw)} results/exceptions.")
-
-        final_vault_details = []
-        vault_detail_map = {} 
-        for i, result_or_exc in enumerate(detailed_vault_results_raw):
-            original_chain_id, original_address = vaults_to_fetch_details_input[i]
-            if isinstance(result_or_exc, dict):
-                final_vault_details.append(result_or_exc)
-                vault_detail_map[original_address.lower()] = result_or_exc 
-            elif isinstance(result_or_exc, Exception):
-                logging.error(f"Exception fetching details for vault {original_address} on chain {original_chain_id}: {result_or_exc}")
-            else:
-                 logging.warning(f"Detail fetch for vault {original_address} on chain {original_chain_id} returned None or unexpected type ({type(result_or_exc)}).")
-
-        if not final_vault_details:
-             logging.warning("Failed to fetch details successfully for any selected vaults.")
-             return "Found matching vault(s), but could not retrieve their full details due to errors during fetch."
-
-        strategy_fetch_tasks = []
-        strategy_results_map = {} 
-        strategy_semaphore = asyncio.Semaphore(STRATEGY_FETCH_CONCURRENCY)
-        strategies_to_fetch = [] 
-
-        logging.info("Preparing to fetch strategy descriptions.")
-        for vault_detail in final_vault_details:
-            vault_chain_id = vault_detail.get("chainID")
-            strategies = vault_detail.get("strategies", [])
-            if not vault_chain_id or not strategies:
-                continue
-            for strategy in strategies:
-                strat_addr = strategy.get("address")
-                if strat_addr and isinstance(strat_addr, str) and strat_addr.startswith('0x'):
-                    if strat_addr.lower() not in strategy_results_map:
-                         strategies_to_fetch.append((vault_chain_id, strat_addr))
-                         strategy_results_map[strat_addr.lower()] = None 
-                else:
-                     logging.warning(f"Invalid strategy address found in vault {vault_detail.get('address')}: {strat_addr}")
-
-        if strategies_to_fetch:
-            logging.info(f"Attempting to fetch descriptions for {len(strategies_to_fetch)} unique strategies.")
-            for chain_id, strat_addr in strategies_to_fetch:
-                task = asyncio.create_task(
-                    _fetch_strategy_description(session, chain_id, strat_addr, strategy_semaphore)
-                )
-
-                strategy_fetch_tasks.append({"address": strat_addr, "task": task})
-
-            await asyncio.gather(*[t["task"] for t in strategy_fetch_tasks], return_exceptions=True)
-            logging.info("Finished fetching strategy descriptions.")
-
-            for item in strategy_fetch_tasks:
-                task = item["task"]
-                strat_addr_lower = item["address"].lower()
-                if task.done() and not task.cancelled() and task.exception() is None:
-                    strategy_results_map[strat_addr_lower] = task.result() 
-                elif task.exception():
-                     logging.error(f"Exception fetching description for strategy {item['address']}: {task.exception()}")
-                     strategy_results_map[strat_addr_lower] = None 
-                else:
-                      strategy_results_map[strat_addr_lower] = None
-
-        summaries = []
-        num_total_matches = len(matched_vaults_basic_info)
-        num_shown = len(final_vault_details)
-
-        header = f"Found {num_total_matches} vault(s) matching '{query}'."
-        if num_total_matches > len(final_list_basic_info):
-             header += f" Showing top {num_shown} (of {len(final_list_basic_info)} selected by {sort_applied}) with details:"
-        elif num_shown > 0 :
-             header += f" Details for {num_shown} vault(s) (sorted by {sort_applied}):"
+        # --- Sorting ---
+        if sort_by == "highest_apr":
+            matched_vaults_full_data.sort(key=lambda v: v.get("_computedAPY", 0.0), reverse=True)
+        elif sort_by == "lowest_apr":
+            matched_vaults_full_data.sort(key=lambda v: v.get("_computedAPY", 0.0), reverse=False)
         else:
-             header += " Could not retrieve details."
-        summaries.append(header)
-        summaries.append("---")
+            matched_vaults_full_data.sort(key=lambda v: v.get("_computedTVL_USD", 0.0), reverse=True)
 
-        for i, v_detail in enumerate(final_vault_details):
-            vault_addr = v_detail.get("address", "N/A")
-            vault_chain_id = v_detail.get("chainID", "N/A")
-            vault_url = f"https://yearn.fi/v3/{vault_chain_id}/{vault_addr}" if vault_addr != "N/A" and vault_chain_id != "N/A" else "N/A"
-            vault_name = v_detail.get('name', 'Unknown Vault')
-            vault_name_link = f"[{vault_name}]({vault_url})" if vault_url != "N/A" else vault_name
-            apr_data = v_detail.get("apr", {})
-            primary_apr = apr_data.get("netAPR")
-            fallback_apr = apr_data.get("forwardAPR", {}).get("netAPR")
-            apr_value = 0.0
-            if primary_apr is not None and isinstance(primary_apr, (int, float)): apr_value = float(primary_apr)
-            elif fallback_apr is not None and isinstance(fallback_apr, (int, float)): apr_value = float(fallback_apr)
-            display_apr = apr_value * 100
-            tvl_usd = v_detail.get('tvl', {}).get('tvl', 0)
-            try: tvl_display = f"${float(tvl_usd):,.2f}"
-            except (ValueError, TypeError): tvl_display = "$N/A"
-            token_info = v_detail.get("token", {})
-            token_name = token_info.get("name", "N/A") if token_info else "N/A"
-            token_symbol = token_info.get("symbol", "N/A") if token_info else "N/A"
-            desc = v_detail.get("description", "No description available.")
-            if desc and len(desc) > 200: desc = desc[:197] + "..."
-            chain_name_display = ID_TO_CHAIN_NAME.get(vault_chain_id, f"Unknown Chain ({vault_chain_id})")
-            risk_level = v_detail.get('info', {}).get('riskLevel', 'N/A')
+        top_vaults_to_format = matched_vaults_full_data[:MAX_RESULTS_TO_SHOW]
+        logging.info(f"[Tool:search_vaults] Selected top {len(top_vaults_to_format)} vaults. Now formatting their details.")
 
-            summary_lines = [
-                f"**{i+1}. Vault:** {vault_name_link}",
-                f"   - Symbol: {v_detail.get('symbol', 'N/A')}",
-                f"   - Address: `{vault_addr}`",
-                f"   - Chain: {chain_name_display}",
-                f"   - Token: {token_name} ({token_symbol})",
-                f"   - Net APR: {display_apr:.2f}%",
-                f"   - TVL: {tvl_display}",
-                f"   - Risk Level: {risk_level}",
-                f"   - Description: {desc}"
-            ]
-
-            strategy_details_list = []
-            strategies = v_detail.get("strategies", [])
-            if strategies:
-                summary_lines.append(f"   - Strategies ({len(strategies)}):")
-                for strategy in strategies:
-                    strat_name = strategy.get("name", "Unnamed Strategy")
-                    strat_addr = strategy.get("address")
-                    description = None
-                    if strat_addr and isinstance(strat_addr, str):
-                         description = strategy_results_map.get(strat_addr.lower())
-                    if description:
-                        strategy_details_list.append(f"     - **{strat_name}:** {description}")
-                    else:
-                        strategy_details_list.append(f"     - **{strat_name}:** (Description unavailable)")
-                summary_lines.extend(strategy_details_list)
+        formatted_details_strings = []
+        for vault_data_item in top_vaults_to_format:
+            chain_id_for_url = vault_data_item.get("chainID")
+            if chain_id_for_url is not None:
+                formatted_text = format_single_vault_data_for_llm(vault_data_item, chain_id_for_url)
+                formatted_details_strings.append(formatted_text)
             else:
-                 summary_lines.append("   - Strategies: None listed in details.")
+                logging.warning(f"Vault {vault_data_item.get('address')} missing chainID, cannot format fully.")
+                formatted_details_strings.append(f"Partial info for Vault: {vault_data_item.get('name', 'N/A')} (`{vault_data_item.get('address', 'N/A')}`) - Full details unavailable due to missing chain ID.")
 
-            summaries.append("\n".join(summary_lines))
 
-        result_text = "\n\n".join(summaries)
-        logging.info(f"[Tool:search_vaults] Formatted Result:\n{result_text}")
-        return result_text
+        if not formatted_details_strings:
+             return "Found matching vault(s), but could not format their details."
+
+        # --- Assemble Final Output ---
+        num_total_matches = len(matched_vaults_full_data)
+        num_shown = len(formatted_details_strings)
+        sort_description = sort_by if sort_by else "TVL (Descending)"
+        header = f"Found {num_total_matches} Yearn vault(s) matching '{query}'."
+        if num_total_matches > num_shown:
+             header += f" Showing top {num_shown} (sorted by {sort_description}) with details:"
+        final_result_text = header + "\n\n---\n\n" + "\n\n---\n\n".join(formatted_details_strings)
+        logging.info(f"[Tool:search_vaults] Formatted Result (first 500 chars):\n{final_result_text[:500]}")
+        return final_result_text
 
 async def query_v1_deposits_logic(resolved_address: str, token_symbol: Optional[str] = None) -> str:
     logging.info(f"[Logic:query_v1_deposits] Checking V1 for {resolved_address}, Token: {token_symbol}")
     if not V1_VAULTS: return "V1 vault data is not loaded."
     if "ethereum" not in WEB3_INSTANCES: return "Ethereum connection unavailable."
+
     web3_eth = WEB3_INSTANCES["ethereum"]
     try:
         user_checksum_addr = Web3.to_checksum_address(resolved_address)
@@ -1105,89 +781,115 @@ async def query_v1_deposits_logic(resolved_address: str, token_symbol: Optional[
     else:
         return "No deposits found in deprecated V1 vaults for this address."
 
+
 async def query_active_deposits_logic(resolved_address: str, chain: Optional[str] = None, token_symbol: Optional[str] = None) -> str:
     logging.info(f"[Logic:query_active_deposits] Checking Active for {resolved_address}, Chain: {chain}, Token: {token_symbol}")
 
     chains_to_check = []
     if chain:
         chain_lower = chain.lower()
-        if chain_lower in WEB3_INSTANCES: chains_to_check.append(chain_lower)
-        else: return f"Unsupported chain: {chain}."
+        if chain_lower in WEB3_INSTANCES:
+            chains_to_check.append(chain_lower)
+        else:
+            return f"Unsupported chain: {chain}."
     else:
-        chains_to_check = list(WEB3_INSTANCES.keys())
+        chains_to_check = [c for c in WEB3_INSTANCES.keys() if c != 'berachain']
 
-    all_results = []
-    total_deposits_found = 0
-    all_vaults_data = [] 
+    all_vaults_data = []
 
-    url = "https://ydaemon.yearn.fi/vaults/detected?limit=1000"
+    url = "https://ydaemon.yearn.fi/vaults/detected?hideAlways=false&strategiesDetails=withDetails&strategiesCondition=all&limit=2000"
+
     try:
-        response = await asyncio.to_thread(requests.get, url, timeout=15)
+        response = await asyncio.to_thread(requests.get, url, timeout=30)
         response.raise_for_status()
         all_vaults_data = response.json()
         if not isinstance(all_vaults_data, list):
              logging.error("[Logic:query_active_deposits] Unexpected yDaemon response format.")
              return "Error: Received unexpected data format from vault API."
+        logging.info(f"[Logic:query_active_deposits] Successfully fetched {len(all_vaults_data)} vault definitions from yDaemon.")
     except Exception as e:
         logging.error(f"[Logic:query_active_deposits] Failed to fetch vault list from yDaemon: {e}")
         return f"Error: Could not fetch the list of active vaults: {e}"
 
+    user_checksum_addr = Web3.to_checksum_address(resolved_address)
+
+    all_results = []
+    total_deposits_found = 0
     for chain_name in chains_to_check:
         web3_instance = WEB3_INSTANCES.get(chain_name)
         if not web3_instance: continue
-        try:
-            user_checksum_addr = Web3.to_checksum_address(resolved_address)
-        except ValueError:
-             all_results.append(f"**{chain_name.capitalize()}**: Invalid address format {resolved_address}")
-             continue
 
         chain_id = CHAIN_NAME_TO_ID.get(chain_name)
-        
         if not chain_id: continue
+
         chain_vaults = [v for v in all_vaults_data if v.get("chainID") == chain_id]
-        
         if token_symbol:
             token_lower = token_symbol.lower()
             chain_vaults = [v for v in chain_vaults if token_lower in v.get("token", {}).get("symbol", "").lower()]
 
-        if not chain_vaults: continue
-        semaphore = asyncio.Semaphore(20)
-        tasks = [_fetch_active_balance(v, web3_instance, user_checksum_addr, semaphore) for v in chain_vaults]
-        balance_results = await asyncio.gather(*tasks)
+        if not chain_vaults:
+            logging.info(f"No vaults to check for chain '{chain_name}' after filtering.")
+            continue
+
+        logging.info(f"Creating {len(chain_vaults)} balance check tasks for chain '{chain_name}'.")
+        semaphore = asyncio.Semaphore(25)
+        tasks = [_fetch_vault_and_gauge_balances(v, web3_instance, user_checksum_addr, semaphore) for v in chain_vaults]
+        
+        balance_results = await asyncio.gather(*tasks, return_exceptions=True)
+        logging.info(f"Completed balance checks for chain '{chain_name}'.")
 
         chain_deposits = []
-        for vault_info, balance in balance_results:
-            if balance is not None and balance > 0:
+        for result in balance_results:
+            if isinstance(result, Exception) or result.get("error"):
+                continue
+
+            total_balance = result.get("wallet_balance", 0) + result.get("staked_balance", 0)
+
+            if total_balance > 0:
                 try:
+                    vault_info = result["vault_info"]
                     decimals = int(vault_info.get("decimals", 18))
-                    display_balance = balance / (10 ** decimals)
+                    total_display_balance = total_balance / (10 ** decimals)
                     vault_address = Web3.to_checksum_address(vault_info.get("address"))
-                    vault_url = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+                    api_version_str = vault_info.get('version', '')
+                    if api_version_str.startswith("3."):
+                        vault_url = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
+                    else:
+                        vault_url = f"https://yearn.fi/vaults/{chain_id}/{vault_address}"
                     vault_name = vault_info.get('name', 'Unknown Vault')
                     vault_symbol = vault_info.get('symbol', 'N/A')
-                    deposit_info = (
-                        f"**Vault:** [{vault_name}]({vault_url}) (Symbol: {vault_symbol})\n"
-                        f"  Address: `{vault_address}`\n"
-                        f"  Deposit: {display_balance:.6f} tokens"
-                    )
-                    chain_deposits.append(deposit_info)
+                    deposit_lines = [
+                        f"**Vault:** [{vault_name}]({vault_url}) (Symbol: {vault_symbol})",
+                        f"  Address: `{vault_address}`",
+                        f"  Total Position: **{total_display_balance:,.6f} {vault_symbol}**"
+                    ]
+                    staked_balance = result.get("staked_balance", 0)
+                    if staked_balance > 0:
+                        wallet_balance = result.get("wallet_balance", 0)
+                        wallet_display = wallet_balance / (10 ** decimals)
+                        staked_display = staked_balance / (10 ** decimals)
+                        if wallet_balance > 0:
+                            breakdown = f"(Breakdown: {wallet_display:,.6f} liquid + {staked_display:,.6f} staked)"
+                        else:
+                            breakdown = "(Staked in gauge)"
+                        deposit_lines.append(f"    {breakdown}")
+                    chain_deposits.append("\n".join(deposit_lines))
                     total_deposits_found += 1
                 except Exception as e:
                     logging.error(f"Error processing deposit for vault {vault_info.get('address')} on {chain_name}: {e}")
 
         if chain_deposits:
             all_results.append(f"**{chain_name.capitalize()} Active Deposits:**\n" + "\n\n".join(chain_deposits))
-        elif len(chains_to_check) == 1:
-             all_results.append(f"No active deposits found on {chain_name.capitalize()} for this address" + (f" matching token '{token_symbol}'." if token_symbol else "."))
+        elif chain:
+             all_results.append(f"No active deposits found on {chain.capitalize()} for this address" + (f" matching token '{token_symbol}'." if token_symbol else "."))
 
     if total_deposits_found > 0:
         return "\n\n---\n\n".join(all_results)
-    elif len(chains_to_check) > 1 :
-        return "No active vault deposits found for that address on any supported chain" + (f" matching token '{token_symbol}'." if token_symbol else ".")
-    elif not all_results:
-         return f"No active vault deposits found on {chains_to_check[0].capitalize()} for this address" + (f" matching token '{token_symbol}'." if token_symbol else ".")
+    elif not chain:
+        return "No active vault deposits found for that address on any supported Yearn chain" + (f" matching token '{token_symbol}'." if token_symbol else ".")
     else:
-         return "\n\n".join(all_results)
+        return "".join(all_results) if all_results else "No active vault deposits found."
+
 
 @function_tool
 async def check_all_deposits_tool(user_address_or_ens: str, token_symbol: Optional[str] = None) -> str:
@@ -1201,9 +903,13 @@ async def check_all_deposits_tool(user_address_or_ens: str, token_symbol: Option
     if not resolved_address:
         return f"Could not resolve '{user_address_or_ens}' to a valid Ethereum address."
 
+    # Run checks concurrently
     v1_task = asyncio.create_task(query_v1_deposits_logic(resolved_address, token_symbol))
     active_task = asyncio.create_task(query_active_deposits_logic(resolved_address, chain=None, token_symbol=token_symbol))
+
     v1_results, active_results = await asyncio.gather(v1_task, active_task)
+
+    # Combine results
     final_output = []
     v1_found = "No deposits found in deprecated V1 vaults" not in v1_results
     active_found = "No active vault deposits found" not in active_results
@@ -1214,16 +920,21 @@ async def check_all_deposits_tool(user_address_or_ens: str, token_symbol: Option
         final_output.append(active_results)
 
     if not v1_found and not active_found:
+        # If neither found anything, return a single message
         return f"No deposits found in any active or deprecated Yearn vaults for address {resolved_address}" + (f" matching token '{token_symbol}'." if token_symbol else ".")
     elif not v1_found:
+        # Only active found, maybe add a note about V1
         final_output.append("(No deposits found in deprecated V1 vaults)")
     elif not active_found:
+         # Only V1 found, maybe add a note about active
          final_output.append("(No deposits found in active V2/V3 vaults)")
 
     combined_result = "\n\n---\n\n".join(final_output)
     logging.info(f"[Tool:check_all_deposits] Combined Result for {resolved_address}:\n{combined_result}")
     return combined_result
 
+
+# --- Withdrawal Instruction Tool ---
 @function_tool
 async def get_withdrawal_instructions_tool(user_address_or_ens: Optional[str], vault_address: str, chain: str) -> str:
     """
@@ -1234,9 +945,10 @@ async def get_withdrawal_instructions_tool(user_address_or_ens: Optional[str], v
     """
     logging.info(f"[Tool:get_withdrawal_instructions] Args: User={user_address_or_ens}, Vault={vault_address}, Chain={chain}")
 
+    # --- Step 1: Input Validation & Setup ---
     resolved_user_address = None
-    user_checksum_addr = None 
-    if user_address_or_ens: 
+    user_checksum_addr = None
+    if user_address_or_ens:
         resolved_user_address = resolve_ens(user_address_or_ens)
         if not resolved_user_address:
             logging.warning(f"Could not resolve provided user address/ENS: '{user_address_or_ens}'. Proceeding without it.")
@@ -1262,6 +974,7 @@ async def get_withdrawal_instructions_tool(user_address_or_ens: Optional[str], v
 
     explorer_vault_url = f"{explorer_base_url}/address/{vault_checksum_addr}"
 
+    # --- Step 2: Check V1 List (Ethereum Only) ---
     if chain_lower == 'ethereum':
         v1_vault_info = next((v for v in V1_VAULTS if v.get("address", "").lower() == vault_checksum_addr.lower()), None)
 
@@ -1276,32 +989,50 @@ async def get_withdrawal_instructions_tool(user_address_or_ens: Optional[str], v
                 "2. Click the **'Contract'** tab.",
                 "3. Click the **'Write Contract'** tab.",
                 f"4. Click the **'Connect to Web3'** button and connect your wallet {f'(`{user_checksum_addr}`)' if user_checksum_addr else '(the one you used to deposit)'}.",
-                f"5. Look for a suitable withdrawal function (often named like 'withdraw', 'withdrawAll', or similar). Prioritize functions that take no arguments if available.", 
+                f"5. Look for a suitable withdrawal function (often named like 'withdraw', 'withdrawAll', or similar). Prioritize functions that take no arguments if available.", # Generic guidance
                 "6. Click the **'Write'** button next to the chosen function.",
                 "7. Confirm the transaction in your wallet.",
                 "\nOnce the transaction confirms, your funds should be back in your wallet."
             ]
-
             final_instructions = "\n".join(instructions)
             logging.info(f"Generated V1 instructions for {vault_checksum_addr}:\n{final_instructions}")
             return final_instructions
         else:
             logging.info(f"Vault {vault_checksum_addr} not found in V1 list. Proceeding to check V2/V3.")
 
-    vault_details: Optional[Dict] = None
+    # --- Step 3: Fetch V2/V3 Details via yDaemon ---
+    vault_details_json: Optional[Dict] = None
+    api_url = "https://ydaemon.yearn.fi/vaults/detected?limit=2000"
     async with aiohttp.ClientSession() as session:
-        detail_semaphore = asyncio.Semaphore(5)
-        vault_details = await _fetch_vault_details(session, chain_id, vault_checksum_addr, detail_semaphore)
+        try:
+            logging.info(f"[Tool:get_withdrawal_instructions] Fetching bulk data to find {vault_checksum_addr}")
+            async with session.get(api_url, timeout=25) as response:
+                response.raise_for_status()
+                all_vaults = await response.json()
+                if isinstance(all_vaults, list):
+                    for v_data in all_vaults:
+                        if v_data.get("address", "").lower() == vault_checksum_addr.lower() and v_data.get("chainID") == chain_id:
+                            vault_details_json = v_data
+                            break
+                    if vault_details_json:
+                        logging.info(f"Found details for {vault_checksum_addr} in bulk fetch.")
+                    else:
+                        logging.warning(f"Vault {vault_checksum_addr} not found in bulk fetch from {api_url}")
+                else:
+                    logging.error("Unexpected format from bulk vault fetch.")
+        except Exception as e:
+            logging.error(f"Error fetching bulk vault data for withdrawal tool: {e}")
 
-    if not vault_details:
+    if not vault_details_json:
         logging.warning(f"Failed to fetch V2/V3 vault details for {vault_checksum_addr} on chain {chain_id} via yDaemon.")
         return (f"Could not fetch vault details from the Yearn API for `{vault_checksum_addr}` on {chain.capitalize()} "
                 f"to determine the correct withdrawal method for V2/V3 vaults. \n"
                 f"Please double-check the vault address and chain name. \n"
                 f"You can view the contract directly here: {explorer_vault_url}")
 
-    api_version_str = vault_details.get("version", "")
-    vault_name = vault_details.get("name", vault_checksum_addr)
+    # --- Step 4: Determine V2/V3 Version and Format Instructions ---
+    api_version_str = vault_details_json.get("version", "")
+    vault_name = vault_details_json.get("name", vault_checksum_addr)
     yearn_ui_link = f"https://yearn.fi/v3/{chain_id}/{vault_checksum_addr}"
 
     intro_message = (
@@ -1390,18 +1121,80 @@ async def get_withdrawal_instructions_tool(user_address_or_ens: Optional[str], v
     logging.info(f"Generated V2/V3/Fallback instructions for {vault_checksum_addr}:\n{final_instructions}")
     return final_instructions
 
-async def _fetch_active_balance(vault_info: Dict, web3_instance: Web3, user_checksum_addr: str, semaphore: asyncio.Semaphore):
+# --- Fetch balance for query_active_deposits_tool ---
+async def _fetch_vault_and_gauge_balances(
+    vault_info: Dict,
+    web3_instance: Web3,
+    user_checksum_addr: str,
+    semaphore: asyncio.Semaphore
+) -> Dict:
+    """
+    Fetches a user's balance from a vault AND its associated staking gauge concurrently.
+    Returns a dictionary with vault info and balances.
+    """
     async with semaphore:
+        vault_addr_str = vault_info.get("address")
+        if not vault_addr_str:
+            return {"vault_info": vault_info, "error": "Missing vault address"}
+
         try:
-            vault_addr_str = vault_info.get("address")
-            if not vault_addr_str: return (vault_info, None)
             vault_checksum_addr = Web3.to_checksum_address(vault_addr_str)
-            contract = web3_instance.eth.contract(address=vault_checksum_addr, abi=ERC20_ABI)
-            balance = await asyncio.to_thread(contract.functions.balanceOf(user_checksum_addr).call)
-            return (vault_info, balance)
+            vault_contract = web3_instance.eth.contract(address=vault_checksum_addr, abi=ERC20_ABI)
+
+            # --- Create all web3 call coroutines first ---
+            wallet_balance_coro = asyncio.to_thread(
+                vault_contract.functions.balanceOf(user_checksum_addr).call
+            )
+
+            gauge_balance_coro = None
+            staking_info = vault_info.get("staking")
+            if staking_info and staking_info.get("available") and Web3.is_address(staking_info.get("address")):
+                gauge_addr_str = staking_info.get("address")
+                gauge_checksum_addr = Web3.to_checksum_address(gauge_addr_str)
+                gauge_contract = web3_instance.eth.contract(address=gauge_checksum_addr, abi=GAUGE_ABI)
+                gauge_balance_coro = asyncio.to_thread(
+                    gauge_contract.functions.balanceOf(user_checksum_addr).call
+                )
+
+            # --- Run wallet and gauge balance checks in parallel ---
+            if gauge_balance_coro:
+                results = await asyncio.gather(wallet_balance_coro, gauge_balance_coro, return_exceptions=True)
+                wallet_balance = results[0] if not isinstance(results[0], Exception) else 0
+                gauge_token_balance = results[1] if not isinstance(results[1], Exception) else 0
+                if isinstance(results[0], Exception): logging.warning(f"Error fetching wallet balance for {vault_addr_str}: {results[0]}")
+                if isinstance(results[1], Exception): logging.warning(f"Error fetching gauge balance for {gauge_addr_str}: {results[1]}")
+            else:
+                # Only run the wallet balance check if no gauge
+                wallet_balance = await wallet_balance_coro
+                gauge_token_balance = 0
+
+            logging.debug(f"Vault {vault_addr_str}: Wallet balance={wallet_balance}, Gauge token balance={gauge_token_balance}")
+
+            # --- If staked, perform the final conversion call ---
+            staked_balance_in_yvtoken = 0
+            if gauge_token_balance > 0:
+                staked_balance_in_yvtoken = await asyncio.to_thread(
+                    gauge_contract.functions.convertToAssets(gauge_token_balance).call
+                )
+                logging.debug(f"Vault {vault_addr_str}: Staked balance (in yvToken) is {staked_balance_in_yvtoken}")
+
+            return {
+                "vault_info": vault_info,
+                "wallet_balance": wallet_balance,
+                "staked_balance": staked_balance_in_yvtoken,
+                "error": None
+            }
+
         except Exception as e:
-            logging.warning(f"Error fetching balance for vault {vault_addr_str} for user {user_checksum_addr}: {e}")
-            return (vault_info, None)
+            logging.error(f"Critical error in balance fetching logic for vault {vault_addr_str}: {e}", exc_info=True)
+            return {
+                "vault_info": vault_info,
+                "wallet_balance": 0,
+                "staked_balance": 0,
+                "error": str(e)
+            }
+
+
 
 @function_tool
 async def answer_from_docs_tool(
@@ -1410,25 +1203,14 @@ async def answer_from_docs_tool(
 ) -> str:
     """
     Answers questions based on documentation using a vector search (Pinecone).
-    Determines whether to search Yearn or Bearn docs based on the run context.
     Use this for general questions about how the specified project works, concepts, etc.
     """
-
     project_context = wrapper.context.project_context
-
     logging.info(f"[Tool:answer_from_docs] --- Tool Invoked ---")
     logging.info(f"[Tool:answer_from_docs] Received query: '{user_query}'")
-    logging.info(f"[Tool:answer_from_docs] Project context from wrapper: '{project_context}'") 
     top_k = 10
 
-    if project_context == "yearn":
-        namespace_to_query = YEARN_PINECONE_NAMESPACE
-    elif project_context == "bearn":
-        namespace_to_query = BEARN_PINECONE_NAMESPACE
-    else:
-        logging.warning(f"[Tool:answer_from_docs] Received unexpected project_context '{project_context}'. Defaulting to Yearn.")
-        namespace_to_query = YEARN_PINECONE_NAMESPACE
-        project_context = "yearn" 
+    namespace_to_query = YEARN_PINECONE_NAMESPACE
     logging.info(f"[Tool:answer_from_docs] Querying Pinecone namespace: '{namespace_to_query}'")
 
     try:
@@ -1447,7 +1229,7 @@ async def answer_from_docs_tool(
     try:
         search_results = await asyncio.to_thread(
             pinecone_index.query,
-            namespace=namespace_to_query, 
+            namespace=namespace_to_query,
             vector=query_embedding,
             top_k=top_k,
             include_metadata=True
@@ -1463,36 +1245,33 @@ async def answer_from_docs_tool(
         logging.info(f"[Tool:answer_from_docs] Processing {len(matches)} matches to build context...")
         for i, match in enumerate(matches):
             metadata = match.get("metadata", {})
-            text_chunk = metadata.get("text") 
+            text_chunk = metadata.get("text")
 
+            # --- Extract all relevant metadata fields ---
             filename = metadata.get("filename", "Unknown Filename")
             doc_title = metadata.get("doc_title", "Unknown Document")
             section_heading = metadata.get("section_heading", "Unknown Section")
             chunk_id = metadata.get("chunk_id", "N/A")
-            source_path = metadata.get("source_path", filename) 
+            source_path = metadata.get("source_path", filename)
 
             if text_chunk:
-
                 source_description = (
                     f"Source Document: {doc_title} ({source_path})\n"
                     f"Section: {section_heading}\n"
-
                 )
                 context_pieces.append(f"{source_description}\nContent:\n{text_chunk}")
                 logging.debug(f"[Tool:answer_from_docs] Added context piece {i+1}: Title='{doc_title}', Section='{section_heading}', Path='{source_path}', Chunk={chunk_id}")
             else:
                  logging.warning(f"[Tool:answer_from_docs] Match ID {match.get('id', 'N/A')} (Source: {source_path}, Chunk: {chunk_id}) had empty 'text' in metadata.")
 
-        context_text = "\n\n---\n\n".join(context_pieces) 
+        context_text = "\n\n---\n\n".join(context_pieces)
         logging.info(f"[Tool:answer_from_docs] Built context string (length: {len(context_text)}).")
-
         context_preview = context_text.replace('\n', ' ')[:500]
         logging.debug(f"[Tool:answer_from_docs] Context Preview:\n---\n{context_preview}...\n---")
 
     else:
         logging.info("[Tool:answer_from_docs] No relevant documents found in Pinecone.")
         logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (No Matches) ---")
-
         return f"I couldn't find any relevant information in the {project_context.capitalize()} documentation to answer that specific question."
 
     if not context_text:
@@ -1500,18 +1279,19 @@ async def answer_from_docs_tool(
          logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (Empty Context Built) ---")
          return f"I found potential matches in the {project_context.capitalize()} documentation, but couldn't extract the content correctly."
 
+
     system_prompt = (
-        f"You are an expert assistant specialized in the {project_context.capitalize()} project. "
-        f"Your task is to answer the user's question based **ONLY** on the provided documentation context below. "
-        "Synthesize a comprehensive and accurate answer using *only* the information present in the 'Documentation Context' section.\n"
-        "Structure your answer clearly. If the context provides specific details, include them.\n"
-        "**Crucially:** If the answer is not found within the provided context, state that clearly (e.g., 'The provided documentation context does not contain information about X.'). Do **NOT** use any external knowledge or make assumptions.\n"
+        f"You are an expert assistant for the Yearn project. Your knowledge base consists **SOLELY** of the documentation context provided below. "
+        f"Answer the user's question directly and authoritatively using only this knowledge.\n"
+        f"**Crucially: Do NOT mention 'context', 'sources', 'information provided', 'sections', or the process of finding information.** Avoid any phrases that refer to the origin or structure of your knowledge (e.g., 'According to...', 'Based on...', 'The section on...', 'The provided info shows...'). Speak directly from the knowledge you possess.\n"
+        "Synthesize your answer clearly. If the context provides specific details, include them.\n"
+        "If the answer is not found within the context, state that you don't have the information directly. For example: 'My knowledge base doesn't include details on X.' or 'I don't have information about X.' Do **NOT** use any external knowledge or make assumptions.\n"
         "**Citation:** When possible, implicitly reference the source by mentioning the topic or section discussed (e.g., 'According to the section on Vault Strategies...', or 'The documentation about {section_heading} states...'). You can use the 'Source Document' and 'Section' information provided with each context piece to guide your response."
     )
 
     messages_for_llm = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Please answer the following question based *only* on the documentation context provided below.\n\nUser Question: {user_query}\n\nDocumentation Context:\n---\n{context_text}\n---"}
+        {"role": "user", "content": f"Answer the following question based *only* on current knowledge.\n\nDocumentation Context:\n\n{context_text}\n\nUser Question: {user_query}\n---"}
     ]
     logging.info(f"[Tool:answer_from_docs] Sending final prompt to LLM. User content length approx: {len(messages_for_llm[1]['content'])}")
 
@@ -1530,75 +1310,119 @@ async def answer_from_docs_tool(
         logging.info(f"[Tool:answer_from_docs] --- Tool Returning Error (LLM Call Failed) ---")
         return f"Sorry, I found relevant {project_context.capitalize()} documentation but encountered an error while formulating the final answer based on it."
 
-def add_project_context_to_handoff_input(
-    handoff_input_data: HandoffInputData,
-    project_context: Literal["yearn", "bearn"]
-) -> HandoffInputData:
-    """Adds a system message specifying the project context to the handoff input."""
-    context_message: TResponseInputItem = {
-        "role": "system",
-        "content": f"CONTEXT_NOTE: You are handling a request related to the **{project_context.upper()}** project."
-    }
-
-    all_items = list(handoff_input_data.input_history) + \
-                list(handoff_input_data.pre_handoff_items) + \
-                list(handoff_input_data.new_items)
-
-    filtered_items = [item for item in all_items if not (
-        isinstance(item, dict) and
-        item.get("role") == "system" and
-        item.get("content", "").startswith("CONTEXT_NOTE:")
-    )]
-
-    new_input_list = [context_message] + filtered_items
-    modified_new_items = list(handoff_input_data.new_items)
-    pass 
 
 
+# ----------------------------
+# Agent Definitions
+# ----------------------------
 
+TContext = Any
 
 yearn_data_agent = Agent[BotRunContext](
     name="Yearn Data Specialist",
     instructions=(
         "# Role and Objective\n"
-        "You are activated when a user needs specific Yearn data or withdrawal help. Your primary goal is to use tools to fetch data or provide instructions accurately and efficiently.\n\n"
-        "# Workflow\n"
-        "1.  **Analyze History & Request:** Review the conversation history. Identify the core need: checking deposits, finding vaults, or getting withdrawal help for a *specific* vault.\n"
-        "2.  **Deposit Checks:** If the request is about general deposits/balances for an address, use the `check_all_deposits_tool` with the user's address. Present the combined results.\n"
-        "3.  **Vault Search:** If the request is to find vaults based on criteria (token, name, APR sort), use the `search_vaults_tool`.\n"
-        "4.  **Specific Withdrawal Help:** If the user asks how to withdraw or has trouble withdrawing, and provides:\n"
-        "    a.  **A specific vault address AND chain:** Use the `get_withdrawal_instructions_tool` directly.\n"
-        "    b.  **A vault identifier (name/symbol like 'st-ycrv') BUT NOT a specific address/chain:** First, use the `search_vaults_tool` with the identifier to find the exact vault address and chain. \n"
-        "        - If exactly one vault is found, proceed to use `get_withdrawal_instructions_tool` with the found address/chain and the user's address.\n"
-        "        - If multiple vaults match the identifier, list them briefly (e.g., 'Vault Name (Chain)') and ask the user to confirm which specific vault (address or unique name/chain combo) they mean before proceeding.\n"
-        "        - If no vault is found, report that.\n"
-        "5.  **Address Resolution:** Ensure any ENS name provided is resolved to an address before using deposit or withdrawal tools.\n"
+        "You are a Yearn Data Specialist. Your primary goal is to use tools to fetch detailed Yearn vault information, check user deposits, or provide withdrawal instructions, and then answer user questions based *only* on the information provided by these tools.\n\n"
 
-        "# Rules & Agentic Behavior\n"
-        "- **Persistence:** You are an active agent. Keep working with the user, potentially asking clarifying questions or using multiple tools sequentially as needed according to the workflow, until their specific Yearn data or withdrawal request is fully addressed or escalation is required. Only conclude your turn when the immediate step is complete or you are waiting for user input.\n"
-        "- **Tool Reliance:** You MUST strictly rely on your tools (`search_vaults_tool`, `check_all_deposits_tool`, `get_withdrawal_instructions_tool`) for all data, vault information, and withdrawal instructions. Do NOT provide information from memory, guess, or speculate.\n"
-        "- **Planning & Reflection (Think Step-by-Step):**\n"
-        "    - Before calling any tool, state your plan and which tool you are using and why (e.g., 'To check your deposits, I need your address. Once provided, I will use the `check_all_deposits_tool`.', or 'To get withdrawal instructions for vault 0xabc..., I will use `get_withdrawal_instructions_tool`.').\n"
-        "    - After receiving tool output, analyze it. If the workflow requires another step (e.g., search result feeds into withdrawal tool), explain that step before proceeding.\n"
-        "    - Think carefully about the workflow steps, especially for withdrawals.\n"
-        "- **Direct & Concise Output:** Answer directly based *only* on the output from the tools. Present information clearly. Avoid unnecessary conversational filler.\n"
-        "- **Missing Info:** If necessary information (like an address for deposit checks, or a *specific confirmed* vault address/chain for withdrawal instructions) is missing according to the workflow, ask the user clearly for it.\n"
-        "- **Tool Errors:** If a tool returns an error message, relay that specific error message to the user and indicate you cannot proceed with that action.\n"
-        "- **Tool Priority:** Prioritize using the most appropriate tool based on the workflow and available information. Use `check_all_deposits_tool` for general balance checks. Use `get_withdrawal_instructions_tool` ONLY when a specific vault address/chain is confirmed for withdrawal help.\n"
+        "**A. INITIAL TASK DETERMINATION (PRIORITY):**\n"
+        "First, check the `initial_button_intent` provided in the context. This intent comes from the user's initial button selection and dictates your immediate action for THIS turn:\n"
+        "   - **IF `initial_button_intent` is 'data_deposit_check':**\n"
+        "     - The user has indicated they want to check their deposits.\n"
+        "     - Their current message IS their wallet address.\n"
+        "     - **Your ONLY action is to call the `check_all_deposits_tool` using the user's entire current message content as the `user_address_or_ens` parameter for that tool.**\n"
+        "     - Example: If user message is '0x123...', call `check_all_deposits_tool(user_address_or_ens='0x123...')`.\n"
+        "     - Present ONLY the deposit information returned by the tool.\n"
+        "     - Do NOT use `search_vaults_tool`. Do NOT ask to clarify the address type.\n"
+        "   - **IF `initial_button_intent` is 'data_withdrawal_flow_start':**\n"
+        "     - The user has indicated they need withdrawal help and their current message IS their wallet address.\n"
+        "     - **Your FIRST action for THIS turn is to call `check_all_deposits_tool` using the user's entire current message content as the `user_address_or_ens` parameter.**\n"
+        "     - After getting the deposit list: \n"
+        "       - If deposits are found, present them clearly (Vault Name, Symbol, Address) and then ASK the user: 'Which of these vaults would you like withdrawal instructions for? Please provide the vault address or name/symbol from the list.'\n"
+        "       - If no deposits are found, inform the user and ask if they have a specific vault address in mind they need help with, or if they want to try a different wallet address.\n"
+        "     - Do NOT attempt to provide withdrawal instructions yet. Your goal in this step is to identify the target vault based on their deposits.\n"
+        "   - **IF `initial_button_intent` is 'data_vault_search':**\n"
+        "     - Your SOLE TASK for this turn is to use the `search_vaults_tool`.\n"
+        "     - The user's current message is their search query (e.g., token name, vault address, 'all'). Use it with the tool.\n"
+        "     - Present ONLY the vault search results.\n"
+        "   - **If `initial_button_intent` is not present or not one of the above data-related intents (e.g., it's 'docs_qa' which is handled by another agent, or it's a follow-up message):** Proceed to section B (Free-Form Request Analysis / Follow-Up Actions) to determine the task from the user's current free-form message.\n\n"
 
-        f"# Escalation\n"
-        "- If you cannot resolve the issue using tools (e.g., tool error persists after retry if applicable, the problem is clearly beyond tool capabilities, user indicates a complex bug), state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**\n"
+        "**B. FREE-FORM REQUEST ANALYSIS / FOLLOW-UP ACTIONS:**\n"
+        "If not guided by a specific `initial_button_intent` from section A for direct tool use in the current turn, OR if this is a follow-up message from the user:\n"
+        "1.  **Follow-up to 'Withdrawal Flow Start':** If you previously listed deposits (because `initial_button_intent` was 'data_withdrawal_flow_start') and asked the user to specify a vault, their current message is likely that vault identifier (address, name, or symbol). You also have their wallet address from the previous turn (from conversation history). Use the vault identifier and the user's wallet address to call `get_withdrawal_instructions_tool`. Assume 'ethereum' chain if not specified or inferable.\n"
+        "2.  **Direct Request for Withdrawal Instructions (Free-Form):** If the user's message explicitly asks for withdrawal instructions and provides BOTH a user wallet address AND a vault address (e.g., 'how to withdraw from vault 0xabc with wallet 0x123'), then use the `get_withdrawal_instructions_tool` with these details.\n"
+        "3.  **Deposit Checks (Free-Form):** If the user's message clearly asks to check their deposits or balance for a given address (and it wasn't from the 'data_deposit_check' button flow), use the `check_all_deposits_tool` with that address.\n"
+        "4.  **Vault Search/Info (Free-Form):** If the user's message asks to find vaults or get info on a specific vault (by name or address) (and it wasn't from the 'data_vault_search' button flow), use the `search_vaults_tool` with the vault name/address as the query.\n"
+        "5.  **Address Resolution:** Ensure any ENS name is resolved before using tools requiring an address.\n"
+        "6.  **Missing Info:** If a tool requires information the user hasn't provided (e.g., user needs to specify which vault after you listed their deposits, or they asked for withdrawal help but didn't give a vault address), ask clearly for the missing information.\n\n"
+
+        "**C. INTERPRETING VAULT DATA (from `search_vaults_tool` output):**\n"
+        "The `search_vaults_tool` will provide detailed information for each vault, structured as follows:\n"
+        " - `Vault: [Name] ([Symbol])`\n"
+        " - `Address: [0x...]`\n"
+        " - `Yearn UI Link: [URL]`\n"
+        " - `Version: [V2 or V3 (with API version)]` (e.g., V3 (API: 3.0.3))\n"
+        " - `Kind: [e.g., Multi Strategy]`\n"
+        " - `Description: [Text description]`\n"
+        " - `Underlying Token: [Name] ([Symbol]) - [0xAddress] - Price: $[Price]`\n"
+        " - `TVL & Share Price:`\n"
+        "   - `TVL (USD): $[Amount]`\n"
+        "   - `Vault Token Price Per Share (in underlying): [Value] (Raw: [RawValue])` (This means 1 vault token = X underlying tokens)\n"
+        " - `APY Information:`\n"
+        "   - `Current Net APY (compounded): [Percentage]% (Type: [e.g., v2:averaged])` (This is the main displayed APY)\n"
+        "   - `Estimated Forward APY (projection): [Percentage]% (Type: [e.g., v3:onchainOracle])` (This is a future estimate)\n"
+        "   - `Vault Fees: Performance=[X]%, Management=[Y]%`\n"
+        "   - `Historical Net APY: Week Ago=[X]% Month Ago=[Y]% Inception=[Z]%` (Use these to understand the period for 'Current Net APY')\n"
+        " - `Other Info:`\n"
+        "   - `Featuring Score: [Value]` (Influences UI ranking)\n"
+        "   - `Risk Level: [Number]`\n"
+        "   - `Status Flags: Retired=[Bool], Boosted=[Bool], Highlighted=[Bool]`\n"
+        "   - `Migration Available: [Bool]` (If True, a migration is available for this vault)\n"
+        " - `Strategies ([Count]):` (Details for each strategy within the vault)\n"
+        "   - `Name: [Strategy Name] ([0xAddress])`\n"
+        "   - `Status: [e.g., active]`\n"
+        "   - `Individual APY: [Percentage]%`\n"
+        "   - `Allocation (Debt Ratio): [Percentage]%` (How much of the vault's assets are in this strategy)\n"
+        "   - `Last Report: [Date Time UTC]`\n\n"
+        " - `Staking Opportunity: [Yes/No]`\n"
+        "   - `Source: [e.g., VeYFI]`\n"
+        "   - `Staking Contract: [0xAddress]`\n"
+        "   - `Rewards ([Count]):` (Details for each reward token if staking is active)\n"
+        "     - `Token: [Name] ([Symbol]) [0xAddress]`\n"
+        "     - `APY: [Percentage]%`\n"
+        "     - `Status: [Ongoing/Finished] (Ends: [Date Time UTC])`\n\n"
+
+        "**D. ANSWERING USER QUESTIONS (General Rules):**\n"
+        "- **Strict Adherence to Task:** If an `initial_button_intent` (from section A) directed a specific task, focus *only* on fulfilling that task with the designated tool in your current turn. Do not perform unrelated actions like checking deposits if withdrawal instructions were requested via button, unless the tool itself fails and you need to ask for clarification related to that specific tool.\n"
+        "- Answer **ONLY** based on the information provided by the tools. Do not add external knowledge or speculate.\n"
+        "- If the user asks about a specific field (e.g., 'What are the fees for yvUSDC?'), locate that vault in the tool output and find the 'Vault Fees' section.\n"
+        "- If the user asks a comparative question (e.g., 'Which USDC vault has higher APY?'), use the 'Current Net APY' from multiple vaults if available in the tool output.\n"
+        "- If information is not present in the tool output for a specific query, state that (e.g., 'The details for that vault do not include X information.').\n"
+        "- For APY, always clarify if you are referring to 'Current Net APY' or 'Estimated Forward APY'.\n"
+        "- If a tool returns an error message, relay that error message to the user.\n"
+        f"- If you cannot resolve the issue or answer the question with the tools (even after trying the appropriate tool based on button intent or free-form analysis), state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**\n\n"
+
+        "**E. ANSWERING USER QUESTIONS ABOUT STRATEGIES (Specific to `search_vaults_tool` output):**\n"
+        "- If the user asks for a list of strategies for a specific vault (e.g., 'what strategies are in yvUSDC?'): Identify the vault in the tool output. List the names of all strategies found under its 'Strategies' section.\n"
+        "- If the user asks for details about a specific strategy by name within a vault: Find that strategy under the vault's 'Strategies' section and provide its listed details (APY, Allocation, Last Report, Status).\n"
+        "- **If the user asks to compare strategies within a single vault (e.g., 'which strategy in yvUSDC has the highest APY?'):**\n"
+        "  1. Locate the specified vault in the tool output.\n"
+        "  2. Examine each strategy listed under its 'Strategies' section.\n"
+        "  3. Note the 'Individual APY' for each strategy.\n"
+        "  4. Identify the strategy with the highest 'Individual APY'.\n"
+        "  5. Respond with the name of that strategy and its APY. For example: 'For yvUSDC, the strategy [Strategy Name] currently has the highest APY at [X.XX]%.'\n"
+        "  6. If multiple strategies are listed but their APYs are not provided or are unclear in the tool output, state that you can list the strategies but cannot determine which has the highest APY from the available details.\n"
+        "- If the tool output for a vault shows 'Strategies: None listed.', inform the user that no strategies are detailed for that vault in the provided information.\n\n"
     ),
     tools=[
         search_vaults_tool,
         check_all_deposits_tool,
         get_withdrawal_instructions_tool,
     ],
-    model="gpt-4.1", 
-    model_settings=ModelSettings(temperature=0.2)
+    model="gpt-4.1",
+    model_settings=ModelSettings(temperature=0.0)
 )
 
-yearn_docs_qa_agent = Agent[BotRunContext]( 
+yearn_docs_qa_agent = Agent[BotRunContext](
     name="Yearn Docs QA Specialist",
     instructions=(
         "# Role and Objective\n"
@@ -1617,11 +1441,12 @@ yearn_docs_qa_agent = Agent[BotRunContext](
         "- If the question is complex even for the docs (e.g., requires interpretation beyond retrieval), seems like a bug report, or the tool fails, state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**\n"
     ),
     tools=[answer_from_docs_tool],
-    model="gpt-4.1-mini", 
+    model="gpt-4.1-mini",
     model_settings=ModelSettings(temperature=0.2)
 )
 
-bd_priority_guardrail_agent = Agent[BotRunContext]( 
+# --- Guardrail Agent for BD/PR Detection ---
+bd_priority_guardrail_agent = Agent[BotRunContext](
     name="BD/PR/Listing Guardrail Check",
     instructions=(
         "# Role and Objective\n"
@@ -1631,78 +1456,27 @@ bd_priority_guardrail_agent = Agent[BotRunContext](
         "- 'partnership': The user is proposing a technical integration, collaboration, or joint venture with Yearn.\n"
         "- 'marketing': The user is proposing a joint marketing campaign, AMA, or promotional activity.\n"
         "- 'other_bd': Other business development inquiries not covered above (e.g., grants, general BD contact).\n"
+        "- 'job_inquiry': The user is asking about working for Yearn, contributing code/skills, applying for a grant, or offering their services as an individual/team.\n"
         "- 'not_bd_pr': This is a standard user support request, a question about using Yearn/Bearn, a bug report, or unrelated chat.\n\n"
         "# Rules\n"
         "Focus on the main goal. If a message mentions multiple things, classify based on the primary ask. Be precise.\n"
         "Output *only* the classification in the specified `BDPriorityCheckOutput` format. Do not add any explanation or conversational text.\n"
     ),
-    output_type=BDPriorityCheckOutput, 
+    output_type=BDPriorityCheckOutput,
     model="gpt-4.1-mini",
     model_settings=ModelSettings(temperature=0.1)
 )
 
-bearn_data_agent = Agent[BotRunContext]( 
-    name="Bearn Data Specialist",
-    instructions=(
-        "# Role and Objective\n"
-        "You handle requests for specific data related to Bearn on Berachain.\n"
-        "Your goal is to accurately retrieve and present Bearn vault or deposit information using the provided tools.\n\n"
-        "**Workflow:**\n"
-        "1.  **Analyze Request:** Determine if the user wants to find Bearn vaults or check their deposits.\n"
-        "2.  **Vault Search:** If the user asks to find vaults (e.g., 'list bearn vaults', 'find HONEY/WBERA vault', 'show vaults for 0x... token'), use the `search_bearn_tool`. Pass the user's query ('all', address, or pair) and optionally the vault type ('compounding', 'bgt_earner').\n"
-        "3.  **Deposit Check:** If the user asks about their Bearn balance or deposits, use the `check_bearn_deposits_tool`. You MUST have the user's address for this. If missing, ask for it clearly.\n"
-        "4.  **Present Results:** Relay the information returned by the tool directly and clearly. If a tool search returns no results, state that.\n"
-        "5.  **Vault Not on UI:** If `search_bearn_tool` finds a vault but the user says it's not on the website, confirm it exists on-chain, provide the Berascan link, and explain the UI might lag.\n"
-        "6.  **Tool Errors:** If a tool returns an error message, relay that error to the user.\n"
 
-        "# Rules & Agentic Behavior\n"
-        "- **Persistence:** Keep working until the user's specific data request is fully addressed using your tools, or until escalation is necessary. Only conclude your turn when the immediate task is complete.\n"
-        "- **Tool Reliance:** You MUST use your tools (`search_bearn_tool`, `check_bearn_deposits_tool`) to answer data requests. Do NOT guess, make up answers, or use knowledge outside of the tool outputs.\n"
-        "- **Planning & Reflection:** Think step-by-step. Before calling a tool, briefly state your plan (e.g., 'Okay, I need to find Bearn vaults matching HONEY/WBERA. I will use the `search_bearn_tool`.'). After receiving the tool output, analyze it before presenting the final answer to the user.\n"
-        "- **Conciseness:** Present the tool output directly and concisely. Avoid adding extra conversational filler unless necessary for clarity or to explain the result.\n"
-        "- **Address Requirement:** Always ensure you have the user's wallet address before attempting to use `check_bearn_deposits_tool`. Ask if missing.\n"
-
-        f"# Escalation\n"
-        "- For complex issues beyond vault searching/deposit checking, or if tools consistently fail or return errors you cannot resolve, state that human help is needed and include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.\n"
-    ),
-    tools=[search_bearn_tool, check_bearn_deposits_tool], 
-    model="gpt-4.1", 
-    model_settings=ModelSettings(temperature=0.3)
-
-)
-
-bearn_docs_qa_agent = Agent[BotRunContext]( 
-    name="Bearn Docs QA Specialist",
-
-    instructions=(
-        "# Role and Objective\n"
-        "You answer questions based *only* on **Bearn** documentation using the 'answer_from_docs_tool'.\n"
-        "# Workflow\n"
-        "1. Confirm you understand the user's question is about Bearn documentation.\n"
-        "2. Use the `answer_from_docs_tool` with the user's exact query.\n"
-        "3. Relay the answer or 'not found' message from the tool directly.\n"
-
-        "# Rules\n"
-        "- **Tool Exclusivity:** You MUST rely *exclusively* on the information returned by the `answer_from_docs_tool`. If the tool finds no answer, state that clearly ('I couldn't find information on that in the Bearn documentation.').\n"
-        "- **Do NOT Supplement:** Do NOT add information from your own knowledge, guess, or speculate.\n"
-        "- **Scope Limit:** Do NOT answer about real-time data (like APR, TVL, balances), specific user account issues, or Yearn-specific topics. State these are outside your scope.\n"
-
-        f"# Escalation\n"
-        "- Escalate complex issues beyond simple documentation lookup, apparent bugs, or if the `answer_from_docs_tool` fails consistently by stating human help is needed and including the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.\n"
-    ),
-    tools=[answer_from_docs_tool],
-    model="gpt-4.1-mini",
-    model_settings=ModelSettings(temperature=0.2)
-)
-
-LISTING_DENIAL_MESSAGE = ( 
+# --- Guardrail  ---
+LISTING_DENIAL_MESSAGE = (
     "Thank you for your interest! "
     "Yearn Finance ($YFI) is permissionlessly listable on exchanges. Yearn does not pay listing fees, nor does it provide liquidity for exchange listings. "
     "No proposal is necessary for listing.\n\n"
     "No follow up inquiries or responses necessary."
 )
 
-STANDARD_REDIRECT_MESSAGE = ( 
+STANDARD_REDIRECT_MESSAGE = (
      f"Thank you for your interest! "
      f"For partnership, marketing, or other business development proposals, go to <#{PR_MARKETING_CHANNEL_ID}>, share your proposal in **5 sentences** describing how it benefits both parties, and tag **corn**.\n\n"
      f"No follow up inquiries or responses necessary."
@@ -1719,15 +1493,14 @@ JOB_INQUIRY_REDIRECT_MESSAGE = (
 async def bd_priority_guardrail(
     ctx: RunContextWrapper[BotRunContext],
     agent: Agent,
-    input_data: Union[str, List[TResponseInputItem]] 
-) -> GuardrailFunctionOutput: 
+    input_data: Union[str, List[TResponseInputItem]]
+) -> GuardrailFunctionOutput:
     """
     Checks if the initial user input is BD/PR/Listing.
     If it is, returns GuardrailFunctionOutput with tripwire_triggered=True
     and the appropriate response message stored in output_info.
     Otherwise, returns with tripwire_triggered=False.
     """
-
     if isinstance(input_data, str):
         text_input = input_data
     elif isinstance(input_data, list):
@@ -1738,6 +1511,8 @@ async def bd_priority_guardrail(
                  break
     else: text_input = ""
     if not text_input: return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+
+
     logging.info(f"[Guardrail:BD/Priority] Analyzing input: '{text_input[:100]}...'")
 
     try:
@@ -1746,10 +1521,13 @@ async def bd_priority_guardrail(
         result = await guardrail_runner.run(
             starting_agent=bd_priority_guardrail_agent,
             input=text_input,
-            run_config=run_config_guardrail 
+            run_config=run_config_guardrail
         )
         check_output = result.final_output_as(BDPriorityCheckOutput)
+
         logging.info(f"[Guardrail:BD/Priority] Check result: type={check_output.request_type}, Reasoning: {check_output.reasoning}")
+
+        # --- Determine Action Based on Classification ---
         message_to_send = None
         should_trigger = False
 
@@ -1763,20 +1541,21 @@ async def bd_priority_guardrail(
             message_to_send = JOB_INQUIRY_REDIRECT_MESSAGE
             should_trigger = True
 
+        # --- Return GuardrailFunctionOutput ---
         output_info_dict = {
-            "classification": check_output.model_dump() 
+            "classification": check_output.model_dump()
         }
         if should_trigger and message_to_send:
-            output_info_dict["message"] = message_to_send 
+            output_info_dict["message"] = message_to_send
             logging.info(f"[Guardrail:BD/Priority] Returning tripwire=True. Type: {check_output.request_type}.")
             return GuardrailFunctionOutput(
                 output_info=output_info_dict,
-                tripwire_triggered=True 
+                tripwire_triggered=True
             )
         else:
             logging.info("[Guardrail:BD/Priority] Returning tripwire=False.")
             return GuardrailFunctionOutput(
-                output_info=output_info_dict, 
+                output_info=output_info_dict,
                 tripwire_triggered=False
             )
 
@@ -1789,36 +1568,33 @@ triage_agent = Agent[BotRunContext](
     instructions=(
         "# Role and Objective\n"
         "You are the primary Yearn & Bearn support agent. Your task is to determine the **project context** (Yearn or Bearn) and the **request type**, then take immediate action based *first* on the project context.\n\n"
-        "# Workflow\n"
-        "**1. Determine Project Context:**\n"
-        "   - Check the `project_context` provided (Yearn or Bearn). This is the most reliable indicator.\n"
-        "   - If context is 'unknown', analyze the message for keywords ('bearn', 'bera', 'bgt', specific Yearn names) to infer context. Default to 'yearn' if still unsure.\n\n"
 
-        "**2. Execute Workflow Based on Determined Context:**\n\n"
-        "   **--- IF Project Context is YEARN: ---**\n"
+        "**PRIORITY STEP: Process Initial Button Selection (from `initial_button_intent` in context):**\n"
+        "   - **IF `initial_button_intent` is 'data_deposit_check':**\n"
+        "     - The user wants to check their deposits. Their current message is expected to be their wallet address.\n"
+        "     - **ASSUME the provided address IS the user's wallet address.**\n"
+        "     - **DO NOT ask for clarification on whether it's a wallet or vault address.**\n"
+        "     - Proceed to Step 1 (Determine Project Context) and then IMMEDIATELY to the relevant data specialist handoff (2c for Yearn, 3c for Bearn) for deposit checking using this address.\n"
+        "   - IF `initial_button_intent` is 'data_withdrawal_flow_start':\n"
+        "     - The user wants to start the withdrawal help process. Their current message should contain their wallet address.\n"
+        "     - Proceed to Step 1 (Determine Project Context) and then IMMEDIATELY to the `transfer_to_yearn_data_specialist` handoff.\n"
+        "   - IF `initial_button_intent` is 'data_withdrawal_flow_start': The user needs withdrawal help. Their current message should contain vault and/or user address. Proceed to Step 1, then 2c (Yearn) for withdrawal help. Clarify if addresses are missing or their type is unclear.\n"
+        "   - IF `initial_button_intent` is 'docs_qa': The user has a general question. Their current message is the question. Proceed to Step 1, then 2f/3e for docs specialist handoff.\n"
+        "   - IF `initial_button_intent` is 'other_free_form' or is not present/None: This is a free-form user message. Proceed to Step 1 (Determine Project Context) and continue normally with the free-form text analysis below.\n\n"
+
+        "**Workflow:**\n"
         "   a. **BD/PR/Marketing/Listing:** (Handled by Guardrail - You won't see these).\n"
-        "   b. **Initial Address Handling:** If user provides an address (0x...) without specifying type: ASK them to clarify (wallet or vault) before proceeding.\n"
-        "   c. **Data or Specific Withdrawal Request:** If the request is about finding vaults, checking deposits/balances, or asking how to withdraw from a specific vault address, AND the user's wallet address is known/confirmed: **IMMEDIATELY execute the `transfer_to_yearn_data_specialist` handoff.**\n"
-        "   d. **Address Needed:** If user address is needed for (c) but missing: Ask clearly for the user's wallet address/ENS. Do NOT hand off yet.\n"
-        "   e. **Handling Address Refusal:** If you asked for user address (for c) after they confirmed providing a vault address, and they refuse: Respond ONCE: 'Okay, I understand. Without your wallet address, I can't check your specific deposit balance. However, I *can* provide general withdrawal instructions for the vault `[Vault Address Provided By User]`. Would you like those instructions?' If yes, **IMMEDIATELY execute the `transfer_to_yearn_data_specialist` handoff.**\n"
-        "   f. **General/Docs Question:** **IMMEDIATELY execute the `transfer_to_yearn_docs_qa_specialist` handoff.**\n"
-        "   g. **UI Errors/Bugs/Complex Issues:** Respond that human support is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.** Do NOT hand off.\n"
-        "   h. **Ambiguity:** If request type (Data vs Docs vs Bug) is unclear: Ask ONE clarifying question.\n"
+        "   b. **Initial Address Handling (FOR FREE-FORM INPUT or AMBIGUOUS BUTTON FOLLOW-UP ONLY):** If `initial_button_intent` was NOT 'data_deposit_check' AND the user provides an address (0x...) in their message without specifying its type: ASK them to clarify (wallet or vault) before proceeding.\n"
+        "   c. **Data or Specific Withdrawal Request:** If the user's message (or a relevant button intent) is about finding vaults (e.g., 'find vaults for [address/token]'), checking deposits/balances (e.g., 'deposits for [wallet_address]'), or asking how to withdraw from a specific vault address, AND any required user wallet address is known/confirmed (or provided in the current message): **IMMEDIATELY use `transfer_to_yearn_data_specialist` handoff.** (For 'find vaults for [address]', assume the address is a token/vault unless specified otherwise by user).\n"
+        "   d. **Address Needed:** If user wallet address is needed for (c) (e.g., for deposit checks or withdrawal from a specific vault where user address is also needed) but missing: Ask clearly for the user's wallet address/ENS. Do NOT hand off yet.\n"
+        "   e. **Handling Address Refusal:** If you asked for a user address and they refuse, offer to provide general withdrawal instructions for the vault address if they provided one. If they agree, use the `transfer_to_yearn_data_specialist` handoff..\n"
+        "   f. **General/Docs Question:** If the user's message (or button intent 'docs_qa' was identified) is a general question: **IMMEDIATELY use `transfer_to_yearn_docs_qa_specialist` handoff.**\n"
+        "   g. **UI Errors/Bugs/Complex Issues:** If the query seems too complex for tools, describes a UI error, or a potential bug: Respond that human support is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.** Do NOT hand off.\n"
+        "   h. **Ambiguity:** If request type (Data vs Docs vs Bug) is unclear (and no button intent guided this): Ask ONE clarifying question.\n"
         "   i. **Greetings/Chit-chat:** Respond briefly.\n\n"
 
-        "   **--- ELSE IF Project Context is BEARN: ---**\n"
-        "   a. **BD/PR/Marketing/Listing:** (Handled by Guardrail - You won't see these).\n"
-        "   b. **Initial Address Handling:** If user provides an address (0x...) without specifying type: ASK them to clarify (wallet or vault) before proceeding.\n"
-        "   c. **Data Request:** If the request is about finding vaults or checking deposits/balances: **IMMEDIATELY execute the `transfer_to_bearn_data_specialist` handoff.** (Requires user address for deposit checks).\n"
-        "   d. **Address Needed:** If user address is needed for (c) but missing: Ask clearly for the user's wallet address/ENS. Do NOT hand off yet.\n"
-
-        "   e. **General/Docs Question:** **IMMEDIATELY execute the `transfer_to_bearn_docs_qa_specialist` handoff.**\n"
-        "   f. **UI Errors/Bugs/Complex Issues:** Respond that human support is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}'.** Do NOT hand off.\n"
-        "   g. **Ambiguity:** If request type (Data vs Docs vs Bug) is unclear: Ask ONE clarifying question.\n"
-        "   h. **Greetings/Chit-chat:** Respond briefly.\n\n"
-
         "# Rules\n"
-        "**CRITICAL:** Always determine context first (Step 1). Then strictly follow the workflow for THAT context (Step 2). Execute handoffs immediately when conditions within the context's workflow are met. Do not describe the handoff.\n"
+        "**CRITICAL:** If an `initial_button_intent` is present in the context, use that as the primary guide for the request type. Then determine project context. Queries like 'find vaults for [address]', 'check balance for [address]', 'deposits for [address]' are considered **Data Requests**. Execute handoffs immediately when conditions are met. Do not describe the handoff.\n"
         "- You are a routing agent. Your goal is to classify the request and either respond simply, ask for clarification, or hand off to a specialist.\n"
         "- Complete your analysis and required action (response, question, or handoff) based on the workflow before concluding your turn. Do not leave the task unfinished.\n"
         "- Only use the specifically defined handoff tools (`transfer_to_...`). Do not attempt to answer questions that require specialist tools yourself.\n"
@@ -1828,35 +1604,40 @@ triage_agent = Agent[BotRunContext](
     handoffs=[
         handoff(yearn_data_agent, tool_name_override="transfer_to_yearn_data_specialist", tool_description_override="Handoff for specific YEARN data (vaults, deposits, APR, TVL, balances, withdrawal instructions)."),
         handoff(yearn_docs_qa_agent, tool_name_override="transfer_to_yearn_docs_qa_specialist", tool_description_override="Handoff for general questions about YEARN concepts, documentation, risks."),
-        handoff(bearn_data_agent, tool_name_override="transfer_to_bearn_data_specialist", tool_description_override="Handoff for specific BEARN data (vault search, deposit checks)."),
-        handoff(bearn_docs_qa_agent, tool_name_override="transfer_to_bearn_docs_qa_specialist", tool_description_override="Handoff for general questions about BEARN concepts or documentation.")
     ],
     input_guardrails=[bd_priority_guardrail],
     model="gpt-4.1",
-    model_settings=ModelSettings(temperature=0.1) 
+    model_settings=ModelSettings(temperature=0.1)
 )
 
-conversation_threads: Dict[int, List[TResponseInputItem]] = {} 
-stopped_channels: set[int] = set() 
-pending_messages: Dict[int, str] = {} 
+
+
+
+
+# -----------
+# Discord Bot 
+# -----------
+
+conversation_threads: Dict[int, List[TResponseInputItem]] = {}
+stopped_channels: set[int] = set()
+pending_messages: Dict[int, str] = {}
 pending_tasks: Dict[int, asyncio.Task] = {}
 monitored_new_channels: set[int] = set()
 
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
-        self.runner = Runner 
+        self.runner = Runner
 
     async def on_ready(self):
         logging.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Monitoring Yearn Ticket Category ID: {YEARN_TICKET_CATEGORY_ID}")
-        logging.info(f"Monitoring Bearn Ticket Category ID: {BEARN_TICKET_CATEGORY_ID}")
-        logging.info(f"Support User ID for triggers: {SUPPORT_USER_ID}")
-        logging.info(f"Yearn Public Trigger: '{YEARN_PUBLIC_TRIGGER_CHAR}', Bearn Public Trigger: '{BEARN_PUBLIC_TRIGGER_CHAR}'")
+        logging.info(f"Support User ID for triggers: {PUBLIC_TRIGGER_USER_IDS}")
+        logging.info(f"Yearn Public Trigger: '{YEARN_PUBLIC_TRIGGER_CHAR}'")
         print("------")
 
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
-
+        # Initialize state for new channels in monitored ticket categories
         if isinstance(channel, discord.TextChannel) and channel.category:
             if channel.category.id in CATEGORY_CONTEXT_MAP:
                 project_context = CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown")
@@ -1865,138 +1646,192 @@ class TicketBot(discord.Client):
                 stopped_channels.discard(channel.id)
                 pending_messages.pop(channel.id, None)
                 if channel.id in pending_tasks:
-                    try:
-                        pending_tasks.pop(channel.id).cancel()
-                    except Exception as e:
-                        logging.warning(f"Error cancelling task during channel create for {channel.id}: {e}")
-
+                    try: pending_tasks.pop(channel.id).cancel()
+                    except Exception: pass
                 monitored_new_channels.add(channel.id)
                 logging.info(f"Added channel {channel.id} to monitored_new_channels set.")
 
-    async def on_message(self, message: discord.Message):
+                # This gives Ticket Tool bot time to send its message.
+                delay_seconds = 1.5
+                logging.info(f"Delaying welcome message in {channel.id} by {delay_seconds} seconds.")
+                await asyncio.sleep(delay_seconds)
 
+                # --- SEND INITIAL MESSAGE WITH BUTTONS ---
+                welcome_message = (
+                    f"Welcome to {project_context.capitalize()} Support!\n\n"
+                    "To help you more efficiently, please select a category below.\n"
+                    "*Please press a button to get started. You can share more details after making a selection.*"
+                )
+                try:
+                    await channel.send(welcome_message, view=InitialInquiryView())
+                    channels_awaiting_initial_button_press.add(channel.id)
+                    logging.info(f"Sent initial inquiry buttons to channel {channel.id}")
+                except discord.Forbidden:
+                    logging.error(f"Missing permissions to send initial message with buttons in {channel.id}")
+                except Exception as e:
+                    logging.error(f"Error sending initial message with buttons in {channel.id}: {e}", exc_info=True)
+
+    async def process_synthetic_button_input(self, channel: discord.TextChannel, synthetic_text: str, intent_category: str):
+        """
+        Processes a synthetic input generated from an initial button press.
+        This will queue up a task similar to process_ticket_message but with predefined input.
+        """
+        channel_id = channel.id
+        logging.info(f"Processing synthetic button input for ticket {channel_id}. Intent: '{intent_category}', Text: '{synthetic_text}'")
+
+        category_id = channel.category.id if channel.category else None
+        project_ctx = CATEGORY_CONTEXT_MAP.get(category_id, "unknown")
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            category_id=category_id,
+            project_context=project_ctx,
+            initial_button_intent=intent_category
+        )
+
+        current_history = conversation_threads.get(channel_id, [])
+        input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": synthetic_text}]
+        conversation_threads[channel_id] = input_list
+
+        if channel_id in pending_tasks:
+            pending_tasks[channel_id].cancel()
+
+        await self.process_ticket_message(channel_id, run_context, is_button_trigger=True, synthetic_user_message_for_log=synthetic_text)
+
+    async def on_message(self, message: discord.Message):
         if message.author.bot or message.author.id == self.user.id:
             return
 
-        run_context = BotRunContext(channel_id=message.channel.id) 
-
+        # --- STATEFUL PUBLIC TRIGGER ---
         is_reply = message.reference is not None
-        trigger_char = message.content.strip()
-        is_support_trigger = str(message.author.id) == SUPPORT_USER_ID and trigger_char in TRIGGER_CONTEXT_MAP
+        trigger_char_used = message.content.strip()
+        is_valid_trigger_char = trigger_char_used in TRIGGER_CONTEXT_MAP
+        is_trigger_user = str(message.author.id) in PUBLIC_TRIGGER_USER_IDS
 
-        if is_reply and is_support_trigger:
-            run_context.is_public_trigger = True
-            run_context.project_context = TRIGGER_CONTEXT_MAP.get(trigger_char, "unknown") 
+        if is_reply and is_trigger_user and is_valid_trigger_char:
+            logging.info(f"Stateful public trigger '{trigger_char_used}' detected by {message.author.name} in channel {message.channel.id}")
+            
+            try:
+                await message.delete()
+            except Exception as e:
+                logging.warning(f"Failed to delete trigger message {message.id}: {e}")
+
             try:
                 original_message = await message.channel.fetch_message(message.reference.message_id)
-                if original_message and not original_message.author.bot:
-                    logging.info(f"Public trigger detected by {message.author.name} in reply to user {original_message.author.name} in channel {message.channel.id}")
+                if original_message and not original_message.author.bot and original_message.content:
+                    
+                    original_author_id = original_message.author.id
+                    current_history: List[TResponseInputItem] = []
+                    
+                    conversation = public_conversations.get(original_author_id)
+                    if conversation:
+                        time_since_last = datetime.now(timezone.utc) - conversation.last_interaction_time
+                        if time_since_last <= timedelta(minutes=PUBLIC_TRIGGER_TIMEOUT_MINUTES):
+                            logging.info(f"Continuing public conversation for user {original_author_id} (last active {time_since_last.total_seconds():.1f}s ago).")
+                            current_history = conversation.history
+                        else:
+                            logging.info(f"Public conversation for user {original_author_id} expired ({time_since_last.total_seconds():.1f}s ago). Starting new context.")
+                            public_conversations.pop(original_author_id, None)
+                    
+                    input_list = current_history + [{"role": "user", "content": original_message.content}]
 
-                    try:
-                        await message.delete()
-                        logging.info(f"Deleted trigger message {message.id}")
-                    except discord.Forbidden:
-                        logging.warning(f"Missing permissions to delete trigger message {message.id} in {message.channel.id}")
-                    except discord.NotFound:
-                        logging.warning(f"Trigger message {message.id} already deleted.")
-
-                    original_content = original_message.content
-                    if not original_content:
-                        logging.info("Original message has no text content to process.")
-                        return
+                    # Create a specific context for this public run
+                    public_run_context = BotRunContext(
+                        channel_id=message.channel.id,
+                        is_public_trigger=True,
+                        project_context=TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
+                    )
 
                     async with message.channel.typing():
-                        reply_content = "An unexpected error occurred." 
-                        target_message_for_reply = original_message 
                         try:
-
-                            run_config = RunConfig(workflow_name=f"Public Channel Query ({run_context.project_context})") 
+                            run_config = RunConfig(
+                                workflow_name=f"Public Stateful Trigger-{message.channel.id}",
+                                group_id=str(original_author_id)
+                            )
                             result: RunResult = await self.runner.run(
-                                starting_agent=triage_agent, 
-                                input=original_content,
-                                max_turns=5, 
+                                starting_agent=triage_agent,
+                                input=input_list,
+                                max_turns=5,
                                 run_config=run_config,
-                                context=run_context 
+                                context=public_run_context
                             )
 
-                            raw_reply_content = result.final_output if result.final_output else "I couldn't determine a response."
-                            actual_mention = f"<@{SUPPORT_USER_ID}>"
-                            reply_content = raw_reply_content.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+                            new_history = result.to_input_list()
+                            new_conversation = PublicConversation(
+                                history=new_history,
+                                last_interaction_time=datetime.now(timezone.utc)
+                            )
+                            public_conversations[original_author_id] = new_conversation
+                            logging.info(f"Saved updated public conversation context for user {original_author_id}. History length: {len(new_history)} items.")
 
-                            await send_long_message(target_message_for_reply, reply_content)
-                            logging.info(f"Sent public reply/replies to {original_message.id} in {message.channel.id}")
-
-                        except InputGuardrailTripwireTriggered as e:
-                            logging.warning(f"BD/PR Input Guardrail triggered for public query (Original msg ID: {original_message.id}). Guardrail Output: {e.guardrail_result.output.output_info}")
-                            guardrail_info = e.guardrail_result.output.output_info
-                            if isinstance(guardrail_info, dict) and "message" in guardrail_info:
-                                reply_content = guardrail_info["message"]
-                                if "classification" in guardrail_info and isinstance(guardrail_info["classification"], dict):
-                                    logging.info(f"Guardrail classification (public query): {guardrail_info['classification'].get('request_type', 'Unknown')}")
-                            else:
-                                logging.error("Guardrail triggered (public query) but message not found in output_info!")
-                                reply_content = "Your request could not be processed due to input checks. Please contact support directly."
-                            await send_long_message(target_message_for_reply, reply_content) 
-
-                        except MaxTurnsExceeded as e:
-                             logging.warning(f"Max turns exceeded for public query (Original msg ID: {original_message.id}): {e}")
-                             reply_content = f"Sorry, the request took too long to process. Please try simplifying or ask <@{SUPPORT_USER_ID}> for help."
-                             await send_long_message(target_message_for_reply, reply_content) 
-
-                        except AgentsException as e:
-                             logging.error(f"Agent SDK error during public query (Original msg ID: {original_message.id}): {e}")
-                             reply_content = f"Sorry, an error occurred while processing your request ({type(e).__name__})."
-                             await send_long_message(target_message_for_reply, reply_content) 
+                            raw_reply = result.final_output if result.final_output else "I could not determine a response."
+                            actual_mention = f"<@{HUMAN_HANDOFF_TARGET_USER_ID}>"
+                            final_reply = raw_reply.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+                            
+                            await send_long_message(original_message, final_reply)
+                        
                         except Exception as e:
-                             logging.error(f"Unexpected error during public query processing (Original msg ID: {original_message.id}): {e}", exc_info=True)
+                            logging.error(f"Error during public trigger agent run for user {original_author_id}: {e}", exc_info=True)
+                            await original_message.reply(f"Sorry, an error occurred while processing that request. Please notify <@{HUMAN_HANDOFF_TARGET_USER_ID}>.", mention_author=False)
 
-                             await send_long_message(target_message_for_reply, reply_content) 
-
-                    return 
+                    return # Stop further processing after handling the trigger
 
             except discord.NotFound:
-                logging.warning(f"Original message for reply {message.id} not found.")
+                logging.warning(f"Original message for public trigger reply {message.id} not found.")
+                return
             except discord.Forbidden:
-                 logging.warning(f"Missing permissions to fetch original message for reply {message.id}.")
+                 logging.warning(f"Missing permissions to fetch original message for public trigger reply {message.id}.")
+                 return
             except Exception as e:
                  logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
+                 return
 
-        if not isinstance(message.channel, discord.TextChannel) or not message.channel.category:
-            return 
-
+        # --- Ticket Channel ---
+        # Check if the message is in a monitored ticket channel
+        if not isinstance(message.channel, discord.TextChannel) or not message.channel.category: return
         channel_id = message.channel.id
+        if channel_id not in monitored_new_channels: return
 
-        if channel_id not in monitored_new_channels:
-
+        if channel_id in channels_awaiting_initial_button_press:
+            # This means they typed before clicking a button on the initial message
+            try:
+                await message.reply("Please select an option from the buttons on my previous message to get started.", delete_after=20, mention_author=False)
+            except Exception: pass
             return
 
-        run_context.category_id = message.channel.category.id
-        run_context.project_context = CATEGORY_CONTEXT_MAP.get(message.channel.category.id, "unknown")
+        # This intent was set when the user clicked a button that prompts for more info.
+        # It will be None if the user clicked "Other" or if this is a later message in the convo.
+        current_intent_from_map = channel_intent_after_button.pop(channel_id, None)
+        if current_intent_from_map:
+            logging.info(f"Message in {channel_id} is a follow-up to button intent: {current_intent_from_map}")
 
-        if run_context.project_context == "unknown":
+        # If we are here, either a button was pressed (and intent is stored),
+        # or it's a follow-up to a bot's prompt after a button press.
+        ticket_run_context = BotRunContext(
+            channel_id=channel_id,
+            category_id=message.channel.category.id,
+            project_context=CATEGORY_CONTEXT_MAP.get(message.channel.category.id, "unknown"),
+            initial_button_intent=current_intent_from_map
+        )
 
-             return
+        if ticket_run_context.project_context == "unknown": return
+        if channel_id in stopped_channels: return
 
-        if channel_id in stopped_channels:
-
-            return
-
-        logging.info(f"Processing ticket message in {channel_id} from {message.author.name}")
+        logging.info(f"Processing ticket message in {channel_id} from {message.author.name} (Context: {ticket_run_context.project_context}, Intent: {current_intent_from_map})")
 
         if channel_id not in pending_messages:
             pending_messages[channel_id] = message.content
         else:
-            pending_messages[channel_id] += "\n" + message.content 
+            pending_messages[channel_id] += "\n" + message.content
 
         if channel_id in pending_tasks:
             pending_tasks[channel_id].cancel()
-            logging.debug(f"Cancelled pending task for channel {channel_id}")
-
-        pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id))
+        
+        # Pass the context to process_ticket_message
+        pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
         logging.debug(f"Scheduled processing task for channel {channel_id} in {COOLDOWN_SECONDS}s")
 
-    async def process_ticket_message(self, channel_id: int):
-        """Processes aggregated messages for a ticket channel after cooldown."""
+    async def process_ticket_message(self, channel_id: int, run_context: BotRunContext):
+        # --- Debouncing and message retrieval ---
         try:
             await asyncio.sleep(COOLDOWN_SECONDS)
         except asyncio.CancelledError:
@@ -2005,32 +1840,42 @@ class TicketBot(discord.Client):
 
         aggregated_text = pending_messages.pop(channel_id, None)
         pending_tasks.pop(channel_id, None)
-
         if not aggregated_text: return
+
         channel = self.get_channel(channel_id)
         if not isinstance(channel, discord.TextChannel): return
 
-        category_id = channel.category.id if channel.category else None
-        project_ctx = CATEGORY_CONTEXT_MAP.get(category_id, "unknown")
-        run_context = BotRunContext(
-            channel_id=channel_id,
-            category_id=category_id,
-            project_context=project_ctx
-        )
+        # Check if an acknowledgement is needed before starting the heavy processing.
+        # The intent is a strong signal that a data-heavy operation is next.
+        intent = run_context.initial_button_intent
+        is_data_intent = intent in ['data_deposit_check', 'data_withdrawal_flow_start', 'data_vault_search']
+        
+        # Send an acknowledgement if the user's message was an address
+        if is_data_intent and is_message_primarily_address(aggregated_text):
+            # Extract address
+            parsed_address = resolve_ens(aggregated_text)
+            if parsed_address:
+                ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
+                try:
+                    await channel.send(ack_message)
+                    logging.info(f"Sent pre-run acknowledgement message to channel {channel_id}")
+                except Exception as e:
+                    logging.warning(f"Failed to send pre-run acknowledgement message: {e}")
 
+
+        # --- Agent ---
         current_history = conversation_threads.get(channel_id, [])
         input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": aggregated_text}]
-
-        logging.info(f"Processing aggregated text for ticket {channel_id} (Context: {project_ctx}): '{aggregated_text[:100]}...'")
+        
+        logging.info(f"Processing for ticket {channel_id} (Context: {run_context.project_context}, Initial Button Intent: {run_context.initial_button_intent}): '{aggregated_text[:100]}...'")
 
         async with channel.typing():
             final_reply = "An unexpected error occurred."
-            should_stop_processing = False 
+            should_stop_processing = False
 
             try:
-
                 run_config = RunConfig(
-                    workflow_name=f"Ticket Channel {channel_id} ({project_ctx})",
+                    workflow_name=f"Ticket Channel {channel_id} ({run_context.project_context}, Button Intent: {run_context.initial_button_intent})", # Use for logging
                     group_id=str(channel_id)
                 )
                 result: RunResult = await self.runner.run(
@@ -2041,69 +1886,72 @@ class TicketBot(discord.Client):
                     context=run_context
                 )
                 conversation_threads[channel_id] = result.to_input_list()
+
                 raw_final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
-                actual_mention = f"<@{SUPPORT_USER_ID}>"
+                actual_mention = f"<@{HUMAN_HANDOFF_TARGET_USER_ID}>"
                 final_reply = raw_final_reply.replace(HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
 
-                if actual_mention in final_reply:
-                    logging.info(f"Human handoff tag detected and replaced/present in response for channel {channel_id}.")
-                    should_stop_processing = True 
-                elif HUMAN_HANDOFF_TAG_PLACEHOLDER in raw_final_reply:
-                     logging.warning(f"Handoff placeholder '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' found in raw reply but not replaced in channel {channel_id}.")
-                     should_stop_processing = True 
-
+                if actual_mention in final_reply or HUMAN_HANDOFF_TAG_PLACEHOLDER in raw_final_reply:
+                    logging.info(f"Human handoff tag detected in response for channel {channel_id}.")
+                    should_stop_processing = True
             except InputGuardrailTripwireTriggered as e:
                  logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                  guardrail_info = e.guardrail_result.output.output_info
                  if isinstance(guardrail_info, dict) and "message" in guardrail_info:
                      final_reply = guardrail_info["message"]
-                     if "classification" in guardrail_info and isinstance(guardrail_info["classification"], dict):
-                          logging.info(f"Guardrail classification: {guardrail_info['classification'].get('request_type', 'Unknown')}")
                  else:
-                     logging.error("Guardrail triggered but message not found in output_info!")
                      final_reply = "Your request could not be processed due to input checks."
                  should_stop_processing = True
                  conversation_threads.pop(channel_id, None)
-
             except MaxTurnsExceeded:
                  logging.warning(f"Max turns ({MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                 final_reply = f"This conversation has reached its maximum length. <@{SUPPORT_USER_ID}> may need to intervene."
+                 final_reply = f"This conversation has reached its maximum length. <@{HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
                  should_stop_processing = True
                  conversation_threads.pop(channel_id, None)
-
             except AgentsException as e:
                  logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                 final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{SUPPORT_USER_ID}>."
-                 should_stop_processing = True 
-
+                 final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{HUMAN_HANDOFF_TARGET_USER_ID}>."
+                 should_stop_processing = True
             except Exception as e:
                  logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                 final_reply = f"An unexpected error occurred. Please notify <@{SUPPORT_USER_ID}>."
+                 final_reply = f"An unexpected error occurred. Please notify <@{HUMAN_HANDOFF_TARGET_USER_ID}>."
                  should_stop_processing = True
 
             try:
-
                 reply_view = StopBotView() if not should_stop_processing else None
-                await send_long_message(channel, final_reply, view=reply_view) 
-
+                await send_long_message(channel, final_reply, view=reply_view)
                 logging.info(f"Sent ticket reply/replies in channel {channel_id}. Stop processing flag: {should_stop_processing}")
-                if should_stop_processing:
-
-                    if channel_id not in stopped_channels:
-                         stopped_channels.add(channel_id)
-                         logging.info(f"Added channel {channel_id} to stopped channels due to error/handoff tag.")
-
+                if should_stop_processing and channel_id not in stopped_channels:
+                    stopped_channels.add(channel_id)
+                    logging.info(f"Added channel {channel_id} to stopped channels due to error/handoff tag.")
             except discord.Forbidden:
                  logging.error(f"Missing permissions to send message in channel {channel_id}")
                  stopped_channels.add(channel_id)
             except Exception as e:
                  logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
 
+
+
+# ----------------------------
+# Run the Bot
+# ----------------------------
 if __name__ == "__main__":
+    if not OPENAI_API_KEY or "YOUR_OPENAI_API_KEY" in OPENAI_API_KEY:
+        print("Error: OPENAI_API_KEY is not set or is using the placeholder value.")
+        sys.exit(1)
+    if not DISCORD_BOT_TOKEN or "YOUR_BOT_TOKEN" in DISCORD_BOT_TOKEN:
+        print("Error: DISCORD_BOT_TOKEN is not set or is using the placeholder value.")
+        sys.exit(1)
+    if not PINECONE_API_KEY or "YOUR_PINECONE_API_KEY" in PINECONE_API_KEY:
+        print("Error: PINECONE_API_KEY is not set or is using the placeholder value.")
+        sys.exit(1)
+    if not ALCHEMY_KEY or "YOUR_ALCHEMY_KEY" in ALCHEMY_KEY:
+        print("Warning: ALCHEMY_KEY is not set or is using the placeholder value. Web3 features may fail.")
+
     intents = discord.Intents.default()
-    intents.message_content = True 
-    intents.guilds = True          
-    intents.messages = True        
+    intents.message_content = True
+    intents.guilds = True
+    intents.messages = True
 
     client = TicketBot(intents=intents)
     client.run(DISCORD_BOT_TOKEN)
