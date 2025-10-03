@@ -52,11 +52,13 @@ _This document provides internal context for AI agents to improve their analysis
 - **Function:** The ySupport bot is a powerful support bot for Yearn, with access to Yearn APIs for vault data, web3 APIs for blockchain data, and RAG (Retrieval-Augmented Generation) for Yearn documentation.
 - **Knowledge Source:** It has access to the entire public documentation site (FAQ, user guides, developer documentation), Yearn APIs, and web3 APIs.
 - **Current Limitation:** The bot is not yet trained to answer questions about our internal context (like new tools and products) or real-time on-chain data for a few newly deployed contracts. It can only report what is written in the docs, and what is available in the Yearn APIs and web3 APIs.
+- **Keywords:** support, help, resolve issues.
 
 ### yPort Bot
-- **Function:** The yPort bot is a portfolio tracker bot on Discord and Telegram that help Yearn users monitor their Yearn Vault deposits across multiple addresses by generating detailed portfolio reports including personalized vault and staking suggestions based on users' current Vault deposits.
+- **Function:** The yPort bot is a portfolio tracker bot on Discord and Telegram that help Yearn users monitor their Yearn Vault deposits across multiple addresses by generating detailed portfolio reports including personalized vault and staking suggestions based on users' current Vault deposits. These suggestions are for "like-for-like", only showing vaults that use the same underlying token as the user's current deposits but offer a higher APY.
 - **Sources:** Yearn APIs (yDaemon and Kong) for vault data and information, web3 APIs for blockchain data (user balances)
 - **URL:** Discord: https://discord.com/channels/734804446353031319/1279431421760507976 Telegram: https://t.me/yPortBot
+- **Keywords:** portfolio, tracking, vault deposits.
 
 ### yDeposits Bot
 - **Function:** Internal support tool for Yearn, the bot allows the ySupport team to easily provide users with detailed performance analytics for Yearn vaults, including APR and pricePerShare trends over specific blocks or time ranges. It streamlines support requests and answering common queries about vault performance.
@@ -66,6 +68,7 @@ _This document provides internal context for AI agents to improve their analysis
 - **Function:** Similar to yDeposits, a user-facing website to view historical performance (APY, pricePerShare, TVL) with detailed graphs and metrics for Vaults and Strategies.
 - **URL:** https://yearn-powerglove.vercel.app
 - **Sources:** Yearn API (Kong) for vault data and information.
+- **Keywords:** vault performance, tracking.
 
 ### Defi Antiscam Bot
 - **Function:** A federated antiscam bot to proactively protect DeFi and crypto communities, automating screening of member joins and messages, sharing a global ban list across multiple servers.
