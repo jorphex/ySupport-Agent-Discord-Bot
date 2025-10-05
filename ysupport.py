@@ -12,11 +12,10 @@ import logging
 from typing import List, Dict, Any, Optional, Union, Literal
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-
+from datetime import datetime, timezone, timedelta
 from openai import OpenAI, AsyncOpenAI
 from pinecone import Pinecone
 from web3 import Web3
-
 from agents import (
     Agent, Runner, function_tool, RunContextWrapper, Model,
     OpenAIResponsesModel, ModelSettings, Tool, Handoff, handoff,
@@ -26,39 +25,45 @@ from agents import (
     InputGuardrailTripwireTriggered, MaxTurnsExceeded, AgentsException,
     RunConfig
 )
-from agents.models.interface import ModelProvider 
-from agents.items import ItemHelpers 
+from agents.models.interface import ModelProvider
+from agents.items import ItemHelpers
 from agents import input_guardrail 
-from agents.handoffs import HandoffInputData 
+from agents.handoffs import HandoffInputData
+from dotenv import load_dotenv
+load_dotenv()
 
 sys.stdout = sys.stderr
 
 @dataclass
 class BotRunContext:
-    """Context passed to agents during a run."""
     channel_id: int
     category_id: Optional[int] = None
     is_public_trigger: bool = False
+    project_context: Literal["yearn"] = "unknown"
+    initial_button_intent: Optional[str] = None
 
-    project_context: Literal["yearn", "bearn", "unknown"] = "unknown"
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "key") 
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "token") 
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "key") 
-ALCHEMY_KEY = os.getenv("ALCHEMY_KEY", "key") 
+# ----------------------------
+# Configuration
+# ----------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+ALCHEMY_KEY = os.getenv("ALCHEMY_KEY")
 
 # --- Pinecone ---
-PINECONE_INDEX_NAME = "index"
-YEARN_PINECONE_NAMESPACE = "namespace"
+PINECONE_INDEX_NAME = "-"
+YEARN_PINECONE_NAMESPACE = "-"
 
+# --- Discord ---
 PUBLIC_TRIGGER_USER_IDS = {
-    "id"
+    "-",
+    "-",
+    "-"
 }
-YEARN_TICKET_CATEGORY_ID = category id
+YEARN_TICKET_CATEGORY_ID = -
 YEARN_PUBLIC_TRIGGER_CHAR = "y"
-HUMAN_HANDOFF_TARGET_USER_ID = "user id"
+HUMAN_HANDOFF_TARGET_USER_ID = "-"
 HUMAN_HANDOFF_TAG_PLACEHOLDER = "{HUMAN_HANDOFF_TAG_PLACEHOLDER}" # The literal string in the instructions
-
 
 # Map category IDs to project contexts
 CATEGORY_CONTEXT_MAP = {
@@ -70,17 +75,19 @@ TRIGGER_CONTEXT_MAP = {
     YEARN_PUBLIC_TRIGGER_CHAR: "yearn",
 }
 
-PR_MARKETING_CHANNEL_ID = channel id
-MAX_DISCORD_MESSAGE_LENGTH = 1990
+PR_MARKETING_CHANNEL_ID = -
+MAX_DISCORD_MESSAGE_LENGTH = 1990 # Be slightly conservative
 
 # --- Bot Behavior ---
 COOLDOWN_SECONDS = 5 # Debounce time for user messages in tickets
 MAX_TICKET_CONVERSATION_TURNS = 10 # Limit conversation length in tickets
 MAX_RESULTS_TO_SHOW = 5 # Define how many results to show by default or when sorted
 STRATEGY_FETCH_CONCURRENCY = 10 # Limit concurrent requests for strategy details
-PUBLIC_TRIGGER_TIMEOUT_MINUTES = 10 # Timeout in minutes
+PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30 # Timeout in minutes
 
 # --- State to track channels awaiting button press ---
+# This set will store channel IDs where the initial button message has been sent
+# and we are waiting for the user to click a button.
 channels_awaiting_initial_button_press: set[int] = set()
 channel_intent_after_button: Dict[int, str] = {}
 
@@ -1195,29 +1202,60 @@ async def _fetch_vault_and_gauge_balances(
             }
 
 
-
 @function_tool
 async def answer_from_docs_tool(
     wrapper: RunContextWrapper[BotRunContext],
     user_query: str
 ) -> str:
     """
-    Answers questions based on documentation using a vector search (Pinecone).
-    Use this for general questions about how the specified project works, concepts, etc.
+    Answers questions based on documentation using a two-stage process:
+    1. Vector search (Pinecone) to find semantically similar documents.
+    2. Reranking to find the most relevant documents for the specific query.
     """
     project_context = wrapper.context.project_context
     logging.info(f"[Tool:answer_from_docs] --- Tool Invoked ---")
     logging.info(f"[Tool:answer_from_docs] Received query: '{user_query}'")
-    top_k = 10
+    
 
-    namespace_to_query = YEARN_PINECONE_NAMESPACE
-    logging.info(f"[Tool:answer_from_docs] Querying Pinecone namespace: '{namespace_to_query}'")
+    initial_retrieval_k = 20  # Fetch a wider net of initial candidates
+    rerank_top_n = 8          # Rerank and return the top N most relevant results
 
+
+    namespaces_to_query = ["yearn-docs", "yearn-yips"]
+
+    # --- QUERY TRANSFORMATION (HyDE) ---
+    # Use an LLM to generate a hypothetical, ideal answer. We will use the embedding of this
+    # answer to search Pinecone, as it's likely to be more semantically rich than the raw query.
+    try:
+        hyde_prompt = (
+            f"You are a Yearn documentation expert. A user has asked the following question: '{user_query}'.\n"
+            "Please generate a concise, hypothetical answer to this question as if you had all the necessary documentation. "
+            "Include placeholders for specific details if you don't know them. This answer will be used to find the real documents. "
+            "For example, if the question is about a YIP, your hypothetical answer should mention the YIP number, its status, and refer to a link."
+        )
+        
+        hyde_response = await openai_async_client.chat.completions.create(
+            model="gpt-4.1-nano", # A fast model is good for this step
+            messages=[{"role": "system", "content": hyde_prompt}],
+            temperature=0.0,
+        )
+        hypothetical_answer = hyde_response.choices[0].message.content.strip()
+        logging.info(f"[Tool:answer_from_docs] Generated hypothetical answer for embedding: '{hypothetical_answer}'")
+        
+        # The text we will embed is now a combination of the original query and the hypothetical answer
+        # to get the best of both worlds: the user's specific keywords and the rich semantic context.
+        embedding_text = f"{user_query}\n\n{hypothetical_answer}"
+
+    except Exception as e:
+        logging.error(f"[Tool:answer_from_docs] Error during HyDE step: {e}. Falling back to original query.")
+        embedding_text = user_query # Fallback to the old method if this step fails
+
+    # 1. Get Query Embedding (Unchanged)
     try:
         response = await asyncio.to_thread(
             openai_sync_client.embeddings.create,
             model="text-embedding-3-large",
-            input=[user_query],
+            input=[embedding_text],
             encoding_format="float"
         )
         query_embedding = response.data[0].embedding
@@ -1226,67 +1264,116 @@ async def answer_from_docs_tool(
         logging.error(f"[Tool:answer_from_docs] Error generating query embedding: {e}")
         return "Sorry, I couldn't process your question to search the documentation."
 
+    # 2. Search Pinecone for Initial Candidates
+    all_matches = []
     try:
-        search_results = await asyncio.to_thread(
-            pinecone_index.query,
-            namespace=namespace_to_query,
-            vector=query_embedding,
-            top_k=top_k,
-            include_metadata=True
-        )
-        matches = search_results.get("matches", [])
-        logging.info(f"[Tool:answer_from_docs] Pinecone query returned {len(matches)} matches from namespace '{namespace_to_query}'.")
+        # Create a list of tasks to run concurrently
+        query_tasks = [
+            asyncio.to_thread(
+                pinecone_index.query,
+                namespace=ns,
+                vector=query_embedding,
+                top_k=initial_retrieval_k,
+                include_metadata=True
+            ) for ns in namespaces_to_query
+        ]
+        
+        # Run the queries in parallel
+        search_results_list = await asyncio.gather(*query_tasks)
+        
+        # Combine the results
+        for search_results in search_results_list:
+            all_matches.extend(search_results.get("matches", []))
+        
+        logging.info(f"[Tool:answer_from_docs] Pinecone query returned a total of {len(all_matches)} initial candidates from {len(namespaces_to_query)} namespaces.")
     except Exception as e:
         logging.error(f"[Tool:answer_from_docs] Error querying Pinecone: {e}")
-        return f"Sorry, I encountered an error while searching the {project_context.capitalize()} documentation."
+        return f"Sorry, I encountered an error while searching the documentation."
 
+    if not all_matches:
+        logging.info("[Tool:answer_from_docs] No initial documents found in Pinecone.")
+        return f"I couldn't find any information in the documentation to answer that question."
+
+    # --- 2.5: Rerank for Relevance ---
+    try:
+        # Remove duplicate documents before reranking, just in case
+        unique_matches = {match.id: match for match in all_matches}.values()
+        docs_to_rerank = [match.get("metadata", {}).get("text", "") for match in unique_matches]
+        
+        logging.info(f"[Tool:answer_from_docs] Sending {len(docs_to_rerank)} unique candidates to the reranker...")
+        
+        rerank_response = await asyncio.to_thread(
+            pc.inference.rerank,
+            model="bge-reranker-v2-m3",
+            query=user_query,
+            documents=docs_to_rerank,
+            top_n=rerank_top_n,
+            return_documents=False
+        )
+        
+        # Rebuild the final list from the unique matches based on the reranked order
+        unique_matches_list = list(unique_matches)
+        reranked_matches = [unique_matches_list[result.index] for result in rerank_response.data]
+        logging.info(f"[Tool:answer_from_docs] Reranking complete. Using top {len(reranked_matches)} results.")
+
+    except Exception as e:
+        logging.error(f"[Tool:answer_from_docs] Error during reranking: {e}. Falling back to original search results.")
+        # Fallback: sort all matches by score and take the top N
+        all_matches.sort(key=lambda x: x.score, reverse=True)
+        reranked_matches = all_matches[:rerank_top_n]
+
+    # 3. Build Context
     context_pieces = []
-    if matches:
-        logging.info(f"[Tool:answer_from_docs] Processing {len(matches)} matches to build context...")
-        for i, match in enumerate(matches):
+    if reranked_matches:
+        for match in reranked_matches:
             metadata = match.get("metadata", {})
             text_chunk = metadata.get("text")
-
-            # --- Extract all relevant metadata fields ---
-            filename = metadata.get("filename", "Unknown Filename")
             doc_title = metadata.get("doc_title", "Unknown Document")
             section_heading = metadata.get("section_heading", "Unknown Section")
-            chunk_id = metadata.get("chunk_id", "N/A")
-            source_path = metadata.get("source_path", filename)
+            source_path = metadata.get("source_path", "Unknown")
 
             if text_chunk:
                 source_description = (
                     f"Source Document: {doc_title} ({source_path})\n"
-                    f"Section: {section_heading}\n"
+                    f"Section: {section_heading}"
                 )
+                # Check for YIP status and add it if present
+                yip_status = metadata.get("yip_status")
+                if yip_status:
+                    source_description += f"\nYIP Status: {yip_status}"
+                
                 context_pieces.append(f"{source_description}\nContent:\n{text_chunk}")
-                logging.debug(f"[Tool:answer_from_docs] Added context piece {i+1}: Title='{doc_title}', Section='{section_heading}', Path='{source_path}', Chunk={chunk_id}")
             else:
-                 logging.warning(f"[Tool:answer_from_docs] Match ID {match.get('id', 'N/A')} (Source: {source_path}, Chunk: {chunk_id}) had empty 'text' in metadata.")
+                 logging.warning(f"[Tool:answer_from_docs] Reranked match ID {match.get('id', 'N/A')} had empty 'text' in metadata.")
 
         context_text = "\n\n---\n\n".join(context_pieces)
-        logging.info(f"[Tool:answer_from_docs] Built context string (length: {len(context_text)}).")
-        context_preview = context_text.replace('\n', ' ')[:500]
-        logging.debug(f"[Tool:answer_from_docs] Context Preview:\n---\n{context_preview}...\n---")
+        logging.info(f"[Tool:answer_from_docs] Built context string from reranked results (length: {len(context_text)}).")
 
     else:
         logging.info("[Tool:answer_from_docs] No relevant documents found in Pinecone.")
         logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (No Matches) ---")
+        # Provide a more specific message based on the project context
         return f"I couldn't find any relevant information in the {project_context.capitalize()} documentation to answer that specific question."
 
+    # Check if context is still empty after processing matches (e.g., all matches had empty text)
     if not context_text:
          logging.warning("[Tool:answer_from_docs] Context string is empty even though matches were found. All matched chunks might have had empty 'text' metadata.")
          logging.info(f"[Tool:answer_from_docs] --- Tool Returning Early (Empty Context Built) ---")
          return f"I found potential matches in the {project_context.capitalize()} documentation, but couldn't extract the content correctly."
 
 
+    # 4. Generate Answer using LLM
     system_prompt = (
-        f"You are an expert assistant for the Yearn project. Your knowledge base consists **SOLELY** of the documentation context provided below. "
+        f"You are an expert assistant for the Yearn project operating in the Yearn Discord server. Your knowledge base consists **SOLELY** of the provided 'Documentation Context'. "
         f"Answer the user's question directly and authoritatively using only this knowledge.\n"
-        f"**Crucially: Do NOT mention 'context', 'sources', 'information provided', 'sections', or the process of finding information.** Avoid any phrases that refer to the origin or structure of your knowledge (e.g., 'According to...', 'Based on...', 'The section on...', 'The provided info shows...'). Speak directly from the knowledge you possess.\n"
-        "Synthesize your answer clearly. If the context provides specific details, include them.\n"
-        "If the answer is not found within the context, state that you don't have the information directly. For example: 'My knowledge base doesn't include details on X.' or 'I don't have information about X.' Do **NOT** use any external knowledge or make assumptions.\n"
-        "**Citation:** When possible, implicitly reference the source by mentioning the topic or section discussed (e.g., 'According to the section on Vault Strategies...', or 'The documentation about {section_heading} states...'). You can use the 'Source Document' and 'Section' information provided with each context piece to guide your response."
+        f"**RESPONSE REQUIREMENTS:**\n"
+        f"1.  **LINKING IS MANDATORY:** Any mention of a specific resource, tool, website, or proposal (like a Yearn Improvement Proposal or YIP) that has a URL in the context **MUST** be a clickable Markdown link. There are no exceptions. Example: `[Powerglove](https://yearn-powerglove.vercel.app/)`.\n"
+        f"2.  **YIP STATUS IS MANDATORY:** Any mention of a YIP **MUST** include its status (e.g., Proposed, Implemented, etc). Example: `The **Proposed** [YIP-54](URL) suggests...`\n"
+        f"3.  **NO META-COMMENTARY:** Do NOT mention 'context', 'sources', 'information provided', 'sections', or the process of finding information. Avoid any phrases that refer to the origin or structure of your knowledge (e.g., 'According to...', 'Based on...', 'The section on...', 'The provided info shows...'). Speak directly from the knowledge you possess.\n"
+        f"4.  **DO NOT MENTION THE SUPPORT BOT:** Your response **MUST NOT** mention 'ySupport Bot' or refer to yourself as a support bot. Focus only on answering the user's question.\n"
+        f"5.  **STRICTLY CONTEXT-BASED:** Your answer **MUST** be derived solely from the 'Documentation Context'. If the answer is not found within the context, state that you don't have the information directly. For example: 'My knowledge base doesn't include details on X.' or 'I don't have information about X.' Do **NOT** use any external knowledge or make assumptions.\n\n"
+        f"Review the user's question and the context, then provide your final answer, strictly adhering to all requirements above."
+        f"Synthesize your answer clearly. If the context provides specific details, include them.\n"
     )
 
     messages_for_llm = [
@@ -1297,7 +1384,7 @@ async def answer_from_docs_tool(
 
     try:
         response = await openai_async_client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             messages=messages_for_llm,
             temperature=0.1
         )
@@ -1426,22 +1513,24 @@ yearn_docs_qa_agent = Agent[BotRunContext](
     name="Yearn Docs QA Specialist",
     instructions=(
         "# Role and Objective\n"
-        "You answer questions based *only* on Yearn documentation using the 'answer_from_docs_tool'.\n"
+        "You answer questions based *only* on Yearn documentation and historical proposals using the 'answer_from_docs_tool'.\n"
         "# Workflow\n"
-        "1. Confirm you understand the user's question is about Yearn documentation.\n"
+        "1. Confirm you understand the user's question is about Yearn.\n"
         "2. Use the `answer_from_docs_tool` with the user's exact query.\n"
         "3. Relay the answer or 'not found' message from the tool directly.\n"
 
         "# Rules\n"
         "- **Tool Exclusivity:** You MUST rely *exclusively* on the information returned by the `answer_from_docs_tool`. If the tool finds no answer, state that clearly ('I couldn't find information on that in the Yearn documentation.').\n"
         "- **Do NOT Supplement:** Do NOT add information from your own knowledge, guess, or speculate.\n"
-        "- **Scope Limit:** Do NOT answer questions about real-time data (APR, TVL, balances), specific user account issues, Bearn-specific topics, or provide financial advice. State these are outside your scope.\n"
+        "- **Distinguish Fact from Proposal:** Pay close attention to the status of Yearn Improvement Proposals (YIPs). If information comes from a YIP, ensure you reflect its status (e.g., 'Implemented', 'Proposed') as instructed by the tool.\n"
+        "- **Scope Limit:** Do NOT answer questions about real-time data (APR, TVL, balances), specific user account issues, or provide financial advice. State these are outside your scope.\n"
 
         f"# Escalation\n"
         "- If the question is complex even for the docs (e.g., requires interpretation beyond retrieval), seems like a bug report, or the tool fails, state that human help is needed and **include the tag '{HUMAN_HANDOFF_TAG_PLACEHOLDER}' in your response.**\n"
     ),
     tools=[answer_from_docs_tool],
     model="gpt-4.1-mini",
+    tool_use_behavior="stop_on_first_tool",
     model_settings=ModelSettings(temperature=0.2)
 )
 
@@ -1449,21 +1538,23 @@ yearn_docs_qa_agent = Agent[BotRunContext](
 bd_priority_guardrail_agent = Agent[BotRunContext](
     name="BD/PR/Listing Guardrail Check",
     instructions=(
-        "# Role and Objective\n"
-        "Analyze the user's message to classify its primary intent regarding Yearn. Use the following categories for the 'request_type' field:\n"
-        "# Classification Categories\n"
-        "- 'listing': The user is asking Yearn to list their token on an exchange OR asking Yearn to provide liquidity for their token.\n"
-        "- 'partnership': The user is proposing a technical integration, collaboration, or joint venture with Yearn.\n"
-        "- 'marketing': The user is proposing a joint marketing campaign, AMA, or promotional activity.\n"
-        "- 'other_bd': Other business development inquiries not covered above (e.g., grants, general BD contact).\n"
-        "- 'job_inquiry': The user is asking about working for Yearn, contributing code/skills, applying for a grant, or offering their services as an individual/team.\n"
-        "- 'not_bd_pr': This is a standard user support request, a question about using Yearn/Bearn, a bug report, or unrelated chat.\n\n"
-        "# Rules\n"
-        "Focus on the main goal. If a message mentions multiple things, classify based on the primary ask. Be precise.\n"
-        "Output *only* the classification in the specified `BDPriorityCheckOutput` format. Do not add any explanation or conversational text.\n"
+        "Analyze the user's message to classify its primary intent. Your goal is to catch business, partnership, or job inquiries while letting legitimate support requests pass through.\n\n"
+        "**CRITICAL CONTEXT:** You are analyzing a message within a support ticket. The user may be responding to a previous message from the support bot. Phrases like 'the first one', 'the second option', 'yes', 'no', or providing an address are very likely part of an ongoing support conversation and should almost always be classified as 'not_bd_pr'. Be very conservative in your classification.\n\n"
+        "Use the following categories for the 'request_type' field:\n"
+        "- 'listing': The user is clearly asking Yearn to list their token or provide liquidity for a listing.\n"
+        "- 'partnership': The user is clearly proposing a technical integration, collaboration, or joint venture. The proposal should be explicit.\n"
+        "- 'marketing': The user is clearly proposing a joint marketing campaign, AMA, or promotional activity.\n"
+        "- 'job_inquiry': The user is clearly asking about working for Yearn, contributing, or applying for a grant.\n"
+        "- 'other_bd': Other clear business development inquiries not covered above.\n"
+        "- 'not_bd_pr': This is the default. Use this for **ALL** standard user support requests, questions about using Yearn, bug reports, follow-up replies, ambiguous messages, or anything that is not an EXPLICIT, INITIAL business proposal.\n\n"
+        "**Decision Heuristics:**\n"
+        "- If the message is a follow-up (e.g., 'the second one', 'yes, that one', 'let's do the first option'), it is **'not_bd_pr'**.\n"
+        "- If the message is just an address, it is **'not_bd_pr'**.\n"
+        "- If the message is a question about how to use the protocol, it is **'not_bd_pr'**.\n"
+        "- Only classify as a business category if the message is a clear, unsolicited, initial proposal. If in doubt, classify as **'not_bd_pr'**."
     ),
     output_type=BDPriorityCheckOutput,
-    model="gpt-4.1-mini",
+    model="gpt-4.1-nano",
     model_settings=ModelSettings(temperature=0.1)
 )
 
@@ -1698,10 +1789,11 @@ class TicketBot(discord.Client):
         await self.process_ticket_message(channel_id, run_context, is_button_trigger=True, synthetic_user_message_for_log=synthetic_text)
 
     async def on_message(self, message: discord.Message):
+        # Ignore bots and self
         if message.author.bot or message.author.id == self.user.id:
             return
 
-        # --- STATEFUL PUBLIC TRIGGER ---
+        # STATEFUL PUBLIC TRIGGER
         is_reply = message.reference is not None
         trigger_char_used = message.content.strip()
         is_valid_trigger_char = trigger_char_used in TRIGGER_CONTEXT_MAP
@@ -1719,6 +1811,7 @@ class TicketBot(discord.Client):
                 original_message = await message.channel.fetch_message(message.reference.message_id)
                 if original_message and not original_message.author.bot and original_message.content:
                     
+                    # Context Management
                     original_author_id = original_message.author.id
                     current_history: List[TResponseInputItem] = []
                     
@@ -1730,7 +1823,7 @@ class TicketBot(discord.Client):
                             current_history = conversation.history
                         else:
                             logging.info(f"Public conversation for user {original_author_id} expired ({time_since_last.total_seconds():.1f}s ago). Starting new context.")
-                            public_conversations.pop(original_author_id, None)
+                            public_conversations.pop(original_author_id, None) # Clean up expired entry
                     
                     input_list = current_history + [{"role": "user", "content": original_message.content}]
 
@@ -1745,16 +1838,17 @@ class TicketBot(discord.Client):
                         try:
                             run_config = RunConfig(
                                 workflow_name=f"Public Stateful Trigger-{message.channel.id}",
-                                group_id=str(original_author_id)
+                                group_id=str(original_author_id) # Group traces by the user being helped
                             )
                             result: RunResult = await self.runner.run(
-                                starting_agent=triage_agent,
-                                input=input_list,
-                                max_turns=5,
+                                starting_agent=triage_agent, # Your main triage agent
+                                input=input_list,           # Use the stateful input_list
+                                max_turns=5,                # Keep a turn limit for safety
                                 run_config=run_config,
                                 context=public_run_context
                             )
 
+                            # Save Updated Context
                             new_history = result.to_input_list()
                             new_conversation = PublicConversation(
                                 history=new_history,
@@ -1762,6 +1856,7 @@ class TicketBot(discord.Client):
                             )
                             public_conversations[original_author_id] = new_conversation
                             logging.info(f"Saved updated public conversation context for user {original_author_id}. History length: {len(new_history)} items.")
+
 
                             raw_reply = result.final_output if result.final_output else "I could not determine a response."
                             actual_mention = f"<@{HUMAN_HANDOFF_TARGET_USER_ID}>"
@@ -1773,14 +1868,14 @@ class TicketBot(discord.Client):
                             logging.error(f"Error during public trigger agent run for user {original_author_id}: {e}", exc_info=True)
                             await original_message.reply(f"Sorry, an error occurred while processing that request. Please notify <@{HUMAN_HANDOFF_TARGET_USER_ID}>.", mention_author=False)
 
-                    return # Stop further processing after handling the trigger
+                    return # IMPORTANT: Stop further processing after handling the trigger
 
             except discord.NotFound:
                 logging.warning(f"Original message for public trigger reply {message.id} not found.")
-                return
+                return # Can't proceed if original message is gone
             except discord.Forbidden:
                  logging.warning(f"Missing permissions to fetch original message for public trigger reply {message.id}.")
-                 return
+                 return # Can't proceed
             except Exception as e:
                  logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
                  return
