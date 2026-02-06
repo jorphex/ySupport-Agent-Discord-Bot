@@ -6,7 +6,7 @@ import requests
 import re
 import aiohttp
 from datetime import datetime, timezone
-from typing import Dict, Optional, List, Union, Literal
+from typing import Dict, Optional, List, Union, Literal, Any
 
 from web3 import Web3
 from pinecone import Pinecone
@@ -84,20 +84,104 @@ async def core_answer_from_docs(user_query: str) -> str:
         return "Error generating embedding."
 
     # --- STEP 3: Search ---
-    all_matches = []
+    def _normalize_match(match: Any, namespace: str) -> Dict[str, Any]:
+        if isinstance(match, dict):
+            return {
+                "id": match.get("id", ""),
+                "score": match.get("score", 0.0) or 0.0,
+                "metadata": match.get("metadata", {}) or {},
+                "namespace": namespace,
+            }
+        return {
+            "id": getattr(match, "id", ""),
+            "score": getattr(match, "score", 0.0) or 0.0,
+            "metadata": getattr(match, "metadata", {}) or {},
+            "namespace": namespace,
+        }
+
+    def _get_match_id(match: Any) -> str:
+        if isinstance(match, dict):
+            ns = match.get("namespace", "")
+            mid = match.get("id", "")
+            return f"{ns}:{mid}" if ns else mid
+        return getattr(match, "id", "")
+
+    all_matches: List[Dict[str, Any]] = []
     try:
-        query_tasks = [
-            asyncio.to_thread(
-                pinecone_index.query,
-                namespace=ns,
-                vector=query_embedding,
-                top_k=initial_retrieval_k,
-                include_metadata=True
-            ) for ns in namespaces_to_query
-        ]
+        try:
+            stats = await asyncio.to_thread(pinecone_index.describe_index_stats)
+            existing_namespaces = set((stats or {}).get("namespaces", {}).keys())
+            available_namespaces = [ns for ns in namespaces_to_query if ns in existing_namespaces]
+            if not available_namespaces:
+                available_namespaces = ["yearn-docs"]
+        except Exception:
+            available_namespaces = ["yearn-docs"]
+
+        query_lower = user_query.lower()
+        meta_like = any(k in query_lower for k in ["veyfi", "styfi", "dyfi", "yip", "governance", "staking", "migration"])
+        if meta_like:
+            meta_k, docs_k = 10, 5
+        else:
+            meta_k, docs_k = 5, 10
+        meta_k = max(1, meta_k)
+        docs_k = max(1, docs_k)
+
+        query_tasks = []
+        for ns in available_namespaces:
+            if ns == "yearn-docs":
+                query_tasks.append(
+                    asyncio.to_thread(
+                        pinecone_index.query,
+                        namespace=ns,
+                        vector=query_embedding,
+                        top_k=meta_k,
+                        include_metadata=True,
+                        filter={"source_type": {"$eq": "meta_context"}}
+                    )
+                )
+                query_tasks.append(
+                    asyncio.to_thread(
+                        pinecone_index.query,
+                        namespace=ns,
+                        vector=query_embedding,
+                        top_k=docs_k,
+                        include_metadata=True,
+                        filter={"source_type": {"$eq": "documentation"}}
+                    )
+                )
+            else:
+                query_tasks.append(
+                    asyncio.to_thread(
+                        pinecone_index.query,
+                        namespace=ns,
+                        vector=query_embedding,
+                        top_k=docs_k,
+                        include_metadata=True,
+                        filter={"source_type": {"$eq": "yip"}}
+                    )
+                )
+
         results_list = await asyncio.gather(*query_tasks)
-        for res in results_list:
-            all_matches.extend(res.get("matches", []))
+        for idx, res in enumerate(results_list):
+            namespace = available_namespaces[idx // 2] if len(available_namespaces) > 1 else available_namespaces[0]
+            for match in res.get("matches", []):
+                all_matches.append(_normalize_match(match, namespace))
+
+        if not all_matches:
+            fallback_tasks = [
+                asyncio.to_thread(
+                    pinecone_index.query,
+                    namespace=ns,
+                    vector=query_embedding,
+                    top_k=initial_retrieval_k,
+                    include_metadata=True
+                ) for ns in available_namespaces
+            ]
+            fallback_results = await asyncio.gather(*fallback_tasks)
+            for idx, res in enumerate(fallback_results):
+                namespace = available_namespaces[idx] if available_namespaces else "yearn-docs"
+                for match in res.get("matches", []):
+                    all_matches.append(_normalize_match(match, namespace))
     except Exception as e:
         logging.error(f"Pinecone error: {e}")
         return "Error searching docs."
@@ -107,8 +191,18 @@ async def core_answer_from_docs(user_query: str) -> str:
 
     # --- STEP 4: Rerank ---
     try:
-        unique_matches = {match.id: match for match in all_matches}.values()
-        docs_to_rerank = [match.get("metadata", {}).get("text", "") for match in unique_matches]
+        unique_matches_map: Dict[str, Any] = {}
+        for match in all_matches:
+            match_id = _get_match_id(match)
+            if match_id and match_id not in unique_matches_map:
+                unique_matches_map[match_id] = match
+        unique_matches = list(unique_matches_map.values()) if unique_matches_map else all_matches
+        docs_to_rerank = []
+        for match in unique_matches:
+            metadata = match.get("metadata", {}) if isinstance(match, dict) else getattr(match, "metadata", {}) or {}
+            text_chunk = metadata.get("text") or ""
+            source_type = metadata.get("source_type", "unknown")
+            docs_to_rerank.append(f"[source_type={source_type}]\n{text_chunk}")
         
         rerank_response = await asyncio.to_thread(
             pc.inference.rerank,
@@ -131,7 +225,42 @@ async def core_answer_from_docs(user_query: str) -> str:
         meta = match.get("metadata", {})
         text = meta.get("text")
         if text:
-            source = f"{meta.get('doc_title', 'Unk')} ({meta.get('source_path', '')})"
+            doc_title = meta.get("doc_title", "Unk")
+            section_heading = meta.get("section_heading")
+            source_url = meta.get("source_url")
+            source_path = meta.get("source_path", "")
+            source_type = meta.get("source_type")
+            doc_last_modified = meta.get("doc_last_modified")
+
+            yip_number = meta.get("yip_number")
+            yip_status = meta.get("yip_status")
+            yip_created = meta.get("yip_created")
+            yip_discussion_link = meta.get("yip_discussion_link")
+
+            title_bits = [doc_title]
+            if section_heading and section_heading != doc_title:
+                title_bits.append(section_heading)
+            title_str = " > ".join(title_bits)
+
+            location = source_url or source_path
+            source_bits = [title_str]
+            if location:
+                source_bits.append(f"({location})")
+            if source_type:
+                source_bits.append(f"[{source_type}]")
+            if doc_last_modified:
+                source_bits.append(f"last_modified={doc_last_modified}")
+            if yip_number:
+                yip_bits = [f"YIP-{yip_number}"]
+                if yip_status:
+                    yip_bits.append(f"status={yip_status}")
+                if yip_created:
+                    yip_bits.append(f"created={yip_created}")
+                if yip_discussion_link:
+                    yip_bits.append(f"discussion={yip_discussion_link}")
+                source_bits.append(" ".join(yip_bits))
+
+            source = " ".join(source_bits).strip()
             context_pieces.append(f"Source: {source}\nContent:\n{text}")
     
     context_text = "\n\n---\n\n".join(context_pieces)
@@ -140,9 +269,10 @@ async def core_answer_from_docs(user_query: str) -> str:
     system_prompt = (
         "You are an expert Yearn assistant. Answer based SOLELY on the context.\n"
         "Answer the user's question directly and authoritatively using only this knowledge.\n"
-        "1. LINKS ARE MANDATORY.\n"
-        "2. YIP STATUS IS MANDATORY.\n"
-        "3. NO META-COMMENTARY.\n"
+        "1. If a source line includes a URL, include that link in your answer.\n"
+        "2. If a source is a YIP (has YIP metadata), include the YIP status.\n"
+        "3. If a source has no URL, do not invent one.\n"
+        "4. NO META-COMMENTARY.\n"
     )
 
     try:

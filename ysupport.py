@@ -330,6 +330,34 @@ def is_message_primarily_address(text: str) -> bool:
         
     return False
 
+def should_force_docs_route(text: str) -> bool:
+    if not text:
+        return False
+    q = text.lower()
+    docs_keywords = [
+        "veyfi", "styfi", "dyfi", "yip", "governance", "staking"
+    ]
+    if any(k in q for k in docs_keywords):
+        return True
+    if "contract address" in q:
+        data_keywords = [
+            "vault", "vaults", "deposit", "withdraw", "apy", "tvl",
+            "balance", "strategy", "strategies", "pps", "price per share", "yield"
+        ]
+        if not any(k in q for k in data_keywords):
+            return True
+    return False
+
+def select_starting_agent(text: str, run_context: BotRunContext):
+    intent = run_context.initial_button_intent
+    if intent in ["data_deposit_check", "data_withdrawal_flow_start", "data_vault_search"]:
+        return yearn_data_agent
+    if intent == "docs_qa":
+        return yearn_docs_qa_agent
+    if should_force_docs_route(text):
+        return yearn_docs_qa_agent
+    return triage_agent
+
 # Tool Function Implementations
 @function_tool
 async def search_vaults_tool(
@@ -783,8 +811,12 @@ class TicketBot(discord.Client):
                                 workflow_name=f"Public Stateful Trigger-{message.channel.id}",
                                 group_id=str(original_author_id) # Group traces by the user being helped
                             )
+                            starting_agent = select_starting_agent(
+                                input_list[-1].get("content", "") if input_list else "",
+                                public_run_context
+                            )
                             result: RunResult = await self.runner.run(
-                                starting_agent=triage_agent, # Main triage agent
+                                starting_agent=starting_agent,
                                 input=input_list,           # Use the stateful input_list
                                 max_turns=5,                # Keep a turn limit for safety
                                 run_config=run_config,
@@ -900,8 +932,9 @@ class TicketBot(discord.Client):
                     workflow_name=f"Ticket Channel {channel_id} ({run_context.project_context}, Button Intent: {run_context.initial_button_intent})", # Use for logging
                     group_id=str(channel_id)
                 )
+                starting_agent = select_starting_agent(aggregated_text, run_context)
                 result: RunResult = await self.runner.run(
-                    starting_agent=triage_agent,
+                    starting_agent=starting_agent,
                     input=input_list,
                     max_turns=config.MAX_TICKET_CONVERSATION_TURNS,
                     run_config=run_config,
