@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+.continue/
+*.backup
+*.bak
+*.tmp
+*~
+.dockerignore
+AGENTS.md

@@ -1,0 +1,10 @@
+discord.py
+requests
+openai
+web3
+openai-agents
+pinecone
+aiohttp 
+python-dotenv
+mcp
+uvicorn
