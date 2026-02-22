@@ -4,7 +4,7 @@ import os
 import tools_lib
 import config
 import logging
-from typing import Optional, Annotated
+from typing import Annotated
 from pydantic import Field
 
 try:

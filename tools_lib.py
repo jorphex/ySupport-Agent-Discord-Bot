@@ -6,7 +6,7 @@ import requests
 import re
 import aiohttp
 from datetime import datetime, timezone
-from typing import Dict, Optional, List, Union, Literal, Any
+from typing import Dict, Optional, List, Union, Any
 
 from web3 import Web3
 from pinecone import Pinecone
@@ -51,7 +51,10 @@ async def core_answer_from_docs(user_query: str) -> str:
     
     initial_retrieval_k = 15
     rerank_top_n = 8
-    namespaces_to_query = ["yearn-docs", "yearn-yips"]
+    query_lower = user_query.lower()
+    yip_terms = ["yip", "proposal", "governance vote", "snapshot vote"]
+    include_yips = any(t in query_lower for t in yip_terms)
+    namespaces_to_query = ["yearn-docs"] + (["yearn-yips"] if include_yips else [])
 
     # --- STEP 1: HyDE ---
     try:
@@ -117,12 +120,11 @@ async def core_answer_from_docs(user_query: str) -> str:
         except Exception:
             available_namespaces = ["yearn-docs"]
 
-        query_lower = user_query.lower()
         meta_like = any(k in query_lower for k in ["veyfi", "styfi", "dyfi", "yip", "governance", "staking", "migration"])
         if meta_like:
-            meta_k, docs_k = 10, 5
+            meta_k, docs_k = 6, 9
         else:
-            meta_k, docs_k = 5, 10
+            meta_k, docs_k = 4, 10
         meta_k = max(1, meta_k)
         docs_k = max(1, docs_k)
 
@@ -186,41 +188,43 @@ async def core_answer_from_docs(user_query: str) -> str:
         logging.error(f"Pinecone error: {e}")
         return "Error searching docs."
 
-    if not all_matches:
-        return "No information found in documentation."
-
-    # --- STEP 4: Rerank ---
-    try:
-        unique_matches_map: Dict[str, Any] = {}
-        for match in all_matches:
-            match_id = _get_match_id(match)
-            if match_id and match_id not in unique_matches_map:
-                unique_matches_map[match_id] = match
-        unique_matches = list(unique_matches_map.values()) if unique_matches_map else all_matches
-        docs_to_rerank = []
-        for match in unique_matches:
-            metadata = match.get("metadata", {}) if isinstance(match, dict) else getattr(match, "metadata", {}) or {}
-            text_chunk = metadata.get("text") or ""
-            source_type = metadata.get("source_type", "unknown")
-            docs_to_rerank.append(f"[source_type={source_type}]\n{text_chunk}")
-        
-        rerank_response = await asyncio.to_thread(
-            pc.inference.rerank,
-            model="bge-reranker-v2-m3",
-            query=user_query,
-            documents=docs_to_rerank,
-            top_n=rerank_top_n,
-            return_documents=False
-        )
-        unique_matches_list = list(unique_matches)
-        reranked_matches = [unique_matches_list[result.index] for result in rerank_response.data]
-    except Exception as e:
-        logging.error(f"Rerank error: {e}")
-        all_matches.sort(key=lambda x: x.score, reverse=True)
-        reranked_matches = all_matches[:rerank_top_n]
+    reranked_matches: List[Dict[str, Any]] = []
+    if all_matches:
+        # --- STEP 4: Rerank ---
+        try:
+            unique_matches_map: Dict[str, Any] = {}
+            for match in all_matches:
+                match_id = _get_match_id(match)
+                if match_id and match_id not in unique_matches_map:
+                    unique_matches_map[match_id] = match
+            unique_matches = list(unique_matches_map.values()) if unique_matches_map else all_matches
+            docs_to_rerank = []
+            for match in unique_matches:
+                metadata = match.get("metadata", {}) if isinstance(match, dict) else getattr(match, "metadata", {}) or {}
+                text_chunk = metadata.get("text") or ""
+                source_type = metadata.get("source_type", "unknown")
+                docs_to_rerank.append(f"[source_type={source_type}]\n{text_chunk}")
+            
+            rerank_response = await asyncio.to_thread(
+                pc.inference.rerank,
+                model="bge-reranker-v2-m3",
+                query=user_query,
+                documents=docs_to_rerank,
+                top_n=rerank_top_n,
+                return_documents=False
+            )
+            unique_matches_list = list(unique_matches)
+            reranked_matches = [unique_matches_list[result.index] for result in rerank_response.data]
+        except Exception as e:
+            logging.error(f"Rerank error: {e}")
+            all_matches.sort(key=lambda x: x.score, reverse=True)
+            reranked_matches = all_matches[:rerank_top_n]
+    else:
+        logging.info("[CoreTool:answer_from_docs] No matches found; proceeding with empty context.")
 
     # --- STEP 5: Context ---
     context_pieces = []
+    yip_status_entries: List[str] = []
     for match in reranked_matches:
         meta = match.get("metadata", {})
         text = meta.get("text")
@@ -259,20 +263,46 @@ async def core_answer_from_docs(user_query: str) -> str:
                 if yip_discussion_link:
                     yip_bits.append(f"discussion={yip_discussion_link}")
                 source_bits.append(" ".join(yip_bits))
+                if yip_status:
+                    yip_status_entries.append(f"YIP-{yip_number}: {yip_status}")
 
             source = " ".join(source_bits).strip()
             context_pieces.append(f"Source: {source}\nContent:\n{text}")
     
     context_text = "\n\n---\n\n".join(context_pieces)
+    yip_status_summary = "; ".join(sorted(set(yip_status_entries)))
+
+    def _extract_keywords(text: str) -> List[str]:
+        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        stop = {
+            "the", "and", "for", "with", "from", "that", "this", "have", "has",
+            "you", "your", "about", "what", "when", "where", "why", "how", "is",
+            "are", "can", "cant", "cannot", "able", "unable", "not", "show",
+            "showing", "missing", "does", "do", "did"
+        }
+        return [t for t in tokens if len(t) > 3 and t not in stop]
+
+    keywords = _extract_keywords(user_query)
+    context_lower = context_text.lower()
+    if not context_text.strip():
+        no_context = True
+    elif not keywords:
+        no_context = False
+    else:
+        no_context = not any(k in context_lower for k in keywords)
+    if no_context:
+        context_text = ""
 
     # --- STEP 6: LLM Generation ---
     system_prompt = (
         "You are an expert Yearn assistant. Answer based SOLELY on the context.\n"
         "Answer the user's question directly and authoritatively using only this knowledge.\n"
         "1. If a source line includes a URL, include that link in your answer.\n"
-        "2. If a source is a YIP (has YIP metadata), include the YIP status.\n"
+        "2. If YIP_STATUS_METADATA is provided and not 'none', include a final line: 'YIP Status: ...' using that metadata.\n"
         "3. If a source has no URL, do not invent one.\n"
-        "4. NO META-COMMENTARY.\n"
+        "4. If NO_CONTEXT is true or the context is empty, say you couldn't find this in the Yearn documentation in your own words. Do not invent details.\n"
+        "5. Respond in your own words; do not use canned responses or templates.\n"
+        "6. NO META-COMMENTARY.\n"
     )
 
     try:
@@ -280,7 +310,7 @@ async def core_answer_from_docs(user_query: str) -> str:
             model="gpt-4o", # Use your preferred model
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {user_query}"}
+                {"role": "user", "content": f"Context:\n{context_text}\n\nYIP_STATUS_METADATA: {yip_status_summary or 'none'}\nNO_CONTEXT: {str(no_context).lower()}\n\nQuestion: {user_query}"}
             ],
             temperature=0.1
         )
@@ -388,8 +418,10 @@ async def _fetch_vault_and_gauge_balances(
                 results = await asyncio.gather(wallet_balance_coro, gauge_balance_coro, return_exceptions=True)
                 wallet_balance = results[0] if not isinstance(results[0], Exception) else 0
                 gauge_token_balance = results[1] if not isinstance(results[1], Exception) else 0
-                if isinstance(results[0], Exception): logging.warning(f"Error fetching wallet balance for {vault_addr_str}: {results[0]}")
-                if isinstance(results[1], Exception): logging.warning(f"Error fetching gauge balance for {gauge_addr_str}: {results[1]}")
+                if isinstance(results[0], Exception):
+                    logging.warning(f"Error fetching wallet balance for {vault_addr_str}: {results[0]}")
+                if isinstance(results[1], Exception):
+                    logging.warning(f"Error fetching gauge balance for {gauge_addr_str}: {results[1]}")
             else:
                 # Only run the wallet balance check if no gauge
                 wallet_balance = await wallet_balance_coro
@@ -458,10 +490,12 @@ async def query_active_deposits_logic(resolved_address: str, chain: Optional[str
     total_deposits_found = 0
     for chain_name in chains_to_check:
         web3_instance = WEB3_INSTANCES.get(chain_name)
-        if not web3_instance: continue
+        if not web3_instance:
+            continue
 
         chain_id = config.CHAIN_NAME_TO_ID.get(chain_name)
-        if not chain_id: continue
+        if not chain_id:
+            continue
 
         chain_vaults = [v for v in all_vaults_data if v.get("chainID") == chain_id]
         if token_symbol:
@@ -533,8 +567,10 @@ async def query_active_deposits_logic(resolved_address: str, chain: Optional[str
 
 async def query_v1_deposits_logic(resolved_address: str, token_symbol: Optional[str] = None) -> str:
     logging.info(f"[Logic:query_v1_deposits] Checking V1 for {resolved_address}, Token: {token_symbol}")
-    if not V1_VAULTS: return "V1 vault data is not loaded."
-    if "ethereum" not in WEB3_INSTANCES: return "Ethereum connection unavailable."
+    if not V1_VAULTS:
+        return "V1 vault data is not loaded."
+    if "ethereum" not in WEB3_INSTANCES:
+        return "Ethereum connection unavailable."
 
     web3_eth = WEB3_INSTANCES["ethereum"]
     try:
@@ -667,7 +703,7 @@ async def core_get_withdrawal_instructions(user_address_or_ens: Optional[str], v
                 "2. Click the **'Contract'** tab.",
                 "3. Click the **'Write Contract'** tab.",
                 f"4. Click the **'Connect to Web3'** button and connect your wallet {f'(`{user_checksum_addr}`)' if user_checksum_addr else '(the one you used to deposit)'}.",
-                f"5. Look for a suitable withdrawal function (often named like 'withdraw', 'withdrawAll', or similar). Prioritize functions that take no arguments if available.", # Generic guidance
+                "5. Look for a suitable withdrawal function (often named like 'withdraw', 'withdrawAll', or similar). Prioritize functions that take no arguments if available.", # Generic guidance
                 "6. Click the **'Write'** button next to the chosen function.",
                 "7. Confirm the transaction in your wallet.",
                 "\nOnce the transaction confirms, your funds should be back in your wallet."
@@ -750,8 +786,8 @@ async def core_get_withdrawal_instructions(user_address_or_ens: Optional[str], v
             logging.warning("User address not provided; cannot fetch V3 balance. Instructions require manual input.")
 
         instructions.extend([
-            f"5. Find the **'redeem'** function.",
-            f"6. Enter the following values:",
+            "5. Find the **'redeem'** function.",
+            "6. Enter the following values:",
             f"   - `shares (uint256)`: {balance_input_value}",
             f"   - `receiver (address)`: {f'`{user_checksum_addr}` (Your wallet address)' if user_checksum_addr else '**(Your wallet address)**'}",
             f"   - `owner (address)`: {f'`{user_checksum_addr}` (Your wallet address again)' if user_checksum_addr else '**(Your wallet address again)**'}",
@@ -762,8 +798,8 @@ async def core_get_withdrawal_instructions(user_address_or_ens: Optional[str], v
     elif is_v2:
         logging.info(f"Vault {vault_checksum_addr} identified as V2 (version: {api_version_str}). Generating 'withdraw' (no args) instructions.")
         instructions.extend([
-            f"5. Find the **'withdraw()'** function that takes **no arguments**.",
-            f"   *Important: Do NOT use a 'withdraw' function that asks for '_shares' or an amount.*",
+            "5. Find the **'withdraw()'** function that takes **no arguments**.",
+            "   *Important: Do NOT use a 'withdraw' function that asks for '_shares' or an amount.*",
             "6. Click the **'Write'** button next to that specific 'withdraw()' function.",
             "7. Confirm the transaction in your wallet."
         ])
@@ -787,9 +823,9 @@ async def core_get_withdrawal_instructions(user_address_or_ens: Optional[str], v
 
         instructions.extend([
             f"5. **Unknown Vault Version (API Version: {api_version_str or 'Not Found'})**: Look for a function named **'withdraw'** or **'redeem'**.",
-            f"   - Try **'withdraw()'** (with no input fields) first.",
+            "   - Try **'withdraw()'** (with no input fields) first.",
             f"   - If that's not present or doesn't work, try **'redeem'**. If it asks for `shares`, `receiver`, and `owner`, enter your balance {balance_info} for `shares` and your address ({f'`{user_checksum_addr}`' if user_checksum_addr else 'Your Address'}) for `receiver` and `owner`.",
-            f"   - If unsure, please ask for human help again, mentioning the vault version is unclear.",
+            "   - If unsure, please ask for human help again, mentioning the vault version is unclear.",
             "6. Click the **'Write'** button for the chosen function.",
             "7. Confirm the transaction in your wallet."
         ])
@@ -834,7 +870,8 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
     output_lines.append(f"Version: {simplified_version}")
     output_lines.append(f"Kind: {data.get('kind', 'N/A')}")
     description = data.get('description', 'No description available.')
-    if description and len(description) > 250: description = description[:247] + "..."
+    if description and len(description) > 250:
+        description = description[:247] + "..."
     output_lines.append(f"Description: {description}")
 
     token_info = data.get('token', {})
@@ -902,8 +939,10 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
             debt_ratio_raw = strat_details.get('debtRatio')
             debt_ratio_percent = "N/A"
             if debt_ratio_raw is not None:
-                try: debt_ratio_percent = f"{float(debt_ratio_raw) / 100:.2f}%"
-                except (ValueError, TypeError): pass
+                try:
+                    debt_ratio_percent = f"{float(debt_ratio_raw) / 100:.2f}%"
+                except (ValueError, TypeError):
+                    pass
             last_report = format_timestamp_to_readable(strat_details.get('lastReport'))
             output_lines.append(f"  {i+1}. Name: {strat_name} (`{strat_addr}`)")
             output_lines.append(f"     Status: {strat_status}")
@@ -923,14 +962,19 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
         if rewards_list:
             output_lines.append(f"  Rewards ({len(rewards_list)}):")
             for rew_idx, reward in enumerate(rewards_list):
-                rew_name = reward.get('name', 'N/A'); rew_sym = reward.get('symbol', 'N/A'); rew_addr = reward.get('address', 'N/A')
-                rew_apy = reward.get('apr', 0.0) * 100; rew_finished = reward.get('isFinished', False)
+                rew_name = reward.get('name', 'N/A')
+                rew_sym = reward.get('symbol', 'N/A')
+                rew_addr = reward.get('address', 'N/A')
+                rew_apy = reward.get('apr', 0.0) * 100
+                rew_finished = reward.get('isFinished', False)
                 rew_ends = format_timestamp_to_readable(reward.get('finishedAt'))
                 output_lines.append(f"    - Token: {rew_name} ({rew_sym}) `{rew_addr}`")
                 output_lines.append(f"      APY: {rew_apy:.2f}%")
                 output_lines.append(f"      Status: {'Finished' if rew_finished else 'Ongoing'} (Ends: {rew_ends})")
-        else: output_lines.append("  Rewards: None listed.")
-    else: output_lines.append("Staking Opportunity: No")
+        else:
+            output_lines.append("  Rewards: None listed.")
+    else:
+        output_lines.append("Staking Opportunity: No")
     
     return "\n".join(output_lines)
 
@@ -998,11 +1042,15 @@ async def core_search_vaults(
                 forward_apr_data = apr_data.get("forwardAPR", {})
                 fallback_apr = forward_apr_data.get("netAPR") if forward_apr_data else None
                 apr_value = 0.0
-                if primary_apr is not None: apr_value = float(primary_apr)
-                elif fallback_apr is not None: apr_value = float(fallback_apr)
+                if primary_apr is not None:
+                    apr_value = float(primary_apr)
+                elif fallback_apr is not None:
+                    apr_value = float(fallback_apr)
                 v_data["_computedAPY"] = apr_value * 100
-                try: v_data["_computedTVL_USD"] = float(v_data.get('tvl', {}).get('tvl', 0))
-                except: v_data["_computedTVL_USD"] = 0.0
+                try:
+                    v_data["_computedTVL_USD"] = float(v_data.get('tvl', {}).get('tvl', 0))
+                except (ValueError, TypeError):
+                    v_data["_computedTVL_USD"] = 0.0
                 matched_vaults.append(v_data)
 
         if not matched_vaults:

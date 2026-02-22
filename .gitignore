@@ -9,7 +9,7 @@ __pycache__/
 *~
 .dockerignore
 AGENTS.md
-MYNOTES.md
+NOTES.md
 /yearn_rag/yearn-devdocs
 /yearn_rag/YIPS
 /yearn_rag/cleaned_yearn_docs.json

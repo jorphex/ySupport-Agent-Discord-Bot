@@ -1,6 +1,5 @@
 # fetch_yips.py
 import requests
-import json
 import os
 from datetime import datetime
 
@@ -159,7 +158,7 @@ _Source: [Snapshot]({snapshot_url})_
 
 def main():
     """Main execution function."""
-    print(f"--- Starting YIP Fetcher ---")
+    print("--- Starting YIP Fetcher ---")
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
         print(f"Created output directory: {OUTPUT_DIR}")
