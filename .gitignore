@@ -19,3 +19,4 @@ NOTES.md
 /yearn_rag/update_docs.log
 /yearn_rag/update_docs.sh
 /yearn_rag/doc_link_map.json
+/.cache/repo_context/

@@ -13,6 +13,13 @@ from pinecone import Pinecone
 from openai import OpenAI, AsyncOpenAI
 
 import config
+from repo_context import (
+    fetch_repo_artifacts,
+    format_repo_artifacts,
+    format_repo_search_results,
+    get_repo_context_status,
+    search_repo_context,
+)
 
 # Init Clients
 openai_async_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
@@ -43,12 +50,42 @@ except Exception as e:
     V1_VAULTS = []
 
 
-async def core_answer_from_docs(user_query: str) -> str:
-    """
-    Core logic for answering questions from docs.
-    """
-    logging.info(f"[CoreTool:answer_from_docs] Query: '{user_query}'")
-    
+def _normalize_match(match: Any, namespace: str) -> Dict[str, Any]:
+    if isinstance(match, dict):
+        return {
+            "id": match.get("id", ""),
+            "score": match.get("score", 0.0) or 0.0,
+            "metadata": match.get("metadata", {}) or {},
+            "namespace": namespace,
+        }
+    return {
+        "id": getattr(match, "id", ""),
+        "score": getattr(match, "score", 0.0) or 0.0,
+        "metadata": getattr(match, "metadata", {}) or {},
+        "namespace": namespace,
+    }
+
+
+def _get_match_id(match: Any) -> str:
+    if isinstance(match, dict):
+        ns = match.get("namespace", "")
+        mid = match.get("id", "")
+        return f"{ns}:{mid}" if ns else mid
+    return getattr(match, "id", "")
+
+
+def _extract_keywords(text: str) -> List[str]:
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    stop = {
+        "the", "and", "for", "with", "from", "that", "this", "have", "has",
+        "you", "your", "about", "what", "when", "where", "why", "how", "is",
+        "are", "can", "cant", "cannot", "able", "unable", "not", "show",
+        "showing", "missing", "does", "do", "did"
+    }
+    return [t for t in tokens if len(t) > 3 and t not in stop]
+
+
+async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
     initial_retrieval_k = 15
     rerank_top_n = 8
     query_lower = user_query.lower()
@@ -56,14 +93,13 @@ async def core_answer_from_docs(user_query: str) -> str:
     include_yips = any(t in query_lower for t in yip_terms)
     namespaces_to_query = ["yearn-docs"] + (["yearn-yips"] if include_yips else [])
 
-    # --- STEP 1: HyDE ---
     try:
         hyde_prompt = (
             f"You are a Yearn documentation expert. A user has asked: '{user_query}'.\n"
             "Generate a concise, hypothetical answer..."
         )
         hyde_response = await openai_async_client.chat.completions.create(
-            model="gpt-4o-mini", 
+            model="gpt-4o-mini",
             messages=[{"role": "system", "content": hyde_prompt}],
             temperature=0.0,
         )
@@ -73,7 +109,6 @@ async def core_answer_from_docs(user_query: str) -> str:
         logging.error(f"HyDE error: {e}")
         embedding_text = user_query
 
-    # --- STEP 2: Embedding ---
     try:
         response = await asyncio.to_thread(
             openai_sync_client.embeddings.create,
@@ -84,30 +119,7 @@ async def core_answer_from_docs(user_query: str) -> str:
         query_embedding = response.data[0].embedding
     except Exception as e:
         logging.error(f"Embedding error: {e}")
-        return "Error generating embedding."
-
-    # --- STEP 3: Search ---
-    def _normalize_match(match: Any, namespace: str) -> Dict[str, Any]:
-        if isinstance(match, dict):
-            return {
-                "id": match.get("id", ""),
-                "score": match.get("score", 0.0) or 0.0,
-                "metadata": match.get("metadata", {}) or {},
-                "namespace": namespace,
-            }
-        return {
-            "id": getattr(match, "id", ""),
-            "score": getattr(match, "score", 0.0) or 0.0,
-            "metadata": getattr(match, "metadata", {}) or {},
-            "namespace": namespace,
-        }
-
-    def _get_match_id(match: Any) -> str:
-        if isinstance(match, dict):
-            ns = match.get("namespace", "")
-            mid = match.get("id", "")
-            return f"{ns}:{mid}" if ns else mid
-        return getattr(match, "id", "")
+        raise RuntimeError("Error generating embedding.") from e
 
     all_matches: List[Dict[str, Any]] = []
     try:
@@ -186,11 +198,10 @@ async def core_answer_from_docs(user_query: str) -> str:
                     all_matches.append(_normalize_match(match, namespace))
     except Exception as e:
         logging.error(f"Pinecone error: {e}")
-        return "Error searching docs."
+        raise RuntimeError("Error searching docs.") from e
 
     reranked_matches: List[Dict[str, Any]] = []
     if all_matches:
-        # --- STEP 4: Rerank ---
         try:
             unique_matches_map: Dict[str, Any] = {}
             for match in all_matches:
@@ -204,7 +215,7 @@ async def core_answer_from_docs(user_query: str) -> str:
                 text_chunk = metadata.get("text") or ""
                 source_type = metadata.get("source_type", "unknown")
                 docs_to_rerank.append(f"[source_type={source_type}]\n{text_chunk}")
-            
+
             rerank_response = await asyncio.to_thread(
                 pc.inference.rerank,
                 model="bge-reranker-v2-m3",
@@ -222,65 +233,56 @@ async def core_answer_from_docs(user_query: str) -> str:
     else:
         logging.info("[CoreTool:answer_from_docs] No matches found; proceeding with empty context.")
 
-    # --- STEP 5: Context ---
     context_pieces = []
     yip_status_entries: List[str] = []
     for match in reranked_matches:
         meta = match.get("metadata", {})
         text = meta.get("text")
-        if text:
-            doc_title = meta.get("doc_title", "Unk")
-            section_heading = meta.get("section_heading")
-            source_url = meta.get("source_url")
-            source_path = meta.get("source_path", "")
-            source_type = meta.get("source_type")
-            doc_last_modified = meta.get("doc_last_modified")
+        if not text:
+            continue
 
-            yip_number = meta.get("yip_number")
-            yip_status = meta.get("yip_status")
-            yip_created = meta.get("yip_created")
-            yip_discussion_link = meta.get("yip_discussion_link")
+        doc_title = meta.get("doc_title", "Unk")
+        section_heading = meta.get("section_heading")
+        source_url = meta.get("source_url")
+        source_path = meta.get("source_path", "")
+        source_type = meta.get("source_type")
+        doc_last_modified = meta.get("doc_last_modified")
 
-            title_bits = [doc_title]
-            if section_heading and section_heading != doc_title:
-                title_bits.append(section_heading)
-            title_str = " > ".join(title_bits)
+        yip_number = meta.get("yip_number")
+        yip_status = meta.get("yip_status")
+        yip_created = meta.get("yip_created")
+        yip_discussion_link = meta.get("yip_discussion_link")
 
-            location = source_url or source_path
-            source_bits = [title_str]
-            if location:
-                source_bits.append(f"({location})")
-            if source_type:
-                source_bits.append(f"[{source_type}]")
-            if doc_last_modified:
-                source_bits.append(f"last_modified={doc_last_modified}")
-            if yip_number:
-                yip_bits = [f"YIP-{yip_number}"]
-                if yip_status:
-                    yip_bits.append(f"status={yip_status}")
-                if yip_created:
-                    yip_bits.append(f"created={yip_created}")
-                if yip_discussion_link:
-                    yip_bits.append(f"discussion={yip_discussion_link}")
-                source_bits.append(" ".join(yip_bits))
-                if yip_status:
-                    yip_status_entries.append(f"YIP-{yip_number}: {yip_status}")
+        title_bits = [doc_title]
+        if section_heading and section_heading != doc_title:
+            title_bits.append(section_heading)
+        title_str = " > ".join(title_bits)
 
-            source = " ".join(source_bits).strip()
-            context_pieces.append(f"Source: {source}\nContent:\n{text}")
-    
+        location = source_url or source_path
+        source_bits = [title_str]
+        if location:
+            source_bits.append(f"({location})")
+        if source_type:
+            source_bits.append(f"[{source_type}]")
+        if doc_last_modified:
+            source_bits.append(f"last_modified={doc_last_modified}")
+        if yip_number:
+            yip_bits = [f"YIP-{yip_number}"]
+            if yip_status:
+                yip_bits.append(f"status={yip_status}")
+            if yip_created:
+                yip_bits.append(f"created={yip_created}")
+            if yip_discussion_link:
+                yip_bits.append(f"discussion={yip_discussion_link}")
+            source_bits.append(" ".join(yip_bits))
+            if yip_status:
+                yip_status_entries.append(f"YIP-{yip_number}: {yip_status}")
+
+        source = " ".join(source_bits).strip()
+        context_pieces.append(f"Source: {source}\nContent:\n{text}")
+
     context_text = "\n\n---\n\n".join(context_pieces)
     yip_status_summary = "; ".join(sorted(set(yip_status_entries)))
-
-    def _extract_keywords(text: str) -> List[str]:
-        tokens = re.findall(r"[a-z0-9]+", text.lower())
-        stop = {
-            "the", "and", "for", "with", "from", "that", "this", "have", "has",
-            "you", "your", "about", "what", "when", "where", "why", "how", "is",
-            "are", "can", "cant", "cannot", "able", "unable", "not", "show",
-            "showing", "missing", "does", "do", "did"
-        }
-        return [t for t in tokens if len(t) > 3 and t not in stop]
 
     keywords = _extract_keywords(user_query)
     context_lower = context_text.lower()
@@ -293,7 +295,20 @@ async def core_answer_from_docs(user_query: str) -> str:
     if no_context:
         context_text = ""
 
-    # --- STEP 6: LLM Generation ---
+    logging.info(
+        "[CoreTool:answer_from_docs] Built docs context. no_context=%s source_count=%s",
+        no_context,
+        len(context_pieces),
+    )
+    return context_text, yip_status_summary, no_context
+
+
+async def _synthesize_docs_answer(
+    user_query: str,
+    context_text: str,
+    yip_status_summary: str,
+    no_context: bool,
+) -> str:
     system_prompt = (
         "You are an expert Yearn assistant. Answer based SOLELY on the context.\n"
         "Answer the user's question directly and authoritatively using only this knowledge.\n"
@@ -307,7 +322,7 @@ async def core_answer_from_docs(user_query: str) -> str:
 
     try:
         response = await openai_async_client.chat.completions.create(
-            model="gpt-4o", # Use your preferred model
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Context:\n{context_text}\n\nYIP_STATUS_METADATA: {yip_status_summary or 'none'}\nNO_CONTEXT: {str(no_context).lower()}\n\nQuestion: {user_query}"}
@@ -318,6 +333,95 @@ async def core_answer_from_docs(user_query: str) -> str:
     except Exception as e:
         logging.error(f"Gen error: {e}")
         return "Error generating final answer."
+
+
+async def core_answer_from_docs(user_query: str) -> str:
+    """
+    Answers questions from Yearn docs and YIPs only.
+    """
+    logging.info(f"[CoreTool:answer_from_docs] Query: '{user_query}'")
+    try:
+        context_text, yip_status_summary, no_context = await _build_docs_context(user_query)
+    except RuntimeError as exc:
+        return str(exc)
+    return await _synthesize_docs_answer(user_query, context_text, yip_status_summary, no_context)
+
+
+async def core_search_repo_context(
+    query: str,
+    limit: Optional[int] = None,
+    include_legacy: bool = False,
+    include_ui: bool = False,
+) -> str:
+    logging.info(
+        "[CoreTool:search_repo_context] Query='%s' limit=%s include_legacy=%s include_ui=%s",
+        query,
+        limit,
+        include_legacy,
+        include_ui,
+    )
+    status = get_repo_context_status()
+    if status["state"] not in {"ready", "available"}:
+        logging.warning(
+            "[CoreTool:search_repo_context] Repo context unavailable. state=%s reason=%s",
+            status["state"],
+            status["reason"],
+        )
+        return (
+            f"Repo context unavailable. state={status['state']} reason={status['reason']} "
+            f"db_path={status['db_path']}"
+        )
+
+    try:
+        results = search_repo_context(
+            query,
+            limit=limit or config.REPO_CONTEXT_TOP_K,
+            include_legacy=include_legacy,
+            include_ui=include_ui,
+        )
+        logging.info("[CoreTool:search_repo_context] Returned %s results.", len(results))
+        return format_repo_search_results(results)
+    except Exception as exc:
+        logging.error(f"[CoreTool:search_repo_context] Error: {exc}", exc_info=True)
+        return f"Error searching repo context: {exc}"
+
+
+async def core_fetch_repo_artifacts(artifact_refs_text: str) -> str:
+    logging.info("[CoreTool:fetch_repo_artifacts] artifact_refs_text='%s'", artifact_refs_text)
+    status = get_repo_context_status()
+    if status["state"] not in {"ready", "available"}:
+        logging.warning(
+            "[CoreTool:fetch_repo_artifacts] Repo context unavailable. state=%s reason=%s",
+            status["state"],
+            status["reason"],
+        )
+        return (
+            f"Repo context unavailable. state={status['state']} reason={status['reason']} "
+            f"db_path={status['db_path']}"
+        )
+
+    artifact_refs = re.findall(r"(?:segment|fact):\d+", artifact_refs_text)
+    if not artifact_refs:
+        return "No valid repo artifact references were provided. Use references like 'segment:12' or 'fact:34'."
+
+    try:
+        artifacts = fetch_repo_artifacts(artifact_refs)
+        logging.info("[CoreTool:fetch_repo_artifacts] Returned %s artifacts.", len(artifacts))
+        return format_repo_artifacts(artifacts)
+    except Exception as exc:
+        logging.error(f"[CoreTool:fetch_repo_artifacts] Error: {exc}", exc_info=True)
+        return f"Error fetching repo artifacts: {exc}"
+
+
+async def core_repo_context_status() -> str:
+    status = get_repo_context_status()
+    summary = status.get("summary") or {}
+    repo_count = summary.get("repos_indexed", 0) if isinstance(summary, dict) else 0
+    return (
+        f"Repo context status: state={status['state']} available={status['available']} "
+        f"fresh={status['fresh']} built_at={status['built_at']} age_hours={status['age_hours']} "
+        f"repo_count={repo_count} reason={status['reason']}"
+    )
 
 
 # --- Helpers ---

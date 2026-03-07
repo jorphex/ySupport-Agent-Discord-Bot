@@ -1,0 +1,351 @@
+{
+  "schema_version": 1,
+  "default_owner": "yearn",
+  "repos": [
+    {
+      "repo": "stYFI",
+      "ref": null,
+      "product_tag": "styfi",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "contracts/*.vy",
+        "contracts/**/*.vy",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "interfaces/*.vy",
+        "interfaces/**/*.vy",
+        "src/*.sol",
+        "src/**/*.sol",
+        "src/*.vy",
+        "src/**/*.vy",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "yearn-vaults-v3",
+      "ref": null,
+      "product_tag": "vaults",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "tokenized-strategy",
+      "ref": null,
+      "product_tag": "strategy",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "tokenized-strategy-periphery",
+      "ref": null,
+      "product_tag": "periphery",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "vault-periphery",
+      "ref": null,
+      "product_tag": "periphery",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "Yearn-ERC4626-Router",
+      "ref": null,
+      "product_tag": "router",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "yearn-vaults-v2",
+      "ref": null,
+      "product_tag": "vaults",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "yearn-security",
+      "ref": null,
+      "product_tag": "security",
+      "authority_tag": "security",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "policies/**/*.md",
+        "docs/**/*.md",
+        "audits/**/*.md",
+        "**/bug*.md",
+        "**/disclosure*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/node_modules/**"
+      ]
+    },
+    {
+      "repo": "veYFI",
+      "ref": null,
+      "product_tag": "legacy",
+      "authority_tag": "contract_code",
+      "legacy": true,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "repo": "app-veYFI",
+      "ref": null,
+      "product_tag": "legacy",
+      "authority_tag": "ui_flow",
+      "legacy": true,
+      "include": [
+        "README.md",
+        "docs/**/*.md",
+        "src/**/*.json",
+        "src/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/node_modules/**",
+        "**/dist/**"
+      ]
+    },
+    {
+      "repo": "yearn-vaults-v1",
+      "ref": null,
+      "product_tag": "legacy",
+      "authority_tag": "contract_code",
+      "legacy": true,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "src/*.sol",
+        "src/**/*.sol",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    }
+  ]
+}

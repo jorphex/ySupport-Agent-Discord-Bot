@@ -19,12 +19,13 @@ import tools_lib
 from router import (
     select_starting_agent,
     is_message_primarily_address,
+    is_bug_report_query,
     is_migration_issue_query,
     is_probable_wallet_address,
     is_wallet_confirmation,
     is_wallet_rejection,
 )
-from support_agents import yearn_data_agent, yearn_docs_qa_agent, triage_agent
+from support_agents import yearn_bug_triage_agent, yearn_data_agent, yearn_docs_qa_agent, triage_agent
 from state import (
     BotRunContext,
     PublicConversation,
@@ -58,6 +59,8 @@ def _resolve_agent(agent_key: str):
         return yearn_data_agent
     if agent_key == "docs":
         return yearn_docs_qa_agent
+    if agent_key == "bug":
+        return yearn_bug_triage_agent
     return triage_agent
 
 
@@ -344,7 +347,7 @@ class TicketBot(discord.Client):
             if system_hints:
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
 
-            if is_migration_issue_query(aggregated_text):
+            if is_migration_issue_query(aggregated_text) or is_bug_report_query(aggregated_text):
                 last_wallet = last_wallet_by_channel.get(channel_id)
                 if last_wallet and last_wallet not in aggregated_text:
                     input_list = input_list[:-1] + [{"role": "system", "content": f"Context: User previously provided wallet address {last_wallet} for this ticket. Use it if needed; do not ask again unless they want a different address."}] + [input_list[-1]]
@@ -361,6 +364,12 @@ class TicketBot(discord.Client):
                         group_id=str(channel_id)
                     )
                     agent_key = select_starting_agent(aggregated_text, run_context)
+                    logging.info(
+                        "Selected starting agent '%s' for channel %s (intent=%s)",
+                        agent_key,
+                        channel_id,
+                        run_context.initial_button_intent,
+                    )
                     starting_agent = _resolve_agent(agent_key)
                     result: RunResult = await self.runner.run(
                         starting_agent=starting_agent,

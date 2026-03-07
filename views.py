@@ -61,19 +61,12 @@ class InitialInquiryView(View):
 
     @button(label="🐞 Bug Report/UI Issue", style=discord.ButtonStyle.secondary, custom_id="initial_bug_report", row=1)
     async def bug_report_button(self, interaction: discord.Interaction, button: Button):
-        await self.handle_button_click(interaction, button.custom_id)
-        actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
-        response_message = (
-            "Thank you for reporting this. To help us investigate, please describe the bug or UI problem in detail. "
-            "Include steps to reproduce it if possible, and mention which device/browser you are using. "
-            f"{actual_mention} will review your report."
+        prompt = (
+            "Describe the bug or UI problem in detail. Include the product or vault involved, what you expected to happen, "
+            "what actually happened, any error text, and your device/browser if this is a UI issue."
         )
-        if interaction.channel:
-            await interaction.channel.send(response_message)
-        else:
-            await interaction.followup.send(response_message, ephemeral=False)
-        stopped_channels.add(interaction.channel.id)
-        logging.info(f"Bug report initiated in {interaction.channel.id}. Bot stopped.")
+        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "bug_report")
+        logging.info(f"Bug report initiated in {interaction.channel.id}. Awaiting bug report details.")
 
     @button(label="🤝 Business/Partnerships/Marketing", style=discord.ButtonStyle.secondary, custom_id="initial_bd_partner", row=2)
     async def bd_partner_button(self, interaction: discord.Interaction, button: Button):
@@ -151,4 +144,3 @@ class StopBotView(View):
         except Exception:
             if interaction.channel:
                 await interaction.channel.send(confirmation_message)
-

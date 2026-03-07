@@ -15,6 +15,7 @@ from agents import (
 from agent_prompts import (
     YEARn_DATA_AGENT_INSTRUCTIONS,
     YEARn_DOCS_QA_AGENT_INSTRUCTIONS,
+    YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
     BD_PRIORITY_GUARDRAIL_INSTRUCTIONS,
     TRIAGE_AGENT_INSTRUCTIONS,
 )
@@ -29,6 +30,9 @@ from support_tools import (
     check_all_deposits_tool,
     get_withdrawal_instructions_tool,
     answer_from_docs_tool,
+    search_repo_context_tool,
+    fetch_repo_artifacts_tool,
+    repo_context_status_tool,
 )
 
 
@@ -141,10 +145,27 @@ yearn_data_agent = Agent[BotRunContext](
 yearn_docs_qa_agent = Agent[BotRunContext](
     name="Yearn Docs QA Specialist",
     instructions=YEARn_DOCS_QA_AGENT_INSTRUCTIONS,
-    tools=[answer_from_docs_tool],
+    tools=[
+        answer_from_docs_tool,
+        search_repo_context_tool,
+        fetch_repo_artifacts_tool,
+        repo_context_status_tool,
+    ],
     model="gpt-4.1-mini",
-    tool_use_behavior="stop_on_first_tool",
     model_settings=ModelSettings(temperature=0.2)
+)
+
+yearn_bug_triage_agent = Agent[BotRunContext](
+    name="Yearn Bug Triage Specialist",
+    instructions=YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
+    tools=[
+        search_repo_context_tool,
+        fetch_repo_artifacts_tool,
+        answer_from_docs_tool,
+        repo_context_status_tool,
+    ],
+    model="gpt-4.1",
+    model_settings=ModelSettings(temperature=0.1)
 )
 
 triage_agent = Agent[BotRunContext](
@@ -153,6 +174,7 @@ triage_agent = Agent[BotRunContext](
     handoffs=[
         handoff(yearn_data_agent, tool_name_override="transfer_to_yearn_data_specialist", tool_description_override="Handoff for specific YEARN data (vaults, deposits, APR, TVL, balances, withdrawal instructions)."),
         handoff(yearn_docs_qa_agent, tool_name_override="transfer_to_yearn_docs_qa_specialist", tool_description_override="Handoff for general questions about YEARN concepts, documentation, risks."),
+        handoff(yearn_bug_triage_agent, tool_name_override="transfer_to_yearn_bug_triage_specialist", tool_description_override="Handoff for YEARN bug reports, UI issues, migration issues, and protocol behavior claims that should be checked against docs and repo context before human escalation."),
     ],
     input_guardrails=[bd_priority_guardrail],
     model="gpt-4.1",

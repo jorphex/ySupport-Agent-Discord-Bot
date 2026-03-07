@@ -2,7 +2,7 @@ import re
 from typing import Literal
 
 
-AgentKey = Literal["data", "docs", "triage"]
+AgentKey = Literal["data", "docs", "bug", "triage"]
 
 
 def is_message_primarily_address(text: str) -> bool:
@@ -38,6 +38,56 @@ def is_migration_issue_query(text: str) -> bool:
         "stuck migrating", "migration error"
     ]
     return any(t in q for t in migration_issue_terms)
+
+
+def is_bug_report_query(text: str) -> bool:
+    if not text:
+        return False
+    q = text.lower()
+    strong_terms = [
+        "bug",
+        "ui issue",
+        "ui error",
+        "exploit",
+        "vulnerability",
+        "security issue",
+        "unexpected behavior",
+        "reentrancy",
+        "broken",
+    ]
+    failure_terms = [
+        "not working",
+        "doesn't work",
+        "doesnt work",
+        "failed",
+        "fails",
+        "failing",
+        "stuck",
+        "error",
+        "wrong",
+        "unable",
+        "cannot",
+        "can't",
+        "cant",
+        "missing",
+    ]
+    product_terms = [
+        "styfi",
+        "veyfi",
+        "vault",
+        "router",
+        "strategy",
+        "migration",
+        "deposit",
+        "withdraw",
+        "app",
+        "site",
+        "page",
+        "button",
+    ]
+    return any(term in q for term in strong_terms) or (
+        any(term in q for term in failure_terms) and any(term in q for term in product_terms)
+    )
 
 
 def is_account_specific_veyfi_query(text: str) -> bool:
@@ -98,6 +148,8 @@ def should_force_docs_route(text: str) -> bool:
     q = text.lower()
     if is_migration_issue_query(q):
         return False
+    if is_bug_report_query(q):
+        return False
     if is_account_specific_veyfi_query(q):
         return False
     docs_keywords = [
@@ -121,6 +173,8 @@ def select_starting_agent(text: str, run_context) -> AgentKey:
         return "data"
     if intent == "docs_qa":
         return "docs"
+    if intent == "bug_report":
+        return "bug"
     if should_force_docs_route(text):
         return "docs"
     return "triage"

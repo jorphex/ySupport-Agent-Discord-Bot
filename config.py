@@ -1,8 +1,20 @@
 # config.py
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+BASE_DIR = Path(__file__).resolve().parent
 
 # --- Secrets ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -10,6 +22,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 ALCHEMY_KEY = os.getenv("ALCHEMY_KEY")
 MCP_SERVER_API_KEY = os.getenv("MCP_SERVER_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # --- Pinecone ---
 # Allow per-env overrides without code changes.
@@ -20,7 +33,7 @@ YEARN_PINECONE_NAMESPACE = os.getenv("YEARN_PINECONE_NAMESPACE")
 # IDs can be overridden via env to keep repo clean of internal identifiers.
 PUBLIC_TRIGGER_USER_IDS = set(
     v.strip()
-    for v in os.getenv("PUBLIC_TRIGGER_USER_IDS").split(",")
+    for v in os.getenv("PUBLIC_TRIGGER_USER_IDS", "").split(",")
     if v.strip()
 )
 YEARN_TICKET_CATEGORY_ID = int(os.getenv("YEARN_TICKET_CATEGORY_ID"))
@@ -46,6 +59,23 @@ MAX_TICKET_CONVERSATION_TURNS = 10
 MAX_RESULTS_TO_SHOW = 5
 STRATEGY_FETCH_CONCURRENCY = 10
 PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30
+
+# --- Repo Context ---
+ENABLE_REPO_CONTEXT = _env_bool("ENABLE_REPO_CONTEXT", default=False)
+REPO_CONTEXT_MANIFEST_PATH = Path(
+    os.getenv("REPO_CONTEXT_MANIFEST_PATH", str(BASE_DIR / "yearn_rag" / "repo_sources.json"))
+)
+REPO_CONTEXT_CACHE_DIR = Path(
+    os.getenv("REPO_CONTEXT_CACHE_DIR", str(BASE_DIR / ".cache" / "repo_context"))
+)
+REPO_CONTEXT_DB_PATH = Path(
+    os.getenv("REPO_CONTEXT_DB_PATH", str(REPO_CONTEXT_CACHE_DIR / "repo_context.sqlite3"))
+)
+REPO_CONTEXT_TOP_K = int(os.getenv("REPO_CONTEXT_TOP_K", "6"))
+REPO_CONTEXT_MAX_SNIPPET_CHARS = int(os.getenv("REPO_CONTEXT_MAX_SNIPPET_CHARS", "1800"))
+REPO_CONTEXT_INCLUDE_UI = _env_bool("REPO_CONTEXT_INCLUDE_UI", default=False)
+REPO_CONTEXT_MAX_AGE_HOURS = int(os.getenv("REPO_CONTEXT_MAX_AGE_HOURS", "168"))
+REPO_CONTEXT_REQUIRE_FRESH = _env_bool("REPO_CONTEXT_REQUIRE_FRESH", default=True)
 
 # --- Web3 & Chains ---
 RPC_URLS = {
