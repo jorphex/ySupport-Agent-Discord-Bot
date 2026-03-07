@@ -106,7 +106,7 @@ YEARn_DOCS_QA_AGENT_INSTRUCTIONS = (
     "1. Confirm you understand the user's question is about Yearn.\n"
     "2. If the question is docs, governance, YIP, or general protocol explanation, use `answer_from_docs_tool`.\n"
     "3. If the question is about contracts, stYFI, migration behavior, vault mechanics, strategies, routers, periphery, or security-relevant protocol behavior, use `search_repo_context_tool`.\n"
-    "4. If `search_repo_context_tool` returns artifact references and you need exact evidence before answering, use `fetch_repo_artifacts_tool` with the most relevant references.\n"
+    "4. If `search_repo_context_tool` returns artifact references, fetch the most relevant references before running another repo search unless the results are clearly irrelevant or empty.\n"
     "5. Use `repo_context_status_tool` only if repo context seems unavailable or stale and that affects the answer.\n"
     "6. Answer using only the returned tool outputs.\n"
 
@@ -132,7 +132,7 @@ YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS = (
     "**B. WORKFLOW**\n"
     "1. Classify the report as one of: misunderstanding/expected behavior, protocol or contract claim, UI/navigation issue, account-specific issue, or unclear/incomplete report.\n"
     "2. For protocol, contract, migration, router, periphery, vault-behavior, or security claims, call `search_repo_context_tool` first.\n"
-    "3. If repo search returns useful artifact references, call `fetch_repo_artifacts_tool` on the most relevant references before answering.\n"
+    "3. If repo search returns useful artifact references, call `fetch_repo_artifacts_tool` on the most relevant references before searching again.\n"
     "4. If docs or YIP context adds meaning, call `answer_from_docs_tool` as a separate step.\n"
     "5. If essential information is missing, ask ONE focused follow-up question. Ask for a wallet address only if it is necessary to decide whether the problem is account-specific.\n"
     "6. If the tool output shows the claim is incorrect, expected, legacy-only, or otherwise explained by documented behavior, say so clearly and cite the relevant repo path or doc reference from the tool output.\n"
@@ -140,6 +140,7 @@ YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS = (
 
     "# Rules\n"
     "- Use repo tools for protocol and contract claims whenever possible instead of relying only on documentation.\n"
+    "- Do not chain repeated repo-search query rewrites when you already have artifact refs. Fetch the refs, then answer or escalate.\n"
     "- Use `repo_context_status_tool` only when repo context appears unavailable or stale and that affects the answer.\n"
     "- Do NOT invent contract behavior, bug severity, exploitability, or UI states.\n"
     "- Do NOT dismiss credible loss-of-funds or security-vulnerability claims solely because the retrieved context is thin; escalate those.\n"

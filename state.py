@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Literal
 
@@ -16,6 +16,11 @@ class BotRunContext:
     is_public_trigger: bool = False
     project_context: Literal["yearn", "unknown"] = "unknown"
     initial_button_intent: Optional[str] = None
+    repo_search_calls: int = 0
+    repo_fetch_calls: int = 0
+    repo_searches_without_fetch: int = 0
+    repo_last_search_query: Optional[str] = None
+    repo_last_search_artifact_refs: List[str] = field(default_factory=list)
 
 
 # State Management for Public Conversations

@@ -276,6 +276,31 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _collect_signature(lines: list[str], start_idx: int, *, max_lines: int = 12) -> str:
+    parts: list[str] = []
+    paren_balance = 0
+    saw_open_paren = False
+
+    for offset in range(max_lines):
+        idx = start_idx + offset
+        if idx >= len(lines):
+            break
+        line = lines[idx].strip()
+        if not line:
+            if parts:
+                break
+            continue
+
+        parts.append(line)
+        paren_balance += line.count("(") - line.count(")")
+        if "(" in line:
+            saw_open_paren = True
+        if saw_open_paren and paren_balance <= 0:
+            break
+
+    return " ".join(parts)
+
+
 def _iter_markdown_segments(path: str, content: str) -> Iterator[tuple[str, str, str]]:
     lines = content.splitlines()
     headings: list[tuple[int, str]] = []
@@ -313,14 +338,16 @@ def _iter_code_segments(path: str, content: str, language: str) -> Iterator[tupl
             contract_matches.append((idx, kind, name))
             continue
 
-        function_match = _FUNCTION_RE.match(line)
+        function_signature = _collect_signature(lines, idx) if line.lstrip().startswith("function ") else line
+        function_match = _FUNCTION_RE.match(function_signature)
         if function_match:
             signature = f"{function_match.group(1)}({function_match.group(2).strip()})"
             symbol_matches.append((idx, "function", signature))
             continue
 
         if language == "vyper":
-            vyper_function_match = _VYPER_FUNCTION_RE.match(line)
+            vyper_signature = _collect_signature(lines, idx) if line.lstrip().startswith("def ") else line
+            vyper_function_match = _VYPER_FUNCTION_RE.match(vyper_signature)
             if vyper_function_match:
                 signature = f"{vyper_function_match.group(1)}({vyper_function_match.group(2).strip()})"
                 symbol_matches.append((idx, "function", signature))
@@ -894,6 +921,182 @@ def _repo_scope(query: str) -> dict[str, Any]:
     }
 
 
+def _query_tokens(query: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"[A-Za-z0-9_]+", query.lower())))
+
+
+def _code_query_hints(query: str) -> dict[str, list[str] | bool]:
+    file_hints = [match.lower() for match in re.findall(r"\b([A-Za-z0-9_-]+\.(?:vy|sol))\b", query)]
+    raw_identifiers = re.findall(r"\b[_A-Za-z][_A-Za-z0-9]*\b", query)
+
+    identifier_hints = [
+        token.lower()
+        for token in raw_identifiers
+        if "_" in token or any(char.isupper() for char in token[1:])
+    ]
+    contract_hints = [
+        token.lower()
+        for token in raw_identifiers
+        if token[:1].isupper() and any(char.isdigit() for char in token)
+    ]
+    for file_hint in file_hints:
+        contract_hints.append(Path(file_hint).stem.lower())
+
+    code_oriented = any(
+        marker in query.lower()
+        for marker in ["_", ".vy", ".sol", "function", "contract", "redeem", "withdraw", "balanceof", "strategy"]
+    )
+    return {
+        "code_oriented": code_oriented,
+        "file_hints": list(dict.fromkeys(file_hints)),
+        "identifier_hints": list(dict.fromkeys(identifier_hints)),
+        "contract_hints": list(dict.fromkeys(contract_hints)),
+    }
+
+
+def _rerank_repo_rows(rows: list[sqlite3.Row], query: str, *, limit: int) -> list[sqlite3.Row]:
+    query_lower = query.lower()
+    tokens = _query_tokens(query)
+    hints = _code_query_hints(query)
+    symbol_tokens = [token for token in tokens if "_" in token]
+    file_tokens = {token for token in tokens if token.endswith(("vy", "sol")) or token.startswith("vault")}
+    identifier_hints = hints["identifier_hints"]
+    contract_hints = hints["contract_hints"]
+    file_hints = hints["file_hints"]
+    code_oriented = bool(hints["code_oriented"])
+    markdown_names = {"security.md", "readme.md", "specification.md", "tech_spec.md"}
+
+    def score(row: sqlite3.Row) -> tuple[float, float]:
+        path = row["path"].lower()
+        title = row["title"].lower()
+        snippet = row["snippet"].lower()
+        segment_type = row["segment_type"].lower()
+        path_name = Path(path).name.lower()
+
+        boost = 0.0
+        for token in tokens:
+            if token in title:
+                boost += 5.0
+            elif token in path:
+                boost += 3.0
+            elif token in snippet[:500]:
+                boost += 1.0
+
+        for file_hint in file_hints:
+            if path.endswith(file_hint):
+                boost += 15.0
+            elif Path(path).stem.lower() == Path(file_hint).stem.lower():
+                boost += 10.0
+
+        for identifier in identifier_hints:
+            if title.startswith(f"{identifier}("):
+                boost += 18.0
+            elif title == identifier:
+                boost += 15.0
+            elif identifier in title:
+                boost += 10.0
+
+        for contract_hint in contract_hints:
+            if Path(path).stem.lower() == contract_hint:
+                boost += 10.0
+            elif contract_hint in path_name:
+                boost += 6.0
+
+        if any(token in title for token in symbol_tokens):
+            boost += 8.0
+        if any(token in path_name for token in file_tokens):
+            boost += 4.0
+        if "vaultv3.vy" in query_lower and "vaultv3.vy" in path:
+            boost += 6.0
+        if code_oriented and segment_type in {"function", "contract", "interface", "library"}:
+            boost += 4.0
+        if code_oriented and Path(path).suffix.lower() in {".vy", ".sol"}:
+            boost += 3.0
+        if code_oriented and path.startswith("contracts/"):
+            boost += 2.0
+        if code_oriented and path_name in markdown_names:
+            boost -= 8.0
+        if code_oriented and segment_type == "section":
+            boost -= 3.0
+
+        base_rank = -float(row["rank_score"])
+        return (boost, base_rank)
+
+    ranked_rows = sorted(rows, key=score, reverse=True)
+    return ranked_rows[:limit]
+
+
+def _supplement_repo_rows(
+    conn: sqlite3.Connection,
+    *,
+    scope: dict[str, Any],
+    hints: dict[str, list[str] | bool],
+    result_limit: int,
+) -> list[sqlite3.Row]:
+    file_hints = [value for value in hints["file_hints"] if isinstance(value, str)]
+    identifier_hints = [value for value in hints["identifier_hints"] if isinstance(value, str)]
+    contract_hints = [value for value in hints["contract_hints"] if isinstance(value, str)]
+    if not hints["code_oriented"] or (not file_hints and not identifier_hints and not contract_hints):
+        return []
+
+    filter_clauses = []
+    params: list[Any] = []
+
+    if not scope["include_legacy"]:
+        filter_clauses.append("segments.legacy = 0")
+    if not scope["include_ui"]:
+        filter_clauses.append("segments.authority_tag != 'ui_flow'")
+    product_filters = scope["product_filters"]
+    if product_filters:
+        placeholders = ", ".join("?" for _ in product_filters)
+        filter_clauses.append(f"segments.product_tag IN ({placeholders})")
+        params.extend(product_filters)
+    filter_clauses.append("(lower(segments.path) LIKE '%.sol' OR lower(segments.path) LIKE '%.vy')")
+
+    match_clauses = []
+    for file_hint in file_hints:
+        stem = Path(file_hint).stem.lower()
+        match_clauses.append("lower(segments.path) LIKE ?")
+        params.append(f"%{file_hint}%")
+        if stem:
+            match_clauses.append("lower(segments.path) LIKE ?")
+            params.append(f"%{stem}%")
+
+    for identifier in identifier_hints:
+        match_clauses.append("lower(segments.title) LIKE ?")
+        params.append(f"%{identifier}%")
+
+    for contract_hint in contract_hints:
+        match_clauses.append("lower(segments.path) LIKE ?")
+        params.append(f"%{contract_hint}%")
+        match_clauses.append("lower(segments.title) LIKE ?")
+        params.append(f"%{contract_hint}%")
+
+    if not match_clauses:
+        return []
+
+    candidate_limit = max(result_limit * 12, 80)
+    sql = f"""
+        SELECT
+            segments.id AS artifact_id,
+            segments.repo_name,
+            segments.repo_ref,
+            segments.path,
+            segments.segment_type,
+            segments.title,
+            segments.snippet,
+            segments.product_tag,
+            segments.authority_tag,
+            segments.legacy,
+            0.0 AS rank_score
+        FROM segments
+        WHERE {' AND '.join(filter_clauses)} AND ({' OR '.join(match_clauses)})
+        LIMIT ?
+    """
+    params.append(candidate_limit)
+    return conn.execute(sql, params).fetchall()
+
+
 def search_repo_context(
     query: str,
     limit: Optional[int] = None,
@@ -916,6 +1119,7 @@ def search_repo_context(
         scope["include_ui"] = include_ui and config.REPO_CONTEXT_INCLUDE_UI
     result_limit = limit or config.REPO_CONTEXT_TOP_K
     product_filters = scope["product_filters"]
+    hints = _code_query_hints(query)
 
     filter_clauses = ["segments_fts MATCH ?"]
     params: list[Any] = [fts_query]
@@ -930,6 +1134,7 @@ def search_repo_context(
         params.extend(product_filters)
 
     where_clause = f"WHERE {' AND '.join(filter_clauses)}"
+    candidate_limit = max(result_limit * 6, result_limit)
     sql = f"""
         SELECT
             segments.id AS artifact_id,
@@ -949,10 +1154,16 @@ def search_repo_context(
         ORDER BY rank_score
         LIMIT ?
     """
-    params.append(result_limit)
+    params.append(candidate_limit)
 
     with _connect(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
+        supplemental_rows = _supplement_repo_rows(conn, scope=scope, hints=hints, result_limit=result_limit)
+        if supplemental_rows:
+            merged_rows: dict[int, sqlite3.Row] = {int(row["artifact_id"]): row for row in rows}
+            for row in supplemental_rows:
+                merged_rows.setdefault(int(row["artifact_id"]), row)
+            rows = list(merged_rows.values())
 
         if not rows:
             fact_filter_clauses = ["facts_fts MATCH ?"]
@@ -991,6 +1202,8 @@ def search_repo_context(
             ).fetchall()
             rows = fact_rows
 
+    rows = _rerank_repo_rows(rows, query, limit=result_limit)
+
     return [
         RepoSearchResult(
             artifact_ref=f"segment:{row['artifact_id']}" if "artifact_id" in row.keys() and row["segment_type"] != "metadata" and row["segment_type"] != "address" else f"fact:{row['artifact_id']}",
@@ -1011,8 +1224,10 @@ def search_repo_context(
 
 def format_repo_search_results(results: Iterable[RepoSearchResult]) -> str:
     parts = []
+    artifact_refs: list[str] = []
     for result in results:
         legacy_text = " legacy=true" if result.legacy else ""
+        artifact_refs.append(result.artifact_ref)
         parts.append(
             "\n".join(
                 [
@@ -1027,7 +1242,13 @@ def format_repo_search_results(results: Iterable[RepoSearchResult]) -> str:
         )
     if not parts:
         return "No matching repo context was found."
-    return "\n\n---\n\n".join(parts)
+    recommended_refs = ", ".join(artifact_refs[:3])
+    guidance = (
+        f"Recommended next step: call fetch_repo_artifacts_tool with one or more of these refs before searching again: {recommended_refs}."
+        if recommended_refs
+        else "Recommended next step: answer or escalate based on the retrieved evidence."
+    )
+    return "\n\n---\n\n".join(parts) + f"\n\n{guidance}"
 
 
 def _parse_artifact_ref(artifact_ref: str) -> tuple[str, int]:

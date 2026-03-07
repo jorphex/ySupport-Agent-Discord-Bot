@@ -70,6 +70,18 @@ class TicketBot(discord.Client):
         super().__init__(intents=intents, **options)
         self.runner = Runner
 
+    async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
+        message = (
+            "Reviewing your report against Yearn contracts, tests, and docs. "
+            "This can take a couple of minutes."
+        )
+        try:
+            await channel.send(message)
+            last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+            logging.info("Sent bug-review status message to channel %s", channel_id)
+        except Exception as e:
+            logging.warning("Failed to send bug-review status message to channel %s: %s", channel_id, e)
+
     async def on_ready(self):
         logging.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Monitoring Yearn Ticket Category ID: {config.YEARN_TICKET_CATEGORY_ID}")
@@ -371,6 +383,8 @@ class TicketBot(discord.Client):
                         run_context.initial_button_intent,
                     )
                     starting_agent = _resolve_agent(agent_key)
+                    if agent_key == "bug":
+                        await self._send_bug_review_status(channel, channel_id)
                     result: RunResult = await self.runner.run(
                         starting_agent=starting_agent,
                         input=input_list,
@@ -398,7 +412,16 @@ class TicketBot(discord.Client):
                     conversation_threads.pop(channel_id, None)
                 except MaxTurnsExceeded:
                     logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                    final_reply = f"This conversation has reached its maximum length. <@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                    if run_context.repo_search_calls:
+                        final_reply = (
+                            "I hit an internal analysis limit while reviewing repo evidence for this report. "
+                            f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                        )
+                    else:
+                        final_reply = (
+                            f"This conversation has reached its maximum length. "
+                            f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                        )
                     should_stop_processing = True
                     conversation_threads.pop(channel_id, None)
                 except AgentsException as e:

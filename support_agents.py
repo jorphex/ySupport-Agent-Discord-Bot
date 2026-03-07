@@ -3,6 +3,7 @@ from typing import List, Optional, Union, Literal
 
 from pydantic import BaseModel, Field
 
+import config
 from agents import (
     Agent, Runner, RunContextWrapper,
     ModelSettings, handoff,
@@ -11,6 +12,7 @@ from agents import (
     TResponseInputItem,
     AgentsException,
 )
+from agents.model_settings import Reasoning
 
 from agent_prompts import (
     YEARn_DATA_AGENT_INSTRUCTIONS,
@@ -48,12 +50,26 @@ class GuardrailResponseMessageException(AgentsException):
         self.guardrail_output = guardrail_output
 
 
+def _gpt5_model_settings(
+    *,
+    effort: str,
+    verbosity: Literal["low", "medium", "high"],
+) -> ModelSettings:
+    return ModelSettings(
+        reasoning=Reasoning(effort=effort),
+        verbosity=verbosity,
+    )
+
+
 bd_priority_guardrail_agent = Agent[BotRunContext](
     name="BD/PR/Listing Guardrail Check",
     instructions=BD_PRIORITY_GUARDRAIL_INSTRUCTIONS,
     output_type=BDPriorityCheckOutput,
-    model="gpt-4.1-nano",
-    model_settings=ModelSettings(temperature=0.1)
+    model=config.LLM_GUARDRAIL_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_GUARDRAIL_REASONING_EFFORT,
+        verbosity=config.LLM_GUARDRAIL_VERBOSITY,
+    ),
 )
 
 
@@ -138,8 +154,11 @@ yearn_data_agent = Agent[BotRunContext](
         check_all_deposits_tool,
         get_withdrawal_instructions_tool,
     ],
-    model="gpt-4.1",
-    model_settings=ModelSettings(temperature=0.0)
+    model=config.LLM_DATA_AGENT_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_DATA_AGENT_REASONING_EFFORT,
+        verbosity=config.LLM_DATA_AGENT_VERBOSITY,
+    ),
 )
 
 yearn_docs_qa_agent = Agent[BotRunContext](
@@ -151,8 +170,11 @@ yearn_docs_qa_agent = Agent[BotRunContext](
         fetch_repo_artifacts_tool,
         repo_context_status_tool,
     ],
-    model="gpt-4.1-mini",
-    model_settings=ModelSettings(temperature=0.2)
+    model=config.LLM_DOCS_AGENT_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_DOCS_AGENT_REASONING_EFFORT,
+        verbosity=config.LLM_DOCS_AGENT_VERBOSITY,
+    ),
 )
 
 yearn_bug_triage_agent = Agent[BotRunContext](
@@ -164,8 +186,11 @@ yearn_bug_triage_agent = Agent[BotRunContext](
         answer_from_docs_tool,
         repo_context_status_tool,
     ],
-    model="gpt-4.1",
-    model_settings=ModelSettings(temperature=0.1)
+    model=config.LLM_BUG_AGENT_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_BUG_AGENT_REASONING_EFFORT,
+        verbosity=config.LLM_BUG_AGENT_VERBOSITY,
+    ),
 )
 
 triage_agent = Agent[BotRunContext](
@@ -177,6 +202,9 @@ triage_agent = Agent[BotRunContext](
         handoff(yearn_bug_triage_agent, tool_name_override="transfer_to_yearn_bug_triage_specialist", tool_description_override="Handoff for YEARN bug reports, UI issues, migration issues, and protocol behavior claims that should be checked against docs and repo context before human escalation."),
     ],
     input_guardrails=[bd_priority_guardrail],
-    model="gpt-4.1",
-    model_settings=ModelSettings(temperature=0.1)
+    model=config.LLM_TRIAGE_AGENT_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_TRIAGE_AGENT_REASONING_EFFORT,
+        verbosity=config.LLM_TRIAGE_AGENT_VERBOSITY,
+    ),
 )

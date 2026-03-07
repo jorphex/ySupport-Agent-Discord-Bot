@@ -99,9 +99,10 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
             "Generate a concise, hypothetical answer..."
         )
         hyde_response = await openai_async_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=config.LLM_DOCS_HYDE_MODEL,
             messages=[{"role": "system", "content": hyde_prompt}],
-            temperature=0.0,
+            reasoning_effort=config.LLM_DOCS_HYDE_REASONING_EFFORT,
+            verbosity=config.LLM_DOCS_HYDE_VERBOSITY,
         )
         hypothetical_answer = hyde_response.choices[0].message.content.strip()
         embedding_text = f"{user_query}\n\n{hypothetical_answer}"
@@ -322,12 +323,13 @@ async def _synthesize_docs_answer(
 
     try:
         response = await openai_async_client.chat.completions.create(
-            model="gpt-4o",
+            model=config.LLM_DOCS_SYNTH_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Context:\n{context_text}\n\nYIP_STATUS_METADATA: {yip_status_summary or 'none'}\nNO_CONTEXT: {str(no_context).lower()}\n\nQuestion: {user_query}"}
             ],
-            temperature=0.1
+            reasoning_effort=config.LLM_DOCS_SYNTH_REASONING_EFFORT,
+            verbosity=config.LLM_DOCS_SYNTH_VERBOSITY,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
