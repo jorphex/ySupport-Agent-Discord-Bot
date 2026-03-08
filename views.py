@@ -8,6 +8,7 @@ from bot_behavior import STANDARD_REDIRECT_MESSAGE
 from state import (
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
+    bug_report_debounce_channels,
     stopped_channels,
     pending_messages,
     pending_tasks,
@@ -66,6 +67,7 @@ class InitialInquiryView(View):
             "what actually happened, any error text, and your device/browser if this is a UI issue."
         )
         await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "bug_report")
+        bug_report_debounce_channels.add(interaction.channel.id)
         logging.info(f"Bug report initiated in {interaction.channel.id}. Awaiting bug report details.")
 
     @button(label="🤝 Business/Partnerships/Marketing", style=discord.ButtonStyle.secondary, custom_id="initial_bd_partner", row=2)
@@ -119,6 +121,7 @@ class StopBotView(View):
             await interaction.response.defer()
 
         stopped_channels.add(channel_id)
+        bug_report_debounce_channels.discard(channel_id)
         pending_messages.pop(channel_id, None)
         task = pending_tasks.pop(channel_id, None)
         if task:

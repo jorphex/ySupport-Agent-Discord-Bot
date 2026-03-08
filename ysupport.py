@@ -36,6 +36,7 @@ from state import (
     monitored_new_channels,
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
+    bug_report_debounce_channels,
     public_conversations,
     last_wallet_by_channel,
     pending_wallet_confirmation_by_channel,
@@ -62,6 +63,12 @@ def _resolve_agent(agent_key: str):
     if agent_key == "bug":
         return yearn_bug_triage_agent
     return triage_agent
+
+
+def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int:
+    if run_context.initial_button_intent == "bug_report" or channel_id in bug_report_debounce_channels:
+        return config.BUG_REPORT_COOLDOWN_SECONDS
+    return config.COOLDOWN_SECONDS
 
 
 # Discord Bot Implementation
@@ -96,6 +103,7 @@ class TicketBot(discord.Client):
                 logging.info(f"New {project_context.capitalize()} ticket channel created: {channel.name} (ID: {channel.id}). Initializing state.")
                 conversation_threads[channel.id] = []
                 stopped_channels.discard(channel.id)
+                bug_report_debounce_channels.discard(channel.id)
                 pending_messages.pop(channel.id, None)
                 if channel.id in pending_tasks:
                     try:
@@ -289,7 +297,8 @@ class TicketBot(discord.Client):
             pending_messages[channel_id] += "\n" + message.content
 
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
-        logging.debug(f"Scheduled processing task for channel {channel_id} in {config.COOLDOWN_SECONDS}s")
+        debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
+        logging.debug(f"Scheduled processing task for channel {channel_id} in {debounce_seconds}s")
 
     async def process_ticket_message(self, channel_id: int, run_context: BotRunContext, is_button_trigger: bool = False, synthetic_user_message_for_log: str = ""):
         current_task = asyncio.current_task()
@@ -298,8 +307,9 @@ class TicketBot(discord.Client):
             if is_button_trigger:
                 aggregated_text = synthetic_user_message_for_log.strip()
             else:
+                debounce_seconds = _ticket_debounce_seconds(channel_id, run_context)
                 try:
-                    await asyncio.sleep(config.COOLDOWN_SECONDS)
+                    await asyncio.sleep(debounce_seconds)
                 except asyncio.CancelledError:
                     logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
                     return
@@ -436,6 +446,9 @@ class TicketBot(discord.Client):
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
                     await send_long_message(channel, final_reply, view=reply_view)
+                    if channel_id in bug_report_debounce_channels:
+                        bug_report_debounce_channels.discard(channel_id)
+                        logging.info("Cleared bug-report debounce flag for channel %s", channel_id)
                     last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
                     logging.info(f"Sent ticket reply/replies in channel {channel_id}. Stop processing flag: {should_stop_processing}")
                     if should_stop_processing and channel_id not in stopped_channels:

@@ -40,6 +40,7 @@ monitored_new_channels: set[int] = set()
 
 channels_awaiting_initial_button_press: set[int] = set()
 channel_intent_after_button: Dict[int, str] = {}
+bug_report_debounce_channels: set[int] = set()
 
 public_conversations: Dict[int, PublicConversation] = {}
 
