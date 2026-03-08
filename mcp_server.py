@@ -130,6 +130,106 @@ async def search_vaults(
         logging.error(f"Error in search_vaults: {e}")
         return f"Error searching vaults: {str(e)}"
 
+
+@mcp.tool()
+async def search_repo_context(
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "A Yearn protocol, contract, router, periphery, migration, or bug-claim query. "
+                "Examples: 'VaultV3 _redeem accounting', 'stYFI cooldown contract', "
+                "'ERC4626 router withdraw flow', 'veYFI migration behavior'."
+            )
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Field(
+            default=config.REPO_CONTEXT_TOP_K,
+            description="Maximum number of repo artifacts to return. Defaults to the configured repo-context top-k.",
+            ge=1,
+        ),
+    ] = config.REPO_CONTEXT_TOP_K,
+    include_legacy: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Include legacy repos such as veYFI and vaults-v1 when searching migration or stale-claim context.",
+        ),
+    ] = False,
+    include_ui: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Include UI/frontend repo context when investigating navigation or website-flow issues.",
+        ),
+    ] = False,
+) -> str:
+    """
+    Search the local Yearn repo-context index for contract, spec, deployment, or security artifacts.
+
+    Args:
+        query: Contract-aware Yearn query for protocol behavior, migrations, or bug triage.
+        limit: Maximum number of search results to return.
+        include_legacy: Whether to include legacy repos such as veYFI and vaults-v1.
+        include_ui: Whether to include UI/frontend repo context.
+
+    Returns:
+        A ranked list of repo artifacts with references such as 'segment:12' that can be passed to fetch_repo_artifacts.
+    """
+    try:
+        _require_api_key()
+        return await tools_lib.core_search_repo_context(query, limit, include_legacy, include_ui)
+    except Exception as e:
+        logging.error(f"Error in search_repo_context: {e}")
+        return f"Error searching repo context: {str(e)}"
+
+
+@mcp.tool()
+async def fetch_repo_artifacts(
+    artifact_refs_text: Annotated[
+        str,
+        Field(
+            description=(
+                "One or more repo artifact references returned by search_repo_context, such as "
+                "'segment:12', 'fact:34', or 'segment:12, segment:18'."
+            )
+        ),
+    ],
+) -> str:
+    """
+    Fetch exact repo artifacts from the local Yearn repo-context index by reference.
+
+    Args:
+        artifact_refs_text: One or more artifact references such as 'segment:12' or 'fact:34'.
+
+    Returns:
+        Exact repo excerpts with file and repo provenance.
+    """
+    try:
+        _require_api_key()
+        return await tools_lib.core_fetch_repo_artifacts(artifact_refs_text)
+    except Exception as e:
+        logging.error(f"Error in fetch_repo_artifacts: {e}")
+        return f"Error fetching repo artifacts: {str(e)}"
+
+
+@mcp.tool()
+async def repo_context_status() -> str:
+    """
+    Return local repo-context runtime status, including readiness and freshness.
+
+    Returns:
+        Repo-context status summary.
+    """
+    try:
+        _require_api_key()
+        return await tools_lib.core_repo_context_status()
+    except Exception as e:
+        logging.error(f"Error in repo_context_status: {e}")
+        return f"Error checking repo context status: {str(e)}"
+
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "sse")
     try:
