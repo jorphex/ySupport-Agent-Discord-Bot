@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import dataclass
+import sys
 
 from agents import RunContextWrapper
 
@@ -14,6 +15,9 @@ from state import (
 from ticket_investigation_json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     JsonEndpointTicketExecutionTransport,
+)
+from ticket_investigation_subprocess_endpoint import (
+    SubprocessTicketExecutionJsonEndpoint,
 )
 from ticket_investigation_executor import (
     LocalTicketInvestigationExecutor,
@@ -697,6 +701,127 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(flow_outcome.raw_final_reply, "json-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
+
+    async def test_subprocess_json_endpoint_round_trips_response(self) -> None:
+        endpoint = SubprocessTicketExecutionJsonEndpoint(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json,sys; "
+                    "request=json.loads(sys.stdin.read()); "
+                    "response={"
+                    "'flow_outcome':{"
+                    "'raw_final_reply':'subprocess-ok',"
+                    "'conversation_history':[],"
+                    "'completed_agent_key':'docs',"
+                    "'requires_human_handoff':False"
+                    "},"
+                    "'updated_job':{"
+                    "'channel_id':request['investigation_job']['channel_id'],"
+                    "'requested_intent':request['investigation_job'].get('requested_intent'),"
+                    "'mode':'investigating',"
+                    "'current_specialty':'docs',"
+                    "'last_specialty':'docs',"
+                    "'evidence':request['investigation_job'].get('evidence',{})"
+                    "}"
+                    "}; "
+                    "sys.stdout.write(json.dumps(response))"
+                ),
+            ]
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[],
+            run_context={
+                "channel_id": 99,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 99,
+                "requested_intent": "investigate_issue",
+                "mode": "collecting",
+                "evidence": {"wallet": None, "chain": "katana", "tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.subprocess",
+            wants_bug_review_status=False,
+        )
+
+        response_json = await endpoint.execute_json_turn(request.to_json())
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+
+        self.assertEqual(flow_outcome.raw_final_reply, "subprocess-ok")
+        self.assertEqual(updated_job.channel_id, 99)
+        self.assertEqual(updated_job.current_specialty, "docs")
+        self.assertEqual(updated_job.evidence.chain, "katana")
+
+    async def test_subprocess_json_endpoint_sends_bug_review_hook_before_spawn(self) -> None:
+        hook_calls: list[str] = []
+
+        async def fake_send_bug_review_status() -> None:
+            hook_calls.append("sent")
+
+        endpoint = SubprocessTicketExecutionJsonEndpoint(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json,sys; "
+                    "request=json.loads(sys.stdin.read()); "
+                    "response={"
+                    "'flow_outcome':{"
+                    "'raw_final_reply':'hook-ok',"
+                    "'conversation_history':[],"
+                    "'completed_agent_key':'bug',"
+                    "'requires_human_handoff':False"
+                    "},"
+                    "'updated_job':{"
+                    "'channel_id':request['investigation_job']['channel_id'],"
+                    "'mode':'investigating',"
+                    "'current_specialty':'bug',"
+                    "'last_specialty':'bug',"
+                    "'evidence':request['investigation_job'].get('evidence',{})"
+                    "}"
+                    "}; "
+                    "sys.stdout.write(json.dumps(response))"
+                ),
+            ]
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 100,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 100,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.subprocess_hook",
+            wants_bug_review_status=True,
+        )
+
+        response_json = await endpoint.execute_json_turn(
+            request.to_json(),
+            hooks=TicketExecutionHooks(
+                send_bug_review_status=fake_send_bug_review_status,
+            ),
+        )
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+
+        self.assertEqual(hook_calls, ["sent"])
+        self.assertEqual(flow_outcome.raw_final_reply, "hook-ok")
+        self.assertEqual(updated_job.current_specialty, "bug")
 
 
 class TicketTransportTests(unittest.TestCase):
