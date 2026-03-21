@@ -48,3 +48,35 @@ class LocalTicketInvestigationExecutor:
             flow_outcome=worker_result.flow_outcome,
             updated_job=updated_job,
         )
+
+
+class LoopbackTransportTicketInvestigationExecutor:
+    def __init__(self, delegate: TicketInvestigationExecutor) -> None:
+        self.delegate = delegate
+
+    async def execute_turn(
+        self,
+        request: TicketTurnRequest,
+        hooks: TicketExecutionHooks | None = None,
+    ) -> TicketExecutionResult:
+        from ticket_investigation_transport import (
+            TicketExecutionTransportRequest,
+            TicketExecutionTransportResult,
+        )
+
+        transport_request = TicketExecutionTransportRequest.from_turn_request(
+            request,
+            wants_bug_review_status=bool(hooks and hooks.send_bug_review_status is not None),
+        )
+        hydrated_request = transport_request.to_turn_request()
+        hydrated_hooks = None
+        if transport_request.wants_bug_review_status and hooks is not None:
+            hydrated_hooks = TicketExecutionHooks(
+                send_bug_review_status=hooks.send_bug_review_status,
+            )
+        result = await self.delegate.execute_turn(
+            hydrated_request,
+            hooks=hydrated_hooks,
+        )
+        transport_result = TicketExecutionTransportResult.from_execution_result(result)
+        return transport_result.to_execution_result()

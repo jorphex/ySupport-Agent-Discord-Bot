@@ -11,7 +11,16 @@ from state import (
     clear_ticket_investigation_job,
     get_or_create_ticket_investigation_job,
 )
-from ticket_investigation_executor import LocalTicketInvestigationExecutor, TicketExecutionHooks
+from ticket_investigation_executor import (
+    LocalTicketInvestigationExecutor,
+    LoopbackTransportTicketInvestigationExecutor,
+    TicketExecutionResult,
+    TicketExecutionHooks,
+)
+from ticket_investigation_transport import (
+    TicketExecutionTransportRequest,
+    TicketExecutionTransportResult,
+)
 from ticket_investigation_worker import TicketInvestigationWorker, TicketWorkerResult
 from support_agents import (
     TicketTriageDecision,
@@ -494,6 +503,87 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(request.investigation_job.current_specialty)
         self.assertEqual(result.updated_job.mode, "investigating")
         self.assertEqual(result.updated_job.current_specialty, "docs")
+
+    async def test_loopback_transport_executor_round_trips_request_and_result(self) -> None:
+        worker = _FakeWorker(requests=[])
+        executor = LoopbackTransportTicketInvestigationExecutor(
+            LocalTicketInvestigationExecutor(worker)
+        )
+        request = TicketTurnRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[],
+            run_context=BotRunContext(channel_id=93, project_context="yearn"),
+            investigation_job=TicketInvestigationJob(channel_id=93),
+            workflow_name="tests.executor",
+        )
+
+        result = await executor.execute_turn(request)
+
+        self.assertEqual(result.flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(result.updated_job.current_specialty, "docs")
+        self.assertEqual(result.updated_job.mode, "investigating")
+
+
+class TicketTransportTests(unittest.TestCase):
+    def test_transport_request_round_trip_preserves_job_and_context(self) -> None:
+        request = TicketTurnRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[{"role": "assistant", "content": "context"}],
+            run_context=BotRunContext(
+                channel_id=94,
+                category_id=12,
+                project_context="yearn",
+                initial_button_intent="investigate_issue",
+            ),
+            investigation_job=TicketInvestigationJob(channel_id=94),
+            workflow_name="tests.transport",
+        )
+        request.investigation_job.begin_collecting("investigate_issue")
+        request.investigation_job.remember_chain("katana")
+        request.investigation_job.remember_tx_hash(
+            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        )
+
+        transport = TicketExecutionTransportRequest.from_turn_request(
+            request,
+            wants_bug_review_status=True,
+        )
+        hydrated = transport.to_turn_request()
+
+        self.assertTrue(transport.wants_bug_review_status)
+        self.assertEqual(hydrated.run_context.channel_id, 94)
+        self.assertEqual(hydrated.run_context.initial_button_intent, "investigate_issue")
+        self.assertEqual(hydrated.investigation_job.mode, "collecting")
+        self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
+        self.assertEqual(
+            hydrated.investigation_job.evidence.tx_hashes,
+            ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
+        )
+
+    def test_transport_result_round_trip_preserves_flow_and_job(self) -> None:
+        job = TicketInvestigationJob(channel_id=95)
+        job.begin_investigating()
+        job.complete_specialist_turn("bug")
+        result = TicketExecutionTransportResult.from_execution_result(
+            TicketExecutionResult(
+                flow_outcome=TicketAgentFlowOutcome(
+                    raw_final_reply="ok",
+                    conversation_history=[{"role": "assistant", "content": "ok"}],
+                    completed_agent_key="bug",
+                    requires_human_handoff=False,
+                ),
+                updated_job=job,
+            )
+        )
+
+        hydrated = result.to_execution_result()
+
+        self.assertEqual(hydrated.flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(hydrated.flow_outcome.completed_agent_key, "bug")
+        self.assertEqual(hydrated.updated_job.mode, "investigating")
+        self.assertEqual(hydrated.updated_job.current_specialty, "bug")
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
