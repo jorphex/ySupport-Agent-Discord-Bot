@@ -11,6 +11,10 @@ from state import (
     clear_ticket_investigation_job,
     get_or_create_ticket_investigation_job,
 )
+from ticket_investigation_json_endpoint import (
+    ExecutorBackedTicketExecutionJsonEndpoint,
+    JsonEndpointTicketExecutionTransport,
+)
 from ticket_investigation_executor import (
     LocalTicketInvestigationExecutor,
     LoopbackTicketExecutionTransport,
@@ -607,6 +611,91 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(worker.requests), 1)
         self.assertEqual(worker.requests[0].run_context.channel_id, 96)
         self.assertEqual(flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(updated_job.current_specialty, "docs")
+
+    async def test_executor_backed_json_endpoint_round_trips_request_and_result(self) -> None:
+        worker = _FakeWorker(requests=[])
+        endpoint = ExecutorBackedTicketExecutionJsonEndpoint(
+            LocalTicketInvestigationExecutor(worker)
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[],
+            run_context={
+                "channel_id": 97,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 97,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.json",
+            wants_bug_review_status=False,
+        )
+
+        response_json = await endpoint.execute_json_turn(request.to_json())
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+
+        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(worker.requests[0].run_context.channel_id, 97)
+        self.assertEqual(flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(updated_job.current_specialty, "docs")
+
+    async def test_json_endpoint_transport_uses_json_boundary(self) -> None:
+        @dataclass
+        class _FakeJsonEndpoint:
+            requests: list
+            hooks: list
+
+            async def execute_json_turn(self, request_json, hooks=None):
+                self.requests.append(request_json)
+                self.hooks.append(hooks)
+                request = TicketExecutionTransportRequest.from_json(request_json)
+                updated_job = TicketInvestigationJob(
+                    channel_id=request.investigation_job["channel_id"]
+                )
+                updated_job.begin_investigating()
+                updated_job.complete_specialist_turn("docs")
+                return TicketExecutionTransportResult.from_execution_parts(
+                    TicketAgentFlowOutcome(
+                        raw_final_reply="json-ok",
+                        conversation_history=[],
+                        completed_agent_key="docs",
+                        requires_human_handoff=False,
+                    ),
+                    updated_job,
+                ).to_json()
+
+        transport = JsonEndpointTicketExecutionTransport(
+            _FakeJsonEndpoint(requests=[], hooks=[])
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[],
+            run_context={
+                "channel_id": 98,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 98,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.transport",
+            wants_bug_review_status=False,
+        )
+
+        result = await transport.execute_transport_turn(request)
+        flow_outcome, updated_job = result.to_execution_parts()
+
+        self.assertEqual(flow_outcome.raw_final_reply, "json-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
 
 
