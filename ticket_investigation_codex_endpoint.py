@@ -4,14 +4,13 @@ import asyncio
 import json
 import os
 from pathlib import Path
-import tempfile
 from typing import Sequence
-import uuid
 
 from ticket_investigation_codex_bundle import (
     DEFAULT_CODEX_EXEC_COMMAND,
     build_codex_ticket_execution_bundle,
 )
+from ticket_execution_workspace import TicketExecutionWorkspace
 from ticket_investigation_executor import TicketExecutionHooks
 from ticket_investigation_transport import (
     build_smoke_transport_result,
@@ -66,7 +65,12 @@ class CodexExecTicketExecutionJsonEndpoint:
             if hooks.send_bug_review_status is not None:
                 await hooks.send_bug_review_status()
 
-        with self._run_workspace() as run_dir:
+        workspace = TicketExecutionWorkspace(
+            artifact_dir=self.artifact_dir or None,
+            run_dir_root=self.run_dir_root or None,
+            prefix="ticket-codex-run-",
+        )
+        with workspace as run_dir:
             smoke_response_json = None
             if request.smoke_mode:
                 smoke_response_json = build_smoke_transport_result(
@@ -108,6 +112,7 @@ class CodexExecTicketExecutionJsonEndpoint:
                         "timed_out": True,
                     },
                 )
+                workspace.export_copy()
                 raise RuntimeError(
                     f"Codex ticket execution timed out after {self.timeout_seconds} seconds."
                 ) from exc
@@ -126,6 +131,7 @@ class CodexExecTicketExecutionJsonEndpoint:
                     "timed_out": False,
                 },
             )
+            workspace.export_copy()
 
             if process.returncode != 0:
                 error_text = stderr_text or "Codex execution exited without stderr output."
@@ -167,14 +173,6 @@ class CodexExecTicketExecutionJsonEndpoint:
             "Codex ticket execution command is not in the allowed prefix list."
         )
 
-    def _run_workspace(self) -> _TemporaryRunDir | _PersistentRunDir:
-        run_root = self.artifact_dir or self.run_dir_root
-        if not run_root:
-            return _TemporaryRunDir()
-        run_dir = Path(run_root) / f"run-{uuid.uuid4().hex}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        return _PersistentRunDir(run_dir)
-
     def _write_artifacts(
         self,
         run_dir: Path,
@@ -189,28 +187,6 @@ class CodexExecTicketExecutionJsonEndpoint:
             json.dumps(metadata, indent=2, sort_keys=True),
             encoding="utf-8",
         )
-
-
-class _PersistentRunDir:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def __enter__(self) -> Path:
-        return self.path
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-
-class _TemporaryRunDir:
-    def __init__(self) -> None:
-        self._delegate = tempfile.TemporaryDirectory(prefix="ticket-codex-run-")
-
-    def __enter__(self) -> Path:
-        return Path(self._delegate.__enter__())
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return self._delegate.__exit__(exc_type, exc, tb)
 
 
 def build_codex_exec_allowed_prefixes(

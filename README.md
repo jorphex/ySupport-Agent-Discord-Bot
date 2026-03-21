@@ -27,6 +27,8 @@ Operational policy:
 
 - if any execution mode uses `codex_exec`, set either `TICKET_EXECUTION_ARTIFACT_DIR` or `TICKET_EXECUTION_RUN_DIR_ROOT`
 - if `codex_exec` is the primary mode, a fallback endpoint is strongly recommended
+- execution sandboxes are always per-run temporary workspaces; persistent roots only receive exported copies after the run completes
+- custom subprocess or Codex wrappers should use `TICKET_EXECUTION_RUN_DIR` for scratch access instead of assuming cwd is the sandbox root
 
 Useful rollout env vars:
 
@@ -37,9 +39,9 @@ Useful rollout env vars:
 - `TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES`
   - extra allowed command prefixes for bounded external execution
 - `TICKET_EXECUTION_ARTIFACT_DIR`
-  - persist per-run request/prompt/stdout/stderr/metadata artifacts
+  - export per-run request/prompt/stdout/stderr/metadata artifacts from the disposable sandbox
 - `TICKET_EXECUTION_RUN_DIR_ROOT`
-  - persist per-run scratch directories without full artifact capture
+  - export per-run scratch-directory copies without forcing full artifact capture
 
 Suggested rollout order:
 

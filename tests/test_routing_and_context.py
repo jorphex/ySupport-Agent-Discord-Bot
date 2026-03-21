@@ -1318,8 +1318,9 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     sys.executable,
                     "-c",
                     (
-                        "import json,os,sys; "
+                        "import json,os,pathlib,sys; "
                         "run_dir=os.getenv('TICKET_EXECUTION_RUN_DIR'); "
+                        "pathlib.Path(run_dir, 'marker.txt').write_text('ok', encoding='utf-8'); "
                         "response={"
                         "'flow_outcome':{"
                         "'raw_final_reply':run_dir,"
@@ -1366,8 +1367,13 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             ).to_execution_parts()
             self.assertIsNotNone(flow_outcome.raw_final_reply)
             assert flow_outcome.raw_final_reply is not None
-            self.assertTrue(flow_outcome.raw_final_reply.startswith(run_root))
-            self.assertTrue(os.path.isdir(flow_outcome.raw_final_reply))
+            self.assertFalse(flow_outcome.raw_final_reply.startswith(run_root))
+            self.assertFalse(os.path.exists(flow_outcome.raw_final_reply))
+            exported_entries = os.listdir(run_root)
+            self.assertEqual(len(exported_entries), 1)
+            exported_dir = os.path.join(run_root, exported_entries[0])
+            self.assertTrue(os.path.isdir(exported_dir))
+            self.assertTrue(os.path.exists(os.path.join(exported_dir, "marker.txt")))
 
     async def test_codex_exec_json_endpoint_round_trips_response_and_writes_bundle(self) -> None:
         fake_codex = (
@@ -1501,6 +1507,66 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).to_execution_parts()
         self.assertEqual(flow_outcome.raw_final_reply, "ticket_execution_smoke_ok:codex_exec")
         self.assertEqual(updated_job.channel_id, 107)
+
+    async def test_codex_exec_json_endpoint_exports_copy_of_temporary_run_dir(self) -> None:
+        fake_codex = (
+            "import json,os,pathlib,sys; "
+            "run_dir=pathlib.Path(os.environ['TICKET_EXECUTION_RUN_DIR']); "
+            "run_dir.joinpath('marker.txt').write_text('ok', encoding='utf-8'); "
+            "response={"
+            "'flow_outcome':{"
+            "'raw_final_reply':str(run_dir),"
+            "'conversation_history':[],"
+            "'completed_agent_key':'data',"
+            "'requires_human_handoff':False"
+            "},"
+            "'updated_job':{"
+            "'channel_id':108,"
+            "'mode':'investigating',"
+            "'current_specialty':'data',"
+            "'last_specialty':'data',"
+            "'evidence':{'tx_hashes':[]}"
+            "}"
+            "}; "
+            "sys.stdout.write(json.dumps(response))"
+        )
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            endpoint = CodexExecTicketExecutionJsonEndpoint(
+                repo_root="/root/bots/discord/ysupport",
+                codex_command=[sys.executable, "-c", fake_codex],
+                allowed_command_prefixes=[[sys.executable, "-c", fake_codex]],
+                artifact_dir=artifact_dir,
+                cwd="/app",
+            )
+            request = TicketExecutionTransportRequest(
+                aggregated_text="codex export",
+                input_list=[],
+                current_history=[],
+                run_context={
+                    "channel_id": 108,
+                    "project_context": "yearn",
+                    "repo_last_search_artifact_refs": [],
+                },
+                investigation_job={
+                    "channel_id": 108,
+                    "requested_intent": "investigate_issue",
+                    "mode": "collecting",
+                    "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
+                },
+                workflow_name="tests.endpoint.codex_export",
+                wants_bug_review_status=False,
+            )
+
+            response_json = await endpoint.execute_json_turn(request.to_json())
+
+            flow_outcome, _updated_job = TicketExecutionTransportResult.from_json(
+                response_json
+            ).to_execution_parts()
+            self.assertFalse(os.path.exists(flow_outcome.raw_final_reply))
+            artifact_entries = os.listdir(artifact_dir)
+            self.assertEqual(len(artifact_entries), 1)
+            exported_dir = os.path.join(artifact_dir, artifact_entries[0])
+            self.assertTrue(os.path.exists(os.path.join(exported_dir, "marker.txt")))
 
     async def test_failover_json_endpoint_uses_fallback_and_deduplicates_hook(self) -> None:
         hook_calls: list[str] = []
