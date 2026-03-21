@@ -1,9 +1,13 @@
+import sys
+from collections.abc import Sequence
 from typing import Protocol
 
+import config
 from ticket_investigation_executor import (
     TicketExecutionHooks,
     TicketInvestigationExecutor,
 )
+from ticket_investigation_subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
 from ticket_investigation_transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
@@ -59,3 +63,24 @@ class JsonEndpointTicketExecutionTransport:
             hooks=hooks,
         )
         return TicketExecutionTransportResult.from_json(response_json)
+
+
+def build_ticket_execution_json_endpoint(
+    delegate: TicketInvestigationExecutor,
+) -> TicketExecutionJsonEndpoint:
+    if config.TICKET_EXECUTION_ENDPOINT == "local":
+        return ExecutorBackedTicketExecutionJsonEndpoint(delegate)
+    if config.TICKET_EXECUTION_ENDPOINT == "subprocess":
+        return SubprocessTicketExecutionJsonEndpoint(
+            _subprocess_command(),
+        )
+    raise ValueError(
+        "Unsupported TICKET_EXECUTION_ENDPOINT value: "
+        f"{config.TICKET_EXECUTION_ENDPOINT}"
+    )
+
+
+def _subprocess_command() -> Sequence[str]:
+    if config.TICKET_EXECUTION_SUBPROCESS_COMMAND:
+        return config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+    return [sys.executable, "-m", "ticket_investigation_worker_cli"]

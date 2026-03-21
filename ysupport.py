@@ -44,7 +44,7 @@ from state import (
     stopped_channels,
 )
 from ticket_investigation_json_endpoint import (
-    ExecutorBackedTicketExecutionJsonEndpoint,
+    build_ticket_execution_json_endpoint,
     JsonEndpointTicketExecutionTransport,
 )
 from ticket_investigation_executor import (
@@ -83,7 +83,7 @@ class TicketBot(discord.Client):
         self.local_investigation_executor = LocalTicketInvestigationExecutor(
             self.investigation_worker
         )
-        self.investigation_json_endpoint = ExecutorBackedTicketExecutionJsonEndpoint(
+        self.investigation_json_endpoint = build_ticket_execution_json_endpoint(
             self.local_investigation_executor
         )
         self.investigation_transport = JsonEndpointTicketExecutionTransport(

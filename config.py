@@ -1,6 +1,7 @@
 # config.py
 import os
 from pathlib import Path
+import shlex
 
 from dotenv import load_dotenv
 
@@ -89,6 +90,10 @@ MAX_TICKET_CONVERSATION_TURNS = 10
 MAX_RESULTS_TO_SHOW = 5
 STRATEGY_FETCH_CONCURRENCY = 10
 PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30
+TICKET_EXECUTION_ENDPOINT = os.getenv("TICKET_EXECUTION_ENDPOINT", "local").strip().lower()
+TICKET_EXECUTION_SUBPROCESS_COMMAND = shlex.split(
+    os.getenv("TICKET_EXECUTION_SUBPROCESS_COMMAND", "")
+)
 
 # --- Repo Context ---
 ENABLE_REPO_CONTEXT = _env_bool("ENABLE_REPO_CONTEXT", default=False)

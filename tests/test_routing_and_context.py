@@ -15,6 +15,7 @@ from state import (
 from ticket_investigation_json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     JsonEndpointTicketExecutionTransport,
+    build_ticket_execution_json_endpoint,
 )
 from ticket_investigation_subprocess_endpoint import (
     SubprocessTicketExecutionJsonEndpoint,
@@ -483,6 +484,11 @@ class _FakeWorker:
         )
 
 
+class _FakeExecutor:
+    async def execute_turn(self, request, hooks=None):
+        raise AssertionError("Factory tests should not execute the delegate.")
+
+
 class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
     async def test_local_executor_injects_hooks_into_request(self) -> None:
         worker = _FakeWorker(requests=[])
@@ -822,6 +828,47 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hook_calls, ["sent"])
         self.assertEqual(flow_outcome.raw_final_reply, "hook-ok")
         self.assertEqual(updated_job.current_specialty, "bug")
+
+
+class TicketExecutionEndpointFactoryTests(unittest.TestCase):
+    def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "local"
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
+            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+
+        self.assertIsInstance(endpoint, ExecutorBackedTicketExecutionJsonEndpoint)
+
+    def test_build_endpoint_returns_subprocess_endpoint(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "subprocess"
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
+            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+
+        self.assertIsInstance(endpoint, SubprocessTicketExecutionJsonEndpoint)
+        self.assertEqual(endpoint.command[1:], ["-m", "ticket_investigation_worker_cli"])
+
+    def test_build_endpoint_rejects_unknown_mode(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "invalid"
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
+            with self.assertRaises(ValueError):
+                build_ticket_execution_json_endpoint(_FakeExecutor())
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
 
 
 class TicketTransportTests(unittest.TestCase):
