@@ -63,8 +63,9 @@ class InitialInquiryView(View):
     @button(label="🐞 Bug Report/UI Issue", style=discord.ButtonStyle.secondary, custom_id="initial_bug_report", row=1)
     async def bug_report_button(self, interaction: discord.Interaction, button: Button):
         prompt = (
-            "Describe the bug or UI problem in detail. Include the product or vault involved, what you expected to happen, "
-            "what actually happened, any error text, and your device/browser if this is a UI issue."
+            "Describe the bug or UI problem in as much detail as you have. You can send multiple messages now and I will review them together. "
+            "Include the product or vault involved, the exact page or URL if relevant, what you expected to happen, what actually happened, "
+            "any error text, any tx hash, and your browser/device or wallet if that matters."
         )
         await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "bug_report")
         bug_report_debounce_channels.add(interaction.channel.id)

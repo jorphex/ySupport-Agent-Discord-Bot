@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, List, Union, Any
 
 from web3 import Web3
+from web3._utils.events import get_event_data
 from pinecone import Pinecone
 from openai import OpenAI, AsyncOpenAI
 
@@ -83,6 +84,148 @@ def _extract_keywords(text: str) -> List[str]:
         "showing", "missing", "does", "do", "did"
     }
     return [t for t in tokens if len(t) > 3 and t not in stop]
+
+
+def _json_loads_or_default(raw_value: Optional[str], default: Any) -> Any:
+    if raw_value in (None, ""):
+        return default
+    return json.loads(raw_value)
+
+
+def _normalize_chain(chain: str) -> str:
+    return (chain or "").strip().lower()
+
+
+def _parse_block_identifier(value: Optional[str]) -> Optional[Union[str, int]]:
+    if value in (None, ""):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"latest", "earliest", "pending", "safe", "finalized"}:
+        return normalized
+    if normalized.startswith("0x"):
+        return int(normalized, 16)
+    return int(normalized)
+
+
+def _parse_function_signature(signature: str) -> tuple[str, list[str]]:
+    match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\((.*)\)\s*", signature or "")
+    if not match:
+        raise ValueError("Function signature must look like 'allowance(address,address)'.")
+    name = match.group(1)
+    inputs_text = match.group(2).strip()
+    if not inputs_text:
+        return name, []
+    return name, [part.strip() for part in inputs_text.split(",")]
+
+
+def _build_function_abi(
+    *,
+    function_abi_json: Optional[str],
+    function_signature: Optional[str],
+    output_types_json: Optional[str],
+) -> dict[str, Any]:
+    if function_abi_json:
+        abi = json.loads(function_abi_json)
+        if not isinstance(abi, dict) or abi.get("type") != "function":
+            raise ValueError("function_abi_json must be a JSON object describing a single function ABI.")
+        return abi
+
+    if not function_signature:
+        raise ValueError("Either function_abi_json or function_signature must be provided for mode='call'.")
+
+    output_types = _json_loads_or_default(output_types_json, [])
+    if not isinstance(output_types, list):
+        raise ValueError("output_types_json must be a JSON array of solidity output types.")
+
+    function_name, input_types = _parse_function_signature(function_signature)
+    return {
+        "type": "function",
+        "name": function_name,
+        "stateMutability": "view",
+        "inputs": [{"name": f"arg_{idx}", "type": solidity_type} for idx, solidity_type in enumerate(input_types)],
+        "outputs": [{"name": f"out_{idx}", "type": solidity_type} for idx, solidity_type in enumerate(output_types)],
+    }
+
+
+def _normalize_rpc_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return "0x" + value.hex()
+    if isinstance(value, (list, tuple)):
+        return [_normalize_rpc_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _normalize_rpc_value(item) for key, item in value.items()}
+    return value
+
+
+def _format_structured_output(title: str, payload: dict[str, Any]) -> str:
+    lines = [title]
+    for key, value in payload.items():
+        normalized = _normalize_rpc_value(value)
+        if isinstance(normalized, (dict, list)):
+            pretty = json.dumps(normalized, indent=2, sort_keys=True)
+            lines.append(f"{key}: {pretty}")
+        else:
+            lines.append(f"{key}: {normalized}")
+    return "\n".join(lines)
+
+
+def _checksum_address(value: Optional[str], *, label: str) -> str:
+    if not value:
+        raise ValueError(f"{label} is required.")
+    if not Web3.is_address(value):
+        raise ValueError(f"{label} must be a valid EVM address.")
+    return Web3.to_checksum_address(value)
+
+
+def _parse_event_abis(event_abis_json: Optional[str]) -> list[dict[str, Any]]:
+    parsed = _json_loads_or_default(event_abis_json, [])
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        raise ValueError("event_abis_json must be a JSON object or array of event ABI objects.")
+    event_abis: list[dict[str, Any]] = []
+    for event_abi in parsed:
+        if not isinstance(event_abi, dict) or event_abi.get("type") != "event":
+            raise ValueError("event_abis_json entries must be event ABI objects.")
+        event_abis.append(event_abi)
+    return event_abis
+
+
+def _decode_logs_with_abis(web3_instance: Web3, logs: list[Any], event_abis: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not event_abis:
+        return []
+    decoded: list[dict[str, Any]] = []
+    codec = web3_instance.codec
+    for log in logs:
+        matched = False
+        for event_abi in event_abis:
+            try:
+                event_data = get_event_data(codec, event_abi, log)
+            except Exception:
+                continue
+            decoded.append(
+                {
+                    "event": event_abi.get("name", "UnknownEvent"),
+                    "address": log["address"],
+                    "log_index": log.get("logIndex"),
+                    "transaction_hash": log["transactionHash"].hex(),
+                    "args": _normalize_rpc_value(dict(event_data["args"])),
+                }
+            )
+            matched = True
+            break
+        if not matched:
+            decoded.append(
+                {
+                    "event": None,
+                    "address": log["address"],
+                    "log_index": log.get("logIndex"),
+                    "transaction_hash": log["transactionHash"].hex(),
+                    "topics": [topic.hex() for topic in log["topics"]],
+                    "data": log["data"],
+                }
+            )
+    return decoded
 
 
 async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
@@ -312,13 +455,16 @@ async def _synthesize_docs_answer(
 ) -> str:
     system_prompt = (
         "You are an expert Yearn assistant. Answer based SOLELY on the context.\n"
-        "Answer the user's question directly and authoritatively using only this knowledge.\n"
+        "Answer the user's question directly using only this knowledge.\n"
         "1. If a source line includes a URL, include that link in your answer.\n"
         "2. If YIP_STATUS_METADATA is provided and not 'none', include a final line: 'YIP Status: ...' using that metadata.\n"
         "3. If a source has no URL, do not invent one.\n"
         "4. If NO_CONTEXT is true or the context is empty, say you couldn't find this in the Yearn documentation in your own words. Do not invent details.\n"
-        "5. Respond in your own words; do not use canned responses or templates.\n"
-        "6. NO META-COMMENTARY.\n"
+        "5. If the context only partially answers the question, say exactly what is supported and what remains unresolved.\n"
+        "6. For procedural or product-navigation questions, give the concrete next step or destination first.\n"
+        "7. Do not inflate thin evidence into a broad or authoritative answer.\n"
+        "8. Respond in your own words; do not use canned responses or templates.\n"
+        "9. NO META-COMMENTARY.\n"
     )
 
     try:
@@ -424,6 +570,141 @@ async def core_repo_context_status() -> str:
         f"fresh={status['fresh']} built_at={status['built_at']} age_hours={status['age_hours']} "
         f"repo_count={repo_count} reason={status['reason']}"
     )
+
+
+async def core_inspect_onchain(
+    *,
+    chain: str,
+    mode: str,
+    to_address: Optional[str] = None,
+    function_signature: Optional[str] = None,
+    args_json: Optional[str] = None,
+    output_types_json: Optional[str] = None,
+    function_abi_json: Optional[str] = None,
+    tx_hash: Optional[str] = None,
+    address: Optional[str] = None,
+    topics_json: Optional[str] = None,
+    from_block: Optional[str] = None,
+    to_block: Optional[str] = None,
+    event_abis_json: Optional[str] = None,
+    block_identifier: Optional[str] = None,
+    max_results: int = 10,
+) -> str:
+    chain_name = _normalize_chain(chain)
+    if chain_name not in WEB3_INSTANCES:
+        return f"Unsupported chain '{chain}'. Supported chains: {', '.join(sorted(WEB3_INSTANCES))}."
+
+    web3_instance = WEB3_INSTANCES[chain_name]
+    mode_normalized = (mode or "").strip().lower()
+    max_results = max(1, min(max_results, 25))
+
+    try:
+        if mode_normalized == "call":
+            checksum_to = _checksum_address(to_address, label="to_address")
+            args = _json_loads_or_default(args_json, [])
+            if not isinstance(args, list):
+                return "args_json must be a JSON array."
+            function_abi = _build_function_abi(
+                function_abi_json=function_abi_json,
+                function_signature=function_signature,
+                output_types_json=output_types_json,
+            )
+            contract = web3_instance.eth.contract(address=checksum_to, abi=[function_abi])
+            function_name = function_abi["name"]
+            contract_call = getattr(contract.functions, function_name)(*args)
+            parsed_block_identifier = _parse_block_identifier(block_identifier)
+            if parsed_block_identifier is None:
+                result = await asyncio.to_thread(contract_call.call)
+            else:
+                result = await asyncio.to_thread(contract_call.call, block_identifier=parsed_block_identifier)
+            return _format_structured_output(
+                "Onchain call result",
+                {
+                    "chain": chain_name,
+                    "contract": checksum_to,
+                    "function": function_signature or function_name,
+                    "args": args,
+                    "result": result,
+                    "block_identifier": parsed_block_identifier or "latest",
+                },
+            )
+
+        if mode_normalized == "receipt":
+            if not tx_hash:
+                return "tx_hash is required for mode='receipt'."
+            receipt = await asyncio.to_thread(web3_instance.eth.get_transaction_receipt, tx_hash)
+            transaction = await asyncio.to_thread(web3_instance.eth.get_transaction, tx_hash)
+            logs = list(receipt["logs"])
+            event_abis = _parse_event_abis(event_abis_json)
+            decoded_logs = _decode_logs_with_abis(web3_instance, logs[:max_results], event_abis)
+            if not decoded_logs:
+                decoded_logs = [
+                    {
+                        "address": log["address"],
+                        "log_index": log.get("logIndex"),
+                        "transaction_hash": log["transactionHash"].hex(),
+                        "topics": [topic.hex() for topic in log["topics"]],
+                        "data": log["data"],
+                    }
+                    for log in logs[:max_results]
+                ]
+            return _format_structured_output(
+                "Transaction receipt",
+                {
+                    "chain": chain_name,
+                    "transaction_hash": tx_hash,
+                    "status": receipt.get("status"),
+                    "block_number": receipt.get("blockNumber"),
+                    "from": transaction.get("from"),
+                    "to": transaction.get("to"),
+                    "gas_used": receipt.get("gasUsed"),
+                    "log_count": len(logs),
+                    "logs_shown": min(len(logs), max_results),
+                    "logs": decoded_logs,
+                },
+            )
+
+        if mode_normalized == "logs":
+            parsed_topics = _json_loads_or_default(topics_json, [])
+            if not isinstance(parsed_topics, list):
+                return "topics_json must be a JSON array."
+            filter_params: dict[str, Any] = {
+                "fromBlock": _parse_block_identifier(from_block) or "latest",
+                "toBlock": _parse_block_identifier(to_block) or "latest",
+            }
+            if parsed_topics:
+                filter_params["topics"] = parsed_topics
+            if address:
+                filter_params["address"] = _checksum_address(address, label="address")
+            logs = await asyncio.to_thread(web3_instance.eth.get_logs, filter_params)
+            event_abis = _parse_event_abis(event_abis_json)
+            decoded_logs = _decode_logs_with_abis(web3_instance, list(logs)[:max_results], event_abis)
+            if not decoded_logs:
+                decoded_logs = [
+                    {
+                        "address": log["address"],
+                        "log_index": log.get("logIndex"),
+                        "transaction_hash": log["transactionHash"].hex(),
+                        "topics": [topic.hex() for topic in log["topics"]],
+                        "data": log["data"],
+                    }
+                    for log in list(logs)[:max_results]
+                ]
+            return _format_structured_output(
+                "Log query result",
+                {
+                    "chain": chain_name,
+                    "filter": filter_params,
+                    "log_count": len(logs),
+                    "logs_shown": min(len(logs), max_results),
+                    "logs": decoded_logs,
+                },
+            )
+
+        return "Unsupported mode. Use one of: call, receipt, logs."
+    except Exception as exc:
+        logging.error("[CoreTool:inspect_onchain] Error: %s", exc, exc_info=True)
+        return f"Error inspecting onchain data: {exc}"
 
 
 # --- Helpers ---

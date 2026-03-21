@@ -339,12 +339,21 @@ class TicketBot(discord.Client):
                     pending_wallet_confirmation_by_channel.pop(channel_id, None)
                     system_hints.append("User rejected the suggested wallet address. Ask for the correct wallet address if needed.")
 
-            if is_message_primarily_address(aggregated_text) and (is_data_intent or is_probable_wallet_address(aggregated_text)):
-                parsed_address = tools_lib.resolve_ens(aggregated_text)
+            extracted_address_or_ens = None
+            if is_data_intent:
+                extracted_address_or_ens = tools_lib.extract_address_or_ens(aggregated_text) or aggregated_text
+            elif is_message_primarily_address(aggregated_text) and is_probable_wallet_address(aggregated_text):
+                extracted_address_or_ens = aggregated_text
+
+            if extracted_address_or_ens:
+                parsed_address = tools_lib.resolve_ens(extracted_address_or_ens)
                 if parsed_address:
                     last_wallet = last_wallet_by_channel.get(channel_id)
                     if is_data_intent:
                         last_wallet_by_channel[channel_id] = parsed_address
+                        system_hints.append(
+                            f"Resolved wallet address for this turn: {parsed_address}. Use this exact address for any wallet-based tool call."
+                        )
                     elif last_wallet and parsed_address != last_wallet:
                         pending_wallet_confirmation_by_channel[channel_id] = parsed_address
                         system_hints.append(
@@ -409,8 +418,10 @@ class TicketBot(discord.Client):
                     final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
 
                     if actual_mention in final_reply or config.HUMAN_HANDOFF_TAG_PLACEHOLDER in raw_final_reply:
-                        logging.info(f"Human handoff tag detected in response for channel {channel_id}.")
-                        should_stop_processing = True
+                        logging.info(
+                            "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
+                            channel_id,
+                        )
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                     guardrail_info = e.guardrail_result.output.output_info

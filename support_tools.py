@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Optional
+from typing import Literal, Optional
 
 from agents import function_tool, RunContextWrapper
 
@@ -72,6 +72,51 @@ async def check_all_deposits_tool(user_address_or_ens: str, token_symbol: Option
     Checks for user deposits in Yearn vaults.
     """
     return await tools_lib.core_check_all_deposits(user_address_or_ens, token_symbol)
+
+
+@function_tool
+async def inspect_onchain_tool(
+    chain: str,
+    mode: Literal["call", "receipt", "logs"],
+    to_address: Optional[str] = None,
+    function_signature: Optional[str] = None,
+    args_json: Optional[str] = None,
+    output_types_json: Optional[str] = None,
+    function_abi_json: Optional[str] = None,
+    tx_hash: Optional[str] = None,
+    address: Optional[str] = None,
+    topics_json: Optional[str] = None,
+    from_block: Optional[str] = None,
+    to_block: Optional[str] = None,
+    event_abis_json: Optional[str] = None,
+    block_identifier: Optional[str] = None,
+    max_results: int = 10,
+) -> str:
+    """
+    Performs bounded onchain inspection against the configured RPCs.
+    Modes:
+    - 'call': execute a read-only contract call using either `function_abi_json` or `function_signature` + `output_types_json`
+    - 'receipt': fetch a transaction receipt and optionally decode logs with `event_abis_json`
+    - 'logs': query logs for an address/topics range and optionally decode them with `event_abis_json`
+    Use this for allowance, approvals, tx receipt/log inspection, and other targeted chain-state checks.
+    """
+    return await tools_lib.core_inspect_onchain(
+        chain=chain,
+        mode=mode,
+        to_address=to_address,
+        function_signature=function_signature,
+        args_json=args_json,
+        output_types_json=output_types_json,
+        function_abi_json=function_abi_json,
+        tx_hash=tx_hash,
+        address=address,
+        topics_json=topics_json,
+        from_block=from_block,
+        to_block=to_block,
+        event_abis_json=event_abis_json,
+        block_identifier=block_identifier,
+        max_results=max_results,
+    )
 
 
 @function_tool

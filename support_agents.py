@@ -31,6 +31,7 @@ from support_tools import (
     search_vaults_tool,
     check_all_deposits_tool,
     get_withdrawal_instructions_tool,
+    inspect_onchain_tool,
     answer_from_docs_tool,
     search_repo_context_tool,
     fetch_repo_artifacts_tool,
@@ -59,6 +60,23 @@ def _gpt5_model_settings(
         reasoning=Reasoning(effort=effort),
         verbosity=verbosity,
     )
+
+
+def _with_runtime_context(base_instructions: str):
+    def _instructions(
+        ctx: RunContextWrapper[BotRunContext],
+        agent: Agent[BotRunContext],
+    ) -> str:
+        run_context = ctx.context
+        runtime_context = (
+            "# Runtime Context\n"
+            f"- project_context: {run_context.project_context}\n"
+            f"- initial_button_intent: {run_context.initial_button_intent or 'none'}\n"
+            f"- is_public_trigger: {str(run_context.is_public_trigger).lower()}\n"
+        )
+        return f"{base_instructions}\n\n{runtime_context}"
+
+    return _instructions
 
 
 bd_priority_guardrail_agent = Agent[BotRunContext](
@@ -148,11 +166,12 @@ async def bd_priority_guardrail(
 
 yearn_data_agent = Agent[BotRunContext](
     name="Yearn Data Specialist",
-    instructions=YEARn_DATA_AGENT_INSTRUCTIONS,
+    instructions=_with_runtime_context(YEARn_DATA_AGENT_INSTRUCTIONS),
     tools=[
         search_vaults_tool,
         check_all_deposits_tool,
         get_withdrawal_instructions_tool,
+        inspect_onchain_tool,
     ],
     model=config.LLM_DATA_AGENT_MODEL,
     model_settings=_gpt5_model_settings(
@@ -163,7 +182,7 @@ yearn_data_agent = Agent[BotRunContext](
 
 yearn_docs_qa_agent = Agent[BotRunContext](
     name="Yearn Docs QA Specialist",
-    instructions=YEARn_DOCS_QA_AGENT_INSTRUCTIONS,
+    instructions=_with_runtime_context(YEARn_DOCS_QA_AGENT_INSTRUCTIONS),
     tools=[
         answer_from_docs_tool,
         search_repo_context_tool,
@@ -179,10 +198,11 @@ yearn_docs_qa_agent = Agent[BotRunContext](
 
 yearn_bug_triage_agent = Agent[BotRunContext](
     name="Yearn Bug Triage Specialist",
-    instructions=YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
+    instructions=_with_runtime_context(YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS),
     tools=[
         search_repo_context_tool,
         fetch_repo_artifacts_tool,
+        inspect_onchain_tool,
         answer_from_docs_tool,
         repo_context_status_tool,
     ],
@@ -195,7 +215,7 @@ yearn_bug_triage_agent = Agent[BotRunContext](
 
 triage_agent = Agent[BotRunContext](
     name="Support Triage Agent",
-    instructions=TRIAGE_AGENT_INSTRUCTIONS,
+    instructions=_with_runtime_context(TRIAGE_AGENT_INSTRUCTIONS),
     handoffs=[
         handoff(yearn_data_agent, tool_name_override="transfer_to_yearn_data_specialist", tool_description_override="Handoff for specific YEARN data (vaults, deposits, APR, TVL, balances, withdrawal instructions)."),
         handoff(yearn_docs_qa_agent, tool_name_override="transfer_to_yearn_docs_qa_specialist", tool_description_override="Handoff for general questions about YEARN concepts, documentation, risks."),
