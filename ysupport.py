@@ -421,6 +421,7 @@ class TicketBot(discord.Client):
                             send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
                         ),
                     )
+                    investigation_job.apply_snapshot(worker_result.updated_job)
                     flow_outcome = worker_result.flow_outcome
                     conversation_threads[channel_id] = flow_outcome.conversation_history
 

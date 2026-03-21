@@ -94,6 +94,15 @@ class TicketInvestigationJob:
         if tx_hash not in self.evidence.tx_hashes:
             self.evidence.tx_hashes.append(tx_hash)
 
+    def apply_snapshot(self, other: "TicketInvestigationJob") -> None:
+        self.requested_intent = other.requested_intent
+        self.mode = other.mode
+        self.current_specialty = other.current_specialty
+        self.last_specialty = other.last_specialty
+        self.evidence.wallet = other.evidence.wallet
+        self.evidence.chain = other.evidence.chain
+        self.evidence.tx_hashes = list(other.evidence.tx_hashes)
+
 
 # Globals
 stopped_channels: set[int] = set()

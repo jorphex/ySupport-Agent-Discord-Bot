@@ -452,11 +452,13 @@ class _FakeWorker:
 
     async def execute_turn(self, request):
         self.requests.append(request)
+        request.investigation_job.begin_investigating()
+        request.investigation_job.complete_specialist_turn("docs")
         return TicketWorkerResult(
             flow_outcome=TicketAgentFlowOutcome(
                 raw_final_reply="ok",
                 conversation_history=[],
-                completed_agent_key=None,
+                completed_agent_key="docs",
                 requires_human_handoff=False,
             )
         )
@@ -478,7 +480,7 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             investigation_job=TicketInvestigationJob(channel_id=92),
             workflow_name="tests.executor",
         )
-        await executor.execute_turn(
+        result = await executor.execute_turn(
             request,
             hooks=TicketExecutionHooks(
                 send_bug_review_status=fake_send_bug_review_status,
@@ -488,6 +490,10 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(worker.requests), 1)
         self.assertIs(worker.requests[0].send_bug_review_status, fake_send_bug_review_status)
         self.assertIsNone(request.send_bug_review_status)
+        self.assertEqual(request.investigation_job.mode, "idle")
+        self.assertIsNone(request.investigation_job.current_specialty)
+        self.assertEqual(result.updated_job.mode, "investigating")
+        self.assertEqual(result.updated_job.current_specialty, "docs")
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
