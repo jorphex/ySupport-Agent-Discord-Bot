@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import dataclass
+import json
 import os
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from state import (
 )
 from ticket_investigation_json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
+    FailoverTicketExecutionJsonEndpoint,
     JsonEndpointTicketExecutionTransport,
     build_ticket_execution_json_endpoint,
 )
@@ -1216,32 +1218,117 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 allowed_command_prefixes=[["codex", "exec"]],
             )
 
+    async def test_failover_json_endpoint_uses_fallback_and_deduplicates_hook(self) -> None:
+        hook_calls: list[str] = []
+
+        async def fake_send_bug_review_status() -> None:
+            hook_calls.append("sent")
+
+        class _FailingJsonEndpoint:
+            async def execute_json_turn(
+                self,
+                request_json: str,
+                hooks: TicketExecutionHooks | None = None,
+            ) -> str:
+                if hooks is not None and hooks.send_bug_review_status is not None:
+                    await hooks.send_bug_review_status()
+                raise RuntimeError("primary failed")
+
+        class _FallbackJsonEndpoint:
+            async def execute_json_turn(
+                self,
+                request_json: str,
+                hooks: TicketExecutionHooks | None = None,
+            ) -> str:
+                if hooks is not None and hooks.send_bug_review_status is not None:
+                    await hooks.send_bug_review_status()
+                request = TicketExecutionTransportRequest.from_json(request_json)
+                response = {
+                    "flow_outcome": {
+                        "raw_final_reply": "fallback-ok",
+                        "conversation_history": [],
+                        "completed_agent_key": "docs",
+                        "requires_human_handoff": False,
+                    },
+                    "updated_job": {
+                        "channel_id": request.investigation_job["channel_id"],
+                        "requested_intent": request.investigation_job.get("requested_intent"),
+                        "mode": "investigating",
+                        "current_specialty": "docs",
+                        "last_specialty": "docs",
+                        "evidence": request.investigation_job.get("evidence", {}),
+                    },
+                }
+                return json.dumps(response)
+
+        endpoint = FailoverTicketExecutionJsonEndpoint(
+            _FailingJsonEndpoint(),
+            _FallbackJsonEndpoint(),
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 107,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 107,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.failover",
+            wants_bug_review_status=True,
+        )
+
+        response_json = await endpoint.execute_json_turn(
+            request.to_json(),
+            hooks=TicketExecutionHooks(
+                send_bug_review_status=fake_send_bug_review_status,
+            ),
+        )
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(hook_calls, ["sent"])
+        self.assertEqual(flow_outcome.raw_final_reply, "fallback-ok")
+        self.assertEqual(updated_job.current_specialty, "docs")
+
 
 class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
         try:
             config.TICKET_EXECUTION_ENDPOINT = "local"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
             endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
 
         self.assertIsInstance(endpoint, ExecutorBackedTicketExecutionJsonEndpoint)
 
     def test_build_endpoint_returns_subprocess_endpoint(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "subprocess"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
             endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
 
@@ -1250,15 +1337,18 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
 
     def test_build_endpoint_allows_configured_subprocess_prefix(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "subprocess"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = ["codex", "exec", "--json"]
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
             endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
 
@@ -1267,11 +1357,13 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
 
     def test_build_endpoint_rejects_unknown_mode(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
         original_codex_command = config.TICKET_EXECUTION_CODEX_COMMAND
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "invalid"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
             config.TICKET_EXECUTION_CODEX_COMMAND = []
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
@@ -1279,23 +1371,27 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
                 build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
             config.TICKET_EXECUTION_CODEX_COMMAND = original_codex_command
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
 
     def test_build_endpoint_returns_codex_exec_endpoint(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_command = config.TICKET_EXECUTION_CODEX_COMMAND
         original_model = config.TICKET_EXECUTION_CODEX_MODEL
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
             config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
             endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
             config.TICKET_EXECUTION_CODEX_COMMAND = original_command
             config.TICKET_EXECUTION_CODEX_MODEL = original_model
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
@@ -1303,6 +1399,27 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
         self.assertIsInstance(endpoint, CodexExecTicketExecutionJsonEndpoint)
         self.assertEqual(endpoint.codex_command[:2], ["codex", "exec"])
         self.assertEqual(endpoint.model, "gpt-5.4")
+
+    def test_build_endpoint_wraps_primary_with_fallback_when_configured(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
+            config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
+            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
+            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
+
+        self.assertIsInstance(endpoint, FailoverTicketExecutionJsonEndpoint)
+        self.assertIsInstance(endpoint.primary, CodexExecTicketExecutionJsonEndpoint)
+        self.assertIsInstance(endpoint.fallback, ExecutorBackedTicketExecutionJsonEndpoint)
 
 
 class TicketTransportTests(unittest.TestCase):

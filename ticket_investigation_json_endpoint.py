@@ -71,12 +71,59 @@ class JsonEndpointTicketExecutionTransport:
         return TicketExecutionTransportResult.from_json(response_json)
 
 
+class FailoverTicketExecutionJsonEndpoint:
+    def __init__(
+        self,
+        primary: TicketExecutionJsonEndpoint,
+        fallback: TicketExecutionJsonEndpoint,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    async def execute_json_turn(
+        self,
+        request_json: str,
+        hooks: TicketExecutionHooks | None = None,
+    ) -> str:
+        effective_hooks = _one_shot_hooks(hooks)
+        try:
+            return await self.primary.execute_json_turn(request_json, hooks=effective_hooks)
+        except (OSError, RuntimeError):
+            try:
+                return await self.fallback.execute_json_turn(
+                    request_json,
+                    hooks=effective_hooks,
+                )
+            except Exception as fallback_exc:
+                raise RuntimeError(
+                    "Primary and fallback ticket execution endpoints both failed."
+                ) from fallback_exc
+
+
 def build_ticket_execution_json_endpoint(
     delegate: TicketInvestigationExecutor,
 ) -> TicketExecutionJsonEndpoint:
-    if config.TICKET_EXECUTION_ENDPOINT == "local":
+    primary = _build_single_ticket_execution_json_endpoint(
+        config.TICKET_EXECUTION_ENDPOINT,
+        delegate,
+    )
+    fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+    if not fallback_mode or fallback_mode == config.TICKET_EXECUTION_ENDPOINT:
+        return primary
+    fallback = _build_single_ticket_execution_json_endpoint(
+        fallback_mode,
+        delegate,
+    )
+    return FailoverTicketExecutionJsonEndpoint(primary, fallback)
+
+
+def _build_single_ticket_execution_json_endpoint(
+    mode: str,
+    delegate: TicketInvestigationExecutor,
+) -> TicketExecutionJsonEndpoint:
+    if mode == "local":
         return ExecutorBackedTicketExecutionJsonEndpoint(delegate)
-    if config.TICKET_EXECUTION_ENDPOINT == "subprocess":
+    if mode == "subprocess":
         command = list(_subprocess_command())
         return SubprocessTicketExecutionJsonEndpoint(
             command,
@@ -86,7 +133,7 @@ def build_ticket_execution_json_endpoint(
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
-    if config.TICKET_EXECUTION_ENDPOINT == "codex_exec":
+    if mode == "codex_exec":
         command = list(_codex_command())
         return CodexExecTicketExecutionJsonEndpoint(
             repo_root=config.BASE_DIR,
@@ -101,10 +148,7 @@ def build_ticket_execution_json_endpoint(
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
-    raise ValueError(
-        "Unsupported TICKET_EXECUTION_ENDPOINT value: "
-        f"{config.TICKET_EXECUTION_ENDPOINT}"
-    )
+    raise ValueError(f"Unsupported TICKET_EXECUTION_ENDPOINT value: {mode}")
 
 
 def _subprocess_command() -> Sequence[str]:
@@ -151,3 +195,22 @@ def _subprocess_env() -> dict[str, str]:
         if key in allowed_keys or any(key.startswith(prefix) for prefix in allowed_prefixes):
             env[key] = value
     return env
+
+
+def _one_shot_hooks(hooks: TicketExecutionHooks | None) -> TicketExecutionHooks | None:
+    if hooks is None or hooks.send_bug_review_status is None:
+        return hooks
+    sender = _OneShotHookSender(hooks.send_bug_review_status)
+    return TicketExecutionHooks(send_bug_review_status=sender.send)
+
+
+class _OneShotHookSender:
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.has_sent = False
+
+    async def send(self) -> None:
+        if self.has_sent:
+            return
+        self.has_sent = True
+        await self.delegate()
