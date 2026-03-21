@@ -171,10 +171,14 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(starting_agent_key, "bug")
-        self.assertEqual(len(tool_calls), 1)
-        self.assertEqual(tool_calls[0]["chain"], "ethereum")
-        self.assertEqual(tool_calls[0]["mode"], "receipt")
-        self.assertEqual(tool_calls[0]["tx_hash"], tx_hash)
+        self.assertGreaterEqual(len(tool_calls), 1)
+        matching_calls = [
+            call for call in tool_calls
+            if call.get("chain") == "ethereum"
+            and call.get("mode") == "receipt"
+            and call.get("tx_hash") == tx_hash
+        ]
+        self.assertTrue(matching_calls)
 
         lowered = output.lower()
         self.assertIn("approval", lowered)

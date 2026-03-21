@@ -4,10 +4,10 @@ from agents import RunContextWrapper
 
 import config
 from router import select_starting_agent
-from state import BotRunContext, last_specialist_by_channel
+from state import BotRunContext, ticket_investigation_states, get_or_create_ticket_investigation_state
 from support_agents import triage_agent, yearn_bug_triage_agent, yearn_data_agent
 from support_tools import _extract_artifact_refs, _repo_search_block_message
-from ysupport import _select_ticket_starting_agent
+from ysupport import _select_ticket_starting_agent, _merge_explicit_evidence_into_state
 
 
 class RoutingTests(unittest.TestCase):
@@ -51,17 +51,34 @@ class RoutingTests(unittest.TestCase):
     def test_follow_up_routing_reuses_last_specialist(self) -> None:
         channel_id = 9
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
-        last_specialist_by_channel[channel_id] = "data"
+        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_state.last_specialty = "data"
         try:
             agent_key = _select_ticket_starting_agent(
-                channel_id,
                 "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
                 context,
                 current_history=[{"role": "user", "content": "Previous issue context"}],
+                investigation_state=investigation_state,
             )
             self.assertEqual(agent_key, "data")
         finally:
-            last_specialist_by_channel.pop(channel_id, None)
+            ticket_investigation_states.pop(channel_id, None)
+
+    def test_merge_explicit_evidence_into_state_tracks_chain_and_tx_hash(self) -> None:
+        channel_id = 22
+        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        try:
+            _merge_explicit_evidence_into_state(
+                investigation_state,
+                "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+            )
+            self.assertEqual(investigation_state.known_chain, "katana")
+            self.assertEqual(
+                investigation_state.known_tx_hashes,
+                ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
+            )
+        finally:
+            ticket_investigation_states.pop(channel_id, None)
 
 
 class RepoHelperTests(unittest.TestCase):
