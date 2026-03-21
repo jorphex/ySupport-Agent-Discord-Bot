@@ -71,8 +71,10 @@ def build_ticket_execution_json_endpoint(
     if config.TICKET_EXECUTION_ENDPOINT == "local":
         return ExecutorBackedTicketExecutionJsonEndpoint(delegate)
     if config.TICKET_EXECUTION_ENDPOINT == "subprocess":
+        command = list(_subprocess_command())
         return SubprocessTicketExecutionJsonEndpoint(
-            _subprocess_command(),
+            command,
+            allowed_command_prefixes=_allowed_subprocess_prefixes(command),
         )
     raise ValueError(
         "Unsupported TICKET_EXECUTION_ENDPOINT value: "
@@ -84,3 +86,11 @@ def _subprocess_command() -> Sequence[str]:
     if config.TICKET_EXECUTION_SUBPROCESS_COMMAND:
         return config.TICKET_EXECUTION_SUBPROCESS_COMMAND
     return [sys.executable, "-m", "ticket_investigation_worker_cli"]
+
+
+def _allowed_subprocess_prefixes(command: Sequence[str]) -> list[list[str]]:
+    prefixes = [list(command)]
+    for prefix in config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES:
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+    return prefixes

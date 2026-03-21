@@ -15,6 +15,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_command_prefixes(name: str) -> list[list[str]]:
+    raw_value = os.getenv(name, "")
+    prefixes: list[list[str]] = []
+    for chunk in raw_value.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = shlex.split(chunk)
+        if parts:
+            prefixes.append(parts)
+    return prefixes
+
+
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- Secrets ---
@@ -93,6 +106,9 @@ PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30
 TICKET_EXECUTION_ENDPOINT = os.getenv("TICKET_EXECUTION_ENDPOINT", "local").strip().lower()
 TICKET_EXECUTION_SUBPROCESS_COMMAND = shlex.split(
     os.getenv("TICKET_EXECUTION_SUBPROCESS_COMMAND", "")
+)
+TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = _env_command_prefixes(
+    "TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES"
 )
 
 # --- Repo Context ---

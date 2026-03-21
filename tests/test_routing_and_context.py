@@ -829,6 +829,44 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow_outcome.raw_final_reply, "hook-ok")
         self.assertEqual(updated_job.current_specialty, "bug")
 
+    def test_subprocess_json_endpoint_rejects_disallowed_command(self) -> None:
+        with self.assertRaises(ValueError):
+            SubprocessTicketExecutionJsonEndpoint(
+                [sys.executable, "-c", "print('nope')"],
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+
+    async def test_subprocess_json_endpoint_rejects_oversized_stdout(self) -> None:
+        endpoint = SubprocessTicketExecutionJsonEndpoint(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('x' * 50)",
+            ],
+            max_output_chars=10,
+        )
+
+        with self.assertRaises(RuntimeError):
+            await endpoint.execute_json_turn(
+                TicketExecutionTransportRequest(
+                    aggregated_text="help",
+                    input_list=[],
+                    current_history=[],
+                    run_context={
+                        "channel_id": 101,
+                        "project_context": "yearn",
+                        "repo_last_search_artifact_refs": [],
+                    },
+                    investigation_job={
+                        "channel_id": 101,
+                        "mode": "idle",
+                        "evidence": {"tx_hashes": []},
+                    },
+                    workflow_name="tests.endpoint.subprocess_oversized",
+                    wants_bug_review_status=False,
+                ).to_json()
+            )
+
 
 class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:
@@ -847,28 +885,51 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_returns_subprocess_endpoint(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "subprocess"
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
             endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
 
         self.assertIsInstance(endpoint, SubprocessTicketExecutionJsonEndpoint)
         self.assertEqual(endpoint.command[1:], ["-m", "ticket_investigation_worker_cli"])
 
+    def test_build_endpoint_allows_configured_subprocess_prefix(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "subprocess"
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = ["codex", "exec", "--json"]
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
+            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
+
+        self.assertIsInstance(endpoint, SubprocessTicketExecutionJsonEndpoint)
+        self.assertEqual(endpoint.command[:2], ["codex", "exec"])
+
     def test_build_endpoint_rejects_unknown_mode(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "invalid"
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
             with self.assertRaises(ValueError):
                 build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
 
 
 class TicketTransportTests(unittest.TestCase):

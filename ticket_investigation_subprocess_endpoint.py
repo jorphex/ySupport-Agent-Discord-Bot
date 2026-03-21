@@ -14,17 +14,24 @@ class SubprocessTicketExecutionJsonEndpoint:
         self,
         command: Sequence[str],
         *,
+        allowed_command_prefixes: Sequence[Sequence[str]] | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout_seconds: float = 300.0,
+        max_output_chars: int = 200000,
         max_error_chars: int = 4000,
     ) -> None:
         if not command:
             raise ValueError("Subprocess ticket execution command cannot be empty.")
         self.command = list(command)
+        self.allowed_command_prefixes = [
+            list(prefix) for prefix in (allowed_command_prefixes or [])
+        ]
+        self._validate_command_prefix()
         self.cwd = cwd
         self.env = dict(env) if env is not None else None
         self.timeout_seconds = timeout_seconds
+        self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
 
     async def execute_json_turn(
@@ -66,6 +73,10 @@ class SubprocessTicketExecutionJsonEndpoint:
         response_text = stdout.decode("utf-8", errors="replace").strip()
         if not response_text:
             raise RuntimeError("Ticket execution subprocess returned empty stdout.")
+        if len(response_text) > self.max_output_chars:
+            raise RuntimeError(
+                "Ticket execution subprocess returned too much stdout."
+            )
 
         TicketExecutionTransportResult.from_json(response_text)
         return response_text
@@ -76,3 +87,13 @@ class SubprocessTicketExecutionJsonEndpoint:
         merged = dict(os.environ)
         merged.update(self.env)
         return merged
+
+    def _validate_command_prefix(self) -> None:
+        if not self.allowed_command_prefixes:
+            return
+        for prefix in self.allowed_command_prefixes:
+            if self.command[: len(prefix)] == prefix:
+                return
+        raise ValueError(
+            "Ticket execution subprocess command is not in the allowed prefix list."
+        )
