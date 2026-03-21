@@ -1,8 +1,10 @@
-import os
 import json
+import logging
+import os
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest.mock import patch
 
 from agents import RunConfig, Runner
@@ -41,6 +43,46 @@ AGENTS_BY_KEY = {
     "triage": triage_agent,
 }
 
+warnings.filterwarnings(
+    "ignore",
+    category=ResourceWarning,
+    message=r"unclosed transport <_SelectorSocketTransport.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=ResourceWarning,
+    message=r"unclosed <socket\.socket.*",
+)
+
+
+class _RepoContextNoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not (
+            message.startswith("[CoreTool:search_repo_context] Repo context unavailable.")
+            or message.startswith("[CoreTool:fetch_repo_artifacts] Repo context unavailable.")
+        )
+
+
+async def _close_agents_http_clients() -> None:
+    try:
+        from agents.models import openai_provider
+
+        if openai_provider._http_client is not None:
+            await openai_provider._http_client.aclose()
+            openai_provider._http_client = None
+    except Exception:
+        pass
+
+    try:
+        from agents.voice.models import openai_model_provider
+
+        if openai_model_provider._http_client is not None:
+            await openai_model_provider._http_client.aclose()
+            openai_model_provider._http_client = None
+    except Exception:
+        pass
+
 
 @unittest.skipUnless(
     RUN_LLM_E2E,
@@ -50,6 +92,21 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
     maxDiff = None
     wallet_address = "0x1111111111111111111111111111111111111111"
     vault_address = "0x2222222222222222222222222222222222222222"
+    _repo_context_noise_filter = _RepoContextNoiseFilter()
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        logging.getLogger().addFilter(cls._repo_context_noise_filter)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        logging.getLogger().removeFilter(cls._repo_context_noise_filter)
+        super().tearDownClass()
+
+    async def asyncTearDown(self) -> None:
+        await _close_agents_http_clients()
+        await super().asyncTearDown()
 
     async def _run_support_turn(
         self,

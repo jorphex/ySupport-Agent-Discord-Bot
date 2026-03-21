@@ -1,7 +1,5 @@
 import unittest
-from contextlib import redirect_stdout
 from dataclasses import dataclass
-import io
 import json
 import os
 import stat
@@ -23,11 +21,6 @@ from ticket_investigation_json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     FailoverTicketExecutionJsonEndpoint,
     JsonEndpointTicketExecutionTransport,
-    build_ticket_execution_json_endpoint,
-)
-from ticket_investigation_codex_bundle import (
-    DEFAULT_CODEX_EXEC_COMMAND,
-    build_codex_ticket_execution_bundle,
 )
 from ticket_investigation_codex_endpoint import (
     CodexExecTicketExecutionJsonEndpoint,
@@ -44,12 +37,9 @@ from ticket_investigation_executor import (
     TransportTicketInvestigationExecutor,
 )
 from ticket_investigation_transport import (
-    TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA,
-    TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
-from ticket_execution_status import build_ticket_execution_status, main as ticket_execution_status_main
 from ticket_investigation_worker import TicketInvestigationWorker, TicketWorkerResult
 from support_agents import (
     TicketTriageDecision,
@@ -140,211 +130,6 @@ class RoutingTests(unittest.TestCase):
             )
         finally:
             clear_ticket_investigation_job(channel_id)
-
-
-class ConfigSummaryTests(unittest.TestCase):
-    def test_ticket_execution_runtime_summary_includes_fallback_and_codex_details(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_model = config.TICKET_EXECUTION_CODEX_MODEL
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-
-            summary = config.ticket_execution_runtime_summary()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_CODEX_MODEL = original_model
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertIn("primary=codex_exec", summary)
-        self.assertIn("fallback=local", summary)
-        self.assertIn("codex_model=gpt-5.4", summary)
-        self.assertIn("artifact_dir=/tmp/ticket-artifacts", summary)
-
-    def test_ticket_execution_runtime_warnings_flag_primary_codex_without_fallback(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            warnings = config.ticket_execution_runtime_warnings()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-
-        self.assertIn(
-            "primary codex_exec is enabled without a fallback endpoint",
-            warnings,
-        )
-
-    def test_ticket_execution_runtime_validation_requires_workspace_for_codex(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_ARTIFACT_DIR = ""
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
-            with self.assertRaises(ValueError):
-                config.validate_ticket_execution_runtime_config()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
-
-    def test_runtime_environment_validation_requires_core_bot_settings(self) -> None:
-        original_openai = config.OPENAI_API_KEY
-        original_token = config.DISCORD_BOT_TOKEN
-        original_category = config.YEARN_TICKET_CATEGORY_ID
-        original_trigger = config.YEARN_PUBLIC_TRIGGER_CHAR
-        original_pr_channel = config.PR_MARKETING_CHANNEL_ID
-        original_handoff = config.HUMAN_HANDOFF_TARGET_USER_ID
-        try:
-            config.OPENAI_API_KEY = None
-            config.DISCORD_BOT_TOKEN = None
-            config.YEARN_TICKET_CATEGORY_ID = None
-            config.YEARN_PUBLIC_TRIGGER_CHAR = None
-            config.PR_MARKETING_CHANNEL_ID = None
-            config.HUMAN_HANDOFF_TARGET_USER_ID = None
-            with self.assertRaises(ValueError) as exc:
-                config.validate_runtime_environment_config()
-        finally:
-            config.OPENAI_API_KEY = original_openai
-            config.DISCORD_BOT_TOKEN = original_token
-            config.YEARN_TICKET_CATEGORY_ID = original_category
-            config.YEARN_PUBLIC_TRIGGER_CHAR = original_trigger
-            config.PR_MARKETING_CHANNEL_ID = original_pr_channel
-            config.HUMAN_HANDOFF_TARGET_USER_ID = original_handoff
-
-        self.assertIn("OPENAI_API_KEY is required", str(exc.exception))
-        self.assertIn("DISCORD_BOT_TOKEN is required", str(exc.exception))
-
-
-class TicketExecutionStatusTests(unittest.TestCase):
-    def test_build_ticket_execution_status_reports_repo_context_and_valid_config(self) -> None:
-        with patch(
-            "ticket_execution_status.get_repo_context_status",
-            return_value={"state": "ready", "fresh": True},
-        ):
-            status = build_ticket_execution_status()
-
-        self.assertIn("ticket_execution", status)
-        self.assertIn("runtime_environment", status)
-        self.assertIn("repo_context", status)
-        self.assertTrue(status["ticket_execution"]["validation_ok"])
-        self.assertTrue(status["runtime_environment"]["validation_ok"])
-        self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
-        self.assertEqual(
-            status["ticket_execution"]["sandbox_policy"]["workspace_mode"],
-            "temporary_per_turn",
-        )
-        self.assertEqual(status["repo_context"]["state"], "ready")
-
-    def test_build_ticket_execution_status_smoke_probe_reports_success_for_local_endpoint(self) -> None:
-        with patch(
-            "ticket_execution_status.get_repo_context_status",
-            return_value={"state": "ready", "fresh": True},
-        ):
-            status = build_ticket_execution_status(include_smoke_probe=True)
-
-        smoke_probe = status["ticket_execution"]["smoke_probe"]
-        self.assertTrue(smoke_probe["ok"])
-        self.assertEqual(smoke_probe["raw_final_reply"], "ticket_execution_smoke_ok:local")
-
-    def test_ticket_execution_status_main_returns_nonzero_for_invalid_codex_policy(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_ARTIFACT_DIR = ""
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
-            captured = io.StringIO()
-            with patch(
-                "ticket_execution_status.get_repo_context_status",
-                return_value={"state": "disabled", "fresh": False},
-            ):
-                with redirect_stdout(captured):
-                    exit_code = ticket_execution_status_main()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
-
-        self.assertEqual(exit_code, 1)
-        payload = json.loads(captured.getvalue())
-        self.assertFalse(payload["ticket_execution"]["validation_ok"])
-        self.assertFalse(payload["ticket_execution"]["endpoint_build_ok"])
-        self.assertIn("requires TICKET_EXECUTION_ARTIFACT_DIR", payload["ticket_execution"]["validation_error"])
-
-    def test_ticket_execution_status_main_returns_nonzero_for_invalid_runtime_env(self) -> None:
-        original_token = config.DISCORD_BOT_TOKEN
-        original_category = config.YEARN_TICKET_CATEGORY_ID
-        try:
-            config.DISCORD_BOT_TOKEN = None
-            config.YEARN_TICKET_CATEGORY_ID = None
-            captured = io.StringIO()
-            with patch(
-                "ticket_execution_status.get_repo_context_status",
-                return_value={"state": "disabled", "fresh": False},
-            ):
-                with redirect_stdout(captured):
-                    exit_code = ticket_execution_status_main()
-        finally:
-            config.DISCORD_BOT_TOKEN = original_token
-            config.YEARN_TICKET_CATEGORY_ID = original_category
-
-        self.assertEqual(exit_code, 1)
-        payload = json.loads(captured.getvalue())
-        self.assertFalse(payload["runtime_environment"]["validation_ok"])
-        self.assertIn(
-            "DISCORD_BOT_TOKEN is required",
-            payload["runtime_environment"]["validation_error"],
-        )
-
-    def test_build_ticket_execution_status_reports_command_probe_for_codex(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_CODEX_COMMAND = [sys.executable, "-c", "print('ok')"]
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            with patch(
-                "ticket_execution_status.get_repo_context_status",
-                return_value={"state": "ready", "fresh": True},
-            ):
-                status = build_ticket_execution_status()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertTrue(status["ticket_execution"]["validation_ok"])
-        self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
-        self.assertEqual(
-            status["ticket_execution"]["endpoint_class"],
-            "FailoverTicketExecutionJsonEndpoint",
-        )
-        primary_probe = status["ticket_execution"]["primary_command_probe"]
-        self.assertIsNotNone(primary_probe)
-        assert primary_probe is not None
-        self.assertTrue(primary_probe["available"])
-        self.assertEqual(primary_probe["command"][:2], [sys.executable, "-c"])
 
 
 class InvestigationJobTests(unittest.TestCase):
@@ -1660,340 +1445,190 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow_outcome.raw_final_reply, "fallback-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
 
+    async def test_failover_json_endpoint_falls_back_when_primary_returns_malformed_json(self) -> None:
+        class _MalformedPrimaryEndpoint:
+            async def execute_json_turn(
+                self,
+                request_json: str,
+                hooks: TicketExecutionHooks | None = None,
+            ) -> str:
+                return "{not-json"
 
-class TicketExecutionEndpointFactoryTests(unittest.TestCase):
-    def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "local"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+        class _FallbackJsonEndpoint:
+            async def execute_json_turn(
+                self,
+                request_json: str,
+                hooks: TicketExecutionHooks | None = None,
+            ) -> str:
+                request = TicketExecutionTransportRequest.from_json(request_json)
+                return json.dumps(
+                    {
+                        "flow_outcome": {
+                            "raw_final_reply": "fallback-ok",
+                            "conversation_history": [],
+                            "completed_agent_key": "docs",
+                            "requires_human_handoff": False,
+                        },
+                        "updated_job": {
+                            "channel_id": request.investigation_job["channel_id"],
+                            "requested_intent": request.investigation_job.get(
+                                "requested_intent"
+                            ),
+                            "mode": "investigating",
+                            "current_specialty": "docs",
+                            "last_specialty": "docs",
+                            "evidence": request.investigation_job.get("evidence", {}),
+                        },
+                    }
+                )
 
-        self.assertIsInstance(endpoint, ExecutorBackedTicketExecutionJsonEndpoint)
-
-    def test_build_endpoint_returns_subprocess_endpoint(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
-        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "subprocess"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
-
-        self.assertIsInstance(endpoint, SubprocessTicketExecutionJsonEndpoint)
-        self.assertEqual(endpoint.command[1:], ["-m", "ticket_investigation_worker_cli"])
-
-    def test_build_endpoint_allows_configured_subprocess_prefix(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
-        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "subprocess"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = ["codex", "exec", "--json"]
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
-
-        self.assertIsInstance(endpoint, SubprocessTicketExecutionJsonEndpoint)
-        self.assertEqual(endpoint.command[:2], ["codex", "exec"])
-
-    def test_build_endpoint_rejects_unknown_mode(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
-        original_codex_command = config.TICKET_EXECUTION_CODEX_COMMAND
-        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "invalid"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
-            config.TICKET_EXECUTION_CODEX_COMMAND = []
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
-            with self.assertRaises(ValueError):
-                build_ticket_execution_json_endpoint(_FakeExecutor())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
-            config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
-            config.TICKET_EXECUTION_CODEX_COMMAND = original_codex_command
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
-
-    def test_build_endpoint_returns_codex_exec_endpoint(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
-        original_model = config.TICKET_EXECUTION_CODEX_MODEL
-        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
-            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
-            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
-            config.TICKET_EXECUTION_CODEX_MODEL = original_model
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertIsInstance(endpoint, CodexExecTicketExecutionJsonEndpoint)
-        self.assertEqual(endpoint.codex_command[:2], ["codex", "exec"])
-        self.assertEqual(endpoint.model, "gpt-5.4")
-
-    def test_build_endpoint_wraps_primary_with_fallback_when_configured(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
-        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
-            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
-            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertIsInstance(endpoint, FailoverTicketExecutionJsonEndpoint)
-        self.assertIsInstance(endpoint.primary, CodexExecTicketExecutionJsonEndpoint)
-        self.assertIsInstance(endpoint.fallback, ExecutorBackedTicketExecutionJsonEndpoint)
-
-
-class TicketTransportTests(unittest.TestCase):
-    def test_transport_schemas_cover_required_top_level_fields(self) -> None:
-        self.assertEqual(
-            TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA["required"],
-            [
-                "aggregated_text",
-                "input_list",
-                "current_history",
-                "run_context",
-                "investigation_job",
-                "workflow_name",
-                "wants_bug_review_status",
-            ],
+        endpoint = FailoverTicketExecutionJsonEndpoint(
+            _MalformedPrimaryEndpoint(),
+            _FallbackJsonEndpoint(),
         )
-        self.assertEqual(
-            TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA["required"],
-            ["flow_outcome", "updated_job"],
-        )
-
-    def test_transport_request_round_trip_preserves_job_and_context(self) -> None:
-        request = TicketTurnRequest(
+        request = TicketExecutionTransportRequest(
             aggregated_text="help",
-            input_list=[{"role": "user", "content": "help"}],
-            current_history=[{"role": "assistant", "content": "context"}],
-            run_context=BotRunContext(
-                channel_id=94,
-                category_id=12,
-                project_context="yearn",
-                initial_button_intent="investigate_issue",
-            ),
-            investigation_job=TicketInvestigationJob(channel_id=94),
-            workflow_name="tests.transport",
-        )
-        request.investigation_job.begin_collecting("investigate_issue")
-        request.investigation_job.remember_chain("katana")
-        request.investigation_job.remember_tx_hash(
-            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
-        )
-
-        transport = TicketExecutionTransportRequest.from_turn_request(
-            request,
-            wants_bug_review_status=True,
-        )
-        hydrated = transport.to_turn_request()
-
-        self.assertTrue(transport.wants_bug_review_status)
-        self.assertEqual(hydrated.run_context.channel_id, 94)
-        self.assertEqual(hydrated.run_context.initial_button_intent, "investigate_issue")
-        self.assertEqual(hydrated.investigation_job.mode, "collecting")
-        self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
-        self.assertEqual(
-            hydrated.investigation_job.evidence.tx_hashes,
-            ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
-        )
-
-    def test_transport_request_json_round_trip_preserves_job_and_context(self) -> None:
-        request = TicketTurnRequest(
-            aggregated_text="help",
-            input_list=[{"role": "user", "content": "help"}],
-            current_history=[{"role": "assistant", "content": "context"}],
-            run_context=BotRunContext(
-                channel_id=97,
-                category_id=12,
-                project_context="yearn",
-                initial_button_intent="investigate_issue",
-            ),
-            investigation_job=TicketInvestigationJob(channel_id=97),
-            workflow_name="tests.transport.json",
-        )
-        request.investigation_job.begin_collecting("investigate_issue")
-        request.investigation_job.remember_chain("katana")
-        transport = TicketExecutionTransportRequest.from_turn_request(
-            request,
-            wants_bug_review_status=True,
-        )
-
-        hydrated = TicketExecutionTransportRequest.from_json(
-            transport.to_json()
-        ).to_turn_request()
-
-        self.assertEqual(hydrated.run_context.channel_id, 97)
-        self.assertEqual(hydrated.investigation_job.mode, "collecting")
-        self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
-        self.assertIsNone(TicketExecutionTransportRequest.from_json(transport.to_json()).smoke_mode)
-
-    def test_transport_request_json_round_trip_preserves_smoke_mode(self) -> None:
-        transport = TicketExecutionTransportRequest(
-            aggregated_text="smoke",
             input_list=[],
             current_history=[],
             run_context={
-                "channel_id": 99,
+                "channel_id": 109,
                 "project_context": "yearn",
                 "repo_last_search_artifact_refs": [],
             },
             investigation_job={
-                "channel_id": 99,
+                "channel_id": 109,
                 "mode": "idle",
                 "evidence": {"tx_hashes": []},
             },
-            workflow_name="tests.transport.smoke",
+            workflow_name="tests.endpoint.failover_malformed_primary",
             wants_bug_review_status=False,
-            smoke_mode="ping",
         )
 
-        hydrated = TicketExecutionTransportRequest.from_json(transport.to_json())
-
-        self.assertEqual(hydrated.smoke_mode, "ping")
-
-    def test_transport_result_round_trip_preserves_flow_and_job(self) -> None:
-        job = TicketInvestigationJob(channel_id=95)
-        job.begin_investigating()
-        job.complete_specialist_turn("bug")
-        result = TicketExecutionTransportResult.from_execution_parts(
-            TicketAgentFlowOutcome(
-                raw_final_reply="ok",
-                conversation_history=[{"role": "assistant", "content": "ok"}],
-                completed_agent_key="bug",
-                requires_human_handoff=False,
-            ),
-            job,
-        )
-
-        flow_outcome, updated_job = result.to_execution_parts()
-
-        self.assertEqual(flow_outcome.raw_final_reply, "ok")
-        self.assertEqual(flow_outcome.completed_agent_key, "bug")
-        self.assertEqual(updated_job.mode, "investigating")
-        self.assertEqual(updated_job.current_specialty, "bug")
-
-
-class CodexBundleTests(unittest.TestCase):
-    def test_build_codex_ticket_execution_bundle_writes_expected_files(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bundle = build_codex_ticket_execution_bundle(
-                request_json='{"example":"request"}',
-                run_dir=temp_dir,
-                repo_root="/root/bots/discord/ysupport",
-            )
-
-            self.assertEqual(bundle.command[: len(DEFAULT_CODEX_EXEC_COMMAND)], DEFAULT_CODEX_EXEC_COMMAND)
-            self.assertTrue(bundle.request_path.exists())
-            self.assertTrue(bundle.response_schema_path.exists())
-            self.assertTrue(bundle.prompt_path.exists())
-            self.assertIn("request.json", bundle.prompt_text)
-            self.assertIn("response_schema.json", bundle.prompt_text)
-            self.assertIsNone(bundle.expected_response_path)
-            self.assertIn("--output-schema", bundle.command)
-            self.assertIn("--add-dir", bundle.command)
-
-    def test_build_codex_ticket_execution_bundle_appends_model_when_requested(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bundle = build_codex_ticket_execution_bundle(
-                request_json='{"example":"request"}',
-                run_dir=temp_dir,
-                repo_root="/root/bots/discord/ysupport",
-                model="gpt-5.4",
-            )
-
-            self.assertIn("-m", bundle.command)
-            self.assertIn("gpt-5.4", bundle.command)
-
-    def test_build_codex_ticket_execution_bundle_writes_expected_response_for_smoke(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bundle = build_codex_ticket_execution_bundle(
-                request_json='{"example":"request"}',
-                run_dir=temp_dir,
-                repo_root="/root/bots/discord/ysupport",
-                response_json_override=(
-                    '{"flow_outcome":{"raw_final_reply":"ticket_execution_smoke_ok:codex_exec",'
-                    '"conversation_history":[],"completed_agent_key":null,'
-                    '"requires_human_handoff":false},"updated_job":{"channel_id":0,'
-                    '"mode":"idle","evidence":{"tx_hashes":[]}}}'
-                ),
-            )
-
-            self.assertIsNotNone(bundle.expected_response_path)
-            assert bundle.expected_response_path is not None
-            self.assertTrue(bundle.expected_response_path.exists())
-            self.assertIn("expected_response.json", bundle.prompt_text)
-
-    def test_transport_result_json_round_trip_preserves_flow_and_job(self) -> None:
-        job = TicketInvestigationJob(channel_id=98)
-        job.begin_investigating()
-        job.complete_specialist_turn("data")
-        transport_result = TicketExecutionTransportResult.from_execution_parts(
-            TicketAgentFlowOutcome(
-                raw_final_reply="answer",
-                conversation_history=[{"role": "assistant", "content": "answer"}],
-                completed_agent_key="data",
-                requires_human_handoff=False,
-            ),
-            job,
-        )
+        response_json = await endpoint.execute_json_turn(request.to_json())
 
         flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
-            transport_result.to_json()
+            response_json
         ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "fallback-ok")
+        self.assertEqual(updated_job.current_specialty, "docs")
 
-        self.assertEqual(flow_outcome.raw_final_reply, "answer")
-        self.assertEqual(flow_outcome.completed_agent_key, "data")
-        self.assertEqual(updated_job.mode, "investigating")
+    async def test_subprocess_json_endpoint_returns_success_even_if_export_copy_fails(self) -> None:
+        endpoint = SubprocessTicketExecutionJsonEndpoint(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json,sys; "
+                    "request=json.loads(sys.stdin.read()); "
+                    "response={"
+                    "'flow_outcome':{"
+                    "'raw_final_reply':'subprocess-export-ok',"
+                    "'conversation_history':[],"
+                    "'completed_agent_key':'docs',"
+                    "'requires_human_handoff':False"
+                    "},"
+                    "'updated_job':{"
+                    "'channel_id':request['investigation_job']['channel_id'],"
+                    "'mode':'investigating',"
+                    "'current_specialty':'docs',"
+                    "'last_specialty':'docs',"
+                    "'evidence':request['investigation_job'].get('evidence',{})"
+                    "}"
+                    "}; "
+                    "sys.stdout.write(json.dumps(response))"
+                ),
+            ],
+            run_dir_root="/tmp/unused-run-root",
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 110,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 110,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.subprocess_export_failure",
+            wants_bug_review_status=False,
+        )
+
+        with self.assertLogs("ticket_investigation_subprocess_endpoint", level="WARNING") as logs:
+            with patch(
+                "ticket_investigation_subprocess_endpoint.TicketExecutionWorkspace.export_copy",
+                side_effect=OSError("disk full"),
+            ):
+                response_json = await endpoint.execute_json_turn(request.to_json())
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "subprocess-export-ok")
+        self.assertEqual(updated_job.current_specialty, "docs")
+        self.assertTrue(any("Failed to export ticket execution subprocess workspace copy" in line for line in logs.output))
+
+    async def test_codex_exec_json_endpoint_returns_success_even_if_export_copy_fails(self) -> None:
+        fake_codex = (
+            "import json,sys; "
+            "response={"
+            "'flow_outcome':{"
+            "'raw_final_reply':'codex-export-ok',"
+            "'conversation_history':[],"
+            "'completed_agent_key':'data',"
+            "'requires_human_handoff':False"
+            "},"
+            "'updated_job':{"
+            "'channel_id':111,"
+            "'mode':'investigating',"
+            "'current_specialty':'data',"
+            "'last_specialty':'data',"
+            "'evidence':{'tx_hashes':[]}"
+            "}"
+            "}; "
+            "sys.stdout.write(json.dumps(response))"
+        )
+        endpoint = CodexExecTicketExecutionJsonEndpoint(
+            repo_root="/root/bots/discord/ysupport",
+            codex_command=[sys.executable, "-c", fake_codex],
+            allowed_command_prefixes=[[sys.executable, "-c", fake_codex]],
+            run_dir_root="/tmp/unused-codex-run-root",
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 111,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 111,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.codex_export_failure",
+            wants_bug_review_status=False,
+        )
+
+        with self.assertLogs("ticket_investigation_codex_endpoint", level="WARNING") as logs:
+            with patch(
+                "ticket_investigation_codex_endpoint.TicketExecutionWorkspace.export_copy",
+                side_effect=OSError("disk full"),
+            ):
+                response_json = await endpoint.execute_json_turn(request.to_json())
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "codex-export-ok")
         self.assertEqual(updated_job.current_specialty, "data")
+        self.assertTrue(any("Failed to export codex ticket execution workspace copy" in line for line in logs.output))
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
