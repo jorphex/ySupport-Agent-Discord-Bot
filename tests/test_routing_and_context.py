@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import io
 import json
 import os
+import stat
 import sys
 import tempfile
 from unittest.mock import patch
@@ -241,6 +242,10 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertTrue(status["ticket_execution"]["validation_ok"])
         self.assertTrue(status["runtime_environment"]["validation_ok"])
         self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
+        self.assertEqual(
+            status["ticket_execution"]["sandbox_policy"]["workspace_mode"],
+            "temporary_per_turn",
+        )
         self.assertEqual(status["repo_context"]["state"], "ready")
 
     def test_build_ticket_execution_status_smoke_probe_reports_success_for_local_endpoint(self) -> None:
@@ -1374,6 +1379,10 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             exported_dir = os.path.join(run_root, exported_entries[0])
             self.assertTrue(os.path.isdir(exported_dir))
             self.assertTrue(os.path.exists(os.path.join(exported_dir, "marker.txt")))
+            self.assertFalse(os.stat(exported_dir).st_mode & stat.S_IWUSR)
+            self.assertFalse(
+                os.stat(os.path.join(exported_dir, "marker.txt")).st_mode & stat.S_IWUSR
+            )
 
     async def test_codex_exec_json_endpoint_round_trips_response_and_writes_bundle(self) -> None:
         fake_codex = (
@@ -1567,6 +1576,10 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(artifact_entries), 1)
             exported_dir = os.path.join(artifact_dir, artifact_entries[0])
             self.assertTrue(os.path.exists(os.path.join(exported_dir, "marker.txt")))
+            self.assertFalse(os.stat(exported_dir).st_mode & stat.S_IWUSR)
+            self.assertFalse(
+                os.stat(os.path.join(exported_dir, "marker.txt")).st_mode & stat.S_IWUSR
+            )
 
     async def test_failover_json_endpoint_uses_fallback_and_deduplicates_hook(self) -> None:
         hook_calls: list[str] = []

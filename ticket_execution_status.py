@@ -43,6 +43,16 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
             "uses_codex": uses_codex,
             "artifact_dir": config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             "run_dir_root": config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
+            "sandbox_policy": {
+                "workspace_mode": "temporary_per_turn",
+                "export_mode": (
+                    "read_only_copy"
+                    if config.TICKET_EXECUTION_ARTIFACT_DIR
+                    or config.TICKET_EXECUTION_RUN_DIR_ROOT
+                    else "ephemeral_only"
+                ),
+                "scratch_env_var": "TICKET_EXECUTION_RUN_DIR",
+            },
             "summary": config.ticket_execution_runtime_summary(),
             "warnings": config.ticket_execution_runtime_warnings(),
             "validation_ok": validation_ok,

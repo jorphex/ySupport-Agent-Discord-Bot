@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import uuid
 
@@ -46,5 +47,18 @@ class TicketExecutionWorkspace:
 
         export_dir = Path(self.export_root) / f"run-{uuid.uuid4().hex}"
         shutil.copytree(self.run_dir, export_dir)
+        self._make_read_only(export_dir)
         self._exported_run_dir = export_dir
         return export_dir
+
+    def _make_read_only(self, export_dir: Path) -> None:
+        for path in sorted(export_dir.rglob("*"), reverse=True):
+            if path.is_dir():
+                path.chmod(0o555)
+            else:
+                current_mode = path.stat().st_mode
+                executable_bits = current_mode & (
+                    stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                )
+                path.chmod(0o444 | executable_bits)
+        export_dir.chmod(0o555)

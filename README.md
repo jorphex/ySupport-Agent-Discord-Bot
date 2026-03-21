@@ -28,6 +28,7 @@ Operational policy:
 - if any execution mode uses `codex_exec`, set either `TICKET_EXECUTION_ARTIFACT_DIR` or `TICKET_EXECUTION_RUN_DIR_ROOT`
 - if `codex_exec` is the primary mode, a fallback endpoint is strongly recommended
 - execution sandboxes are always per-run temporary workspaces; persistent roots only receive exported copies after the run completes
+- exported sandbox copies are archived as read-only snapshots so they are not reused as mutable workspaces
 - custom subprocess or Codex wrappers should use `TICKET_EXECUTION_RUN_DIR` for scratch access instead of assuming cwd is the sandbox root
 
 Useful rollout env vars:
