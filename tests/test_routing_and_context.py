@@ -19,6 +19,10 @@ from ticket_investigation_json_endpoint import (
     JsonEndpointTicketExecutionTransport,
     build_ticket_execution_json_endpoint,
 )
+from ticket_investigation_codex_bundle import (
+    DEFAULT_CODEX_EXEC_COMMAND,
+    build_codex_ticket_execution_bundle,
+)
 from ticket_investigation_subprocess_endpoint import (
     SubprocessTicketExecutionJsonEndpoint,
 )
@@ -1291,6 +1295,37 @@ class TicketTransportTests(unittest.TestCase):
         self.assertEqual(flow_outcome.completed_agent_key, "bug")
         self.assertEqual(updated_job.mode, "investigating")
         self.assertEqual(updated_job.current_specialty, "bug")
+
+
+class CodexBundleTests(unittest.TestCase):
+    def test_build_codex_ticket_execution_bundle_writes_expected_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = build_codex_ticket_execution_bundle(
+                request_json='{"example":"request"}',
+                run_dir=temp_dir,
+                repo_root="/root/bots/discord/ysupport",
+            )
+
+            self.assertEqual(bundle.command[: len(DEFAULT_CODEX_EXEC_COMMAND)], DEFAULT_CODEX_EXEC_COMMAND)
+            self.assertTrue(bundle.request_path.exists())
+            self.assertTrue(bundle.response_schema_path.exists())
+            self.assertTrue(bundle.prompt_path.exists())
+            self.assertIn("request.json", bundle.prompt_text)
+            self.assertIn("response_schema.json", bundle.prompt_text)
+            self.assertIn("--output-schema", bundle.command)
+            self.assertIn("--add-dir", bundle.command)
+
+    def test_build_codex_ticket_execution_bundle_appends_model_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = build_codex_ticket_execution_bundle(
+                request_json='{"example":"request"}',
+                run_dir=temp_dir,
+                repo_root="/root/bots/discord/ysupport",
+                model="gpt-5.4",
+            )
+
+            self.assertIn("-m", bundle.command)
+            self.assertIn("gpt-5.4", bundle.command)
 
     def test_transport_result_json_round_trip_preserves_flow_and_job(self) -> None:
         job = TicketInvestigationJob(channel_id=98)
