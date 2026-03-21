@@ -7,13 +7,18 @@ from agents import RunConfig, Runner
 
 import config
 from router import select_starting_agent
-from state import BotRunContext
+from state import (
+    BotRunContext,
+    get_or_create_ticket_investigation_state,
+    ticket_investigation_states,
+)
 from support_agents import (
     triage_agent,
     yearn_bug_triage_agent,
     yearn_data_agent,
     yearn_docs_qa_agent,
 )
+from ysupport import _run_ticket_agent_flow
 
 
 RUN_LLM_E2E = bool(config.OPENAI_API_KEY) and os.getenv("RUN_LLM_E2E_TESTS") == "1"
@@ -74,6 +79,35 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
         return result.final_output or "", context, starting_agent_key
 
+    async def _run_ticket_flow(
+        self,
+        message: str,
+        *,
+        initial_button_intent: str | None = None,
+        channel_id: int = 9200,
+        current_history=None,
+    ):
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent=initial_button_intent,
+        )
+        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        history = current_history or []
+        input_list = history + [{"role": "user", "content": message}]
+        try:
+            return await _run_ticket_agent_flow(
+                runner=Runner,
+                aggregated_text=message,
+                input_list=input_list,
+                current_history=history,
+                run_context=context,
+                investigation_state=investigation_state,
+                workflow_name="tests.ticket_flow",
+            )
+        finally:
+            ticket_investigation_states.pop(channel_id, None)
+
     @staticmethod
     def _get_agent_tool(agent, tool_name: str):
         for tool in agent.tools:
@@ -111,7 +145,8 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         lowered = output.lower()
         self.assertIn("discord", lowered)
         self.assertNotIn("github", lowered)
-        self.assertNotIn("wallet", lowered)
+        self.assertNotIn("connect your wallet", lowered)
+        self.assertNotIn("please provide your wallet", lowered)
 
     async def test_product_navigation_question_routes_to_docs_and_answers_directly(
         self,
@@ -324,13 +359,55 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("which", lowered)
         self.assertIn("vault", lowered)
 
-    async def test_free_form_withdrawal_request_routes_to_data_handoff_response(
+    async def test_free_form_withdrawal_request_routes_through_ticket_router_to_data(
         self,
     ) -> None:
-        self.skipTest(
-            "Free-form triage-to-specialist handoff text is covered by deterministic routing tests; "
-            "the live LLM path is too unstable here for a reliable end-to-end assertion."
+        tool_calls: list[dict] = []
+        tool = self._get_agent_tool(yearn_data_agent, "get_withdrawal_instructions_tool")
+
+        async def fake_on_invoke_tool(ctx, input: str) -> str:
+            payload = json.loads(input)
+            tool_calls.append(payload)
+            return (
+                "Withdrawal Instructions\n"
+                f"Wallet: {payload['user_address_or_ens']}\n"
+                f"Vault: {payload['vault_address']}\n"
+                f"Chain: {payload['chain']}"
+            )
+
+        with patch.object(tool, "on_invoke_tool", new=fake_on_invoke_tool):
+            outcome = await self._run_ticket_flow(
+                "How do I withdraw from vault "
+                f"{self.vault_address} on ethereum using wallet {self.wallet_address}?",
+                channel_id=9006,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["user_address_or_ens"], self.wallet_address)
+        self.assertEqual(tool_calls[0]["vault_address"], self.vault_address)
+        self.assertEqual(tool_calls[0]["chain"], "ethereum")
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("withdrawal", lowered)
+        self.assertNotIn("transfer", lowered)
+        self.assertNotIn("forward", lowered)
+
+    async def test_ticket_router_escalation_returns_handoff_without_specialist_text(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "I sent an encrypted security report earlier. Can you confirm it was received?",
+            channel_id=9011,
         )
+
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, outcome.raw_final_reply)
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertNotIn("transfer", lowered)
+        self.assertNotIn("forward", lowered)
 
     async def test_data_agent_free_form_withdrawal_request_calls_withdrawal_tool(
         self,

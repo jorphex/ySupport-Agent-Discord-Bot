@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import Awaitable, Callable, List, Optional
 
 import discord
 from dotenv import load_dotenv
@@ -26,7 +27,14 @@ from router import (
     is_wallet_confirmation,
     is_wallet_rejection,
 )
-from support_agents import yearn_bug_triage_agent, yearn_data_agent, yearn_docs_qa_agent, triage_agent
+from support_agents import (
+    TicketTriageDecision,
+    ticket_triage_router_agent,
+    triage_agent,
+    yearn_bug_triage_agent,
+    yearn_data_agent,
+    yearn_docs_qa_agent,
+)
 from state import (
     BotRunContext,
     PublicConversation,
@@ -60,6 +68,19 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
 CHAIN_NAMES = ("ethereum", "base", "arbitrum", "optimism", "polygon", "sonic", "katana")
+ROUTE_ACTION_TO_AGENT_KEY = {
+    "route_data": "data",
+    "route_docs": "docs",
+    "route_bug": "bug",
+}
+
+
+@dataclass
+class TicketAgentFlowOutcome:
+    raw_final_reply: str
+    conversation_history: List[TResponseInputItem]
+    completed_agent_key: Optional[str]
+    requires_human_handoff: bool
 
 
 def _resolve_agent(agent_key: str):
@@ -119,6 +140,138 @@ def _merge_explicit_evidence_into_state(investigation_state, text: str) -> None:
         if chain_name in lowered:
             investigation_state.known_chain = chain_name
             break
+
+
+def _append_ticket_reply_to_history(
+    current_history: List[TResponseInputItem],
+    aggregated_text: str,
+    reply_text: str,
+) -> List[TResponseInputItem]:
+    return current_history + [
+        {"role": "user", "content": aggregated_text},
+        {"role": "assistant", "content": reply_text},
+    ]
+
+
+def _normalize_ticket_triage_decision(
+    decision: TicketTriageDecision,
+) -> TicketTriageDecision:
+    if decision.action in ROUTE_ACTION_TO_AGENT_KEY:
+        return TicketTriageDecision(
+            action=decision.action,
+            message=None,
+            reasoning=decision.reasoning,
+        )
+
+    message = (decision.message or "").strip()
+    if not message:
+        if decision.action == "ask_clarifying":
+            message = "Can you clarify what you need help with?"
+        elif decision.action == "respond_directly":
+            message = "Can you share a bit more detail about what you need?"
+        else:
+            message = (
+                "This needs human review. "
+                f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+            )
+
+    if (
+        decision.action == "human_escalation"
+        and config.HUMAN_HANDOFF_TAG_PLACEHOLDER not in message
+    ):
+        message = f"{message} {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}".strip()
+
+    return TicketTriageDecision(
+        action=decision.action,
+        message=message,
+        reasoning=decision.reasoning,
+    )
+
+
+def _reply_requests_human_handoff(reply_text: str) -> bool:
+    return config.HUMAN_HANDOFF_TAG_PLACEHOLDER in reply_text
+
+
+async def _run_ticket_agent_flow(
+    *,
+    runner,
+    aggregated_text: str,
+    input_list: List[TResponseInputItem],
+    current_history: List[TResponseInputItem],
+    run_context: BotRunContext,
+    investigation_state,
+    workflow_name: str,
+    send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None,
+) -> TicketAgentFlowOutcome:
+    agent_key = _select_ticket_starting_agent(
+        aggregated_text,
+        run_context,
+        current_history,
+        investigation_state,
+    )
+    logging.info(
+        "Selected starting agent '%s' for channel %s (intent=%s)",
+        agent_key,
+        investigation_state.channel_id,
+        run_context.initial_button_intent,
+    )
+
+    if agent_key == "triage":
+        router_result: RunResult = await runner.run(
+            starting_agent=ticket_triage_router_agent,
+            input=input_list,
+            max_turns=4,
+            run_config=RunConfig(
+                workflow_name=f"{workflow_name} / ticket-triage-router",
+                group_id=str(run_context.channel_id),
+            ),
+            context=run_context,
+        )
+        decision = _normalize_ticket_triage_decision(
+            router_result.final_output_as(TicketTriageDecision)
+        )
+        logging.info(
+            "Ticket triage router decision for channel %s: action=%s reasoning=%s",
+            investigation_state.channel_id,
+            decision.action,
+            decision.reasoning,
+        )
+
+        routed_agent_key = ROUTE_ACTION_TO_AGENT_KEY.get(decision.action)
+        if routed_agent_key is None:
+            return TicketAgentFlowOutcome(
+                raw_final_reply=decision.message or "I need a bit more detail to help with this.",
+                conversation_history=_append_ticket_reply_to_history(
+                    current_history,
+                    aggregated_text,
+                    decision.message or "I need a bit more detail to help with this.",
+                ),
+                completed_agent_key=None,
+                requires_human_handoff=decision.action == "human_escalation",
+            )
+
+        agent_key = routed_agent_key
+
+    if agent_key == "bug" and send_bug_review_status is not None:
+        await send_bug_review_status()
+
+    result: RunResult = await runner.run(
+        starting_agent=_resolve_agent(agent_key),
+        input=input_list,
+        max_turns=config.MAX_TICKET_CONVERSATION_TURNS,
+        run_config=RunConfig(
+            workflow_name=workflow_name,
+            group_id=str(run_context.channel_id),
+        ),
+        context=run_context,
+    )
+    raw_final_reply = result.final_output or "I'm not sure how to respond to that."
+    return TicketAgentFlowOutcome(
+        raw_final_reply=raw_final_reply,
+        conversation_history=result.to_input_list(),
+        completed_agent_key=_agent_to_key(result.last_agent),
+        requires_human_handoff=_reply_requests_human_handoff(raw_final_reply),
+    )
 
 
 def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int:
@@ -465,47 +618,34 @@ class TicketBot(discord.Client):
                 should_stop_processing = False
 
                 try:
-                    run_config = RunConfig(
-                        workflow_name=f"Ticket Channel {channel_id} ({run_context.project_context}, Button Intent: {run_context.initial_button_intent})",
-                        group_id=str(channel_id)
-                    )
-                    agent_key = _select_ticket_starting_agent(
-                        aggregated_text,
-                        run_context,
-                        current_history,
-                        investigation_state,
-                    )
-                    logging.info(
-                        "Selected starting agent '%s' for channel %s (intent=%s)",
-                        agent_key,
-                        channel_id,
-                        run_context.initial_button_intent,
-                    )
-                    starting_agent = _resolve_agent(agent_key)
                     investigation_state.active_mode = "investigating"
-                    investigation_state.current_specialty = agent_key if agent_key in {"data", "docs", "bug"} else None
-                    if agent_key == "bug":
-                        await self._send_bug_review_status(channel, channel_id)
-                    result: RunResult = await self.runner.run(
-                        starting_agent=starting_agent,
-                        input=input_list,
-                        max_turns=config.MAX_TICKET_CONVERSATION_TURNS,
-                        run_config=run_config,
-                        context=run_context
+                    workflow_name = (
+                        f"Ticket Channel {channel_id} ({run_context.project_context}, "
+                        f"Button Intent: {run_context.initial_button_intent})"
                     )
-                    conversation_threads[channel_id] = result.to_input_list()
-                    completed_agent_key = _agent_to_key(result.last_agent)
+                    flow_outcome = await _run_ticket_agent_flow(
+                        runner=self.runner,
+                        aggregated_text=aggregated_text,
+                        input_list=input_list,
+                        current_history=current_history,
+                        run_context=run_context,
+                        investigation_state=investigation_state,
+                        workflow_name=workflow_name,
+                        send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
+                    )
+                    conversation_threads[channel_id] = flow_outcome.conversation_history
+                    completed_agent_key = flow_outcome.completed_agent_key
                     if completed_agent_key in {"data", "docs", "bug"}:
                         investigation_state.last_specialty = completed_agent_key
                         investigation_state.current_specialty = completed_agent_key
-                    elif completed_agent_key == "triage":
+                    else:
                         investigation_state.current_specialty = None
 
-                    raw_final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
+                    raw_final_reply = flow_outcome.raw_final_reply
                     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
                     final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
 
-                    if actual_mention in final_reply or config.HUMAN_HANDOFF_TAG_PLACEHOLDER in raw_final_reply:
+                    if flow_outcome.requires_human_handoff:
                         investigation_state.active_mode = "escalated_to_human"
                         logging.info(
                             "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",

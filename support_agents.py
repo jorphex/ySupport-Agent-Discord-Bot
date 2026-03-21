@@ -20,6 +20,7 @@ from agent_prompts import (
     YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
     BD_PRIORITY_GUARDRAIL_INSTRUCTIONS,
     TRIAGE_AGENT_INSTRUCTIONS,
+    TICKET_TRIAGE_ROUTER_INSTRUCTIONS,
 )
 from bot_behavior import (
     LISTING_DENIAL_MESSAGE,
@@ -42,6 +43,22 @@ from support_tools import (
 class BDPriorityCheckOutput(BaseModel):
     request_type: Literal["listing", "partnership", "marketing", "other_bd", "job_inquiry", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'other_bd' (other business development), 'job_inquiry' (asking to work for/contribute to Yearn, grant requests), or 'not_bd_pr' (standard support request or unrelated).")
     reasoning: str = Field(..., description="Brief explanation for the classification.")
+
+
+class TicketTriageDecision(BaseModel):
+    action: Literal[
+        "route_data",
+        "route_docs",
+        "route_bug",
+        "ask_clarifying",
+        "respond_directly",
+        "human_escalation",
+    ] = Field(..., description="The next runtime action for this ticket turn.")
+    message: Optional[str] = Field(
+        default=None,
+        description="User-facing message for ask_clarifying, respond_directly, or human_escalation. Leave empty for route_* actions.",
+    )
+    reasoning: str = Field(..., description="Brief explanation for the routing decision.")
 
 
 class GuardrailResponseMessageException(AgentsException):
@@ -222,6 +239,18 @@ triage_agent = Agent[BotRunContext](
         handoff(yearn_bug_triage_agent, tool_name_override="transfer_to_yearn_bug_triage_specialist", tool_description_override="Handoff for YEARN bug reports, UI issues, migration issues, and protocol behavior claims that should be checked against docs and repo context before human escalation."),
     ],
     input_guardrails=[bd_priority_guardrail],
+    model=config.LLM_TRIAGE_AGENT_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_TRIAGE_AGENT_REASONING_EFFORT,
+        verbosity=config.LLM_TRIAGE_AGENT_VERBOSITY,
+    ),
+)
+
+ticket_triage_router_agent = Agent[BotRunContext](
+    name="Ticket Triage Router",
+    instructions=_with_runtime_context(TICKET_TRIAGE_ROUTER_INSTRUCTIONS),
+    input_guardrails=[bd_priority_guardrail],
+    output_type=TicketTriageDecision,
     model=config.LLM_TRIAGE_AGENT_MODEL,
     model_settings=_gpt5_model_settings(
         effort=config.LLM_TRIAGE_AGENT_REASONING_EFFORT,

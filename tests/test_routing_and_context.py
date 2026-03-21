@@ -1,13 +1,27 @@
 import unittest
+from dataclasses import dataclass
 
 from agents import RunContextWrapper
 
 import config
 from router import select_starting_agent
 from state import BotRunContext, ticket_investigation_states, get_or_create_ticket_investigation_state
-from support_agents import triage_agent, yearn_bug_triage_agent, yearn_data_agent
+from support_agents import (
+    TicketTriageDecision,
+    ticket_triage_router_agent,
+    triage_agent,
+    yearn_bug_triage_agent,
+    yearn_data_agent,
+    yearn_docs_qa_agent,
+)
 from support_tools import _extract_artifact_refs, _repo_search_block_message
-from ysupport import _select_ticket_starting_agent, _merge_explicit_evidence_into_state
+from ysupport import (
+    _merge_explicit_evidence_into_state,
+    _normalize_ticket_triage_decision,
+    _reply_requests_human_handoff,
+    _run_ticket_agent_flow,
+    _select_ticket_starting_agent,
+)
 
 
 class RoutingTests(unittest.TestCase):
@@ -99,6 +113,220 @@ class RepoHelperTests(unittest.TestCase):
 
         self.assertIn("fetch_repo_artifacts_tool", message)
         self.assertIn("segment:12, fact:4", message)
+
+
+class TriageDecisionTests(unittest.TestCase):
+    def test_normalize_human_escalation_adds_handoff_tag(self) -> None:
+        decision = TicketTriageDecision(
+            action="human_escalation",
+            message="This needs human review.",
+            reasoning="sensitive report receipt confirmation",
+        )
+
+        normalized = _normalize_ticket_triage_decision(decision)
+
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, normalized.message or "")
+
+    def test_normalize_clarifying_question_fills_empty_message(self) -> None:
+        decision = TicketTriageDecision(
+            action="ask_clarifying",
+            message="",
+            reasoning="missing routing detail",
+        )
+
+        normalized = _normalize_ticket_triage_decision(decision)
+
+        self.assertEqual(normalized.message, "Can you clarify what you need help with?")
+
+    def test_normalize_route_action_drops_message(self) -> None:
+        decision = TicketTriageDecision(
+            action="route_data",
+            message="this should not survive normalization",
+            reasoning="wallet issue",
+        )
+
+        normalized = _normalize_ticket_triage_decision(decision)
+
+        self.assertIsNone(normalized.message)
+
+    def test_reply_requests_human_handoff_checks_placeholder(self) -> None:
+        self.assertTrue(
+            _reply_requests_human_handoff(
+                f"Human help is needed. {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+            )
+        )
+        self.assertFalse(_reply_requests_human_handoff("This is a direct answer."))
+
+
+@dataclass
+class _FakeResult:
+    final_output: str | None
+    last_agent: object | None
+    _history: list
+    _decision: TicketTriageDecision | None = None
+
+    def final_output_as(self, model_type):
+        if self._decision is None:
+            raise AssertionError("No structured decision configured.")
+        return self._decision
+
+    def to_input_list(self):
+        return self._history
+
+
+class _FakeRunner:
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = []
+
+    async def run(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self._results:
+            raise AssertionError("No fake result available for runner call.")
+        return self._results.pop(0)
+
+
+class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ticket_agent_flow_routes_triage_decision_to_docs_specialist(self) -> None:
+        channel_id = 31
+        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=None,
+                    last_agent=None,
+                    _history=[],
+                    _decision=TicketTriageDecision(
+                        action="route_docs",
+                        message=None,
+                        reasoning="docs question",
+                    ),
+                ),
+                _FakeResult(
+                    final_output="Open the stYFI app and check the positions page.",
+                    last_agent=yearn_docs_qa_agent,
+                    _history=[
+                        {"role": "user", "content": "Where do I see my stYFI position?"},
+                        {"role": "assistant", "content": "Open the stYFI app and check the positions page."},
+                    ],
+                ),
+            ]
+        )
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="investigate_issue",
+        )
+        try:
+            outcome = await _run_ticket_agent_flow(
+                runner=fake_runner,
+                aggregated_text="I need help finding where to see my stYFI position.",
+                input_list=[{"role": "user", "content": "I need help finding where to see my stYFI position."}],
+                current_history=[],
+                run_context=context,
+                investigation_state=investigation_state,
+                workflow_name="tests.ticket_flow",
+            )
+        finally:
+            ticket_investigation_states.pop(channel_id, None)
+
+        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertIs(fake_runner.calls[0]["starting_agent"], ticket_triage_router_agent)
+        self.assertIs(fake_runner.calls[1]["starting_agent"], yearn_docs_qa_agent)
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertIn("positions page", outcome.raw_final_reply.lower())
+
+    async def test_ticket_agent_flow_returns_direct_router_message_without_second_run(self) -> None:
+        channel_id = 32
+        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=None,
+                    last_agent=None,
+                    _history=[],
+                    _decision=TicketTriageDecision(
+                        action="human_escalation",
+                        message=(
+                            "A moderator needs to check this. "
+                            f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                        ),
+                        reasoning="discord access issue",
+                    ),
+                ),
+            ]
+        )
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        try:
+            outcome = await _run_ticket_agent_flow(
+                runner=fake_runner,
+                aggregated_text="I finished verification but still cannot access the Discord.",
+                input_list=[{"role": "user", "content": "I finished verification but still cannot access the Discord."}],
+                current_history=[],
+                run_context=context,
+                investigation_state=investigation_state,
+                workflow_name="tests.ticket_flow",
+            )
+        finally:
+            ticket_investigation_states.pop(channel_id, None)
+
+        self.assertEqual(len(fake_runner.calls), 1)
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, outcome.raw_final_reply)
+        self.assertEqual(
+            outcome.conversation_history[-1]["content"],
+            (
+                "A moderator needs to check this. "
+                f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+            ),
+        )
+
+    async def test_ticket_agent_flow_marks_specialist_reply_handoff_explicitly(self) -> None:
+        channel_id = 33
+        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=(
+                        "This needs human review. "
+                        f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                    ),
+                    last_agent=yearn_bug_triage_agent,
+                    _history=[
+                        {"role": "user", "content": "The app is broken."},
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "This needs human review. "
+                                f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                            ),
+                        },
+                    ],
+                ),
+            ]
+        )
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="bug_report",
+        )
+        try:
+            outcome = await _run_ticket_agent_flow(
+                runner=fake_runner,
+                aggregated_text="The app is broken.",
+                input_list=[{"role": "user", "content": "The app is broken."}],
+                current_history=[],
+                run_context=context,
+                investigation_state=investigation_state,
+                workflow_name="tests.ticket_flow",
+            )
+        finally:
+            ticket_investigation_states.pop(channel_id, None)
+
+        self.assertEqual(len(fake_runner.calls), 1)
+        self.assertEqual(outcome.completed_agent_key, "bug")
+        self.assertTrue(outcome.requires_human_handoff)
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
