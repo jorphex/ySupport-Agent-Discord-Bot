@@ -35,6 +35,17 @@ class TicketAgentFlowOutcome:
     requires_human_handoff: bool
 
 
+@dataclass
+class TicketTurnRequest:
+    aggregated_text: str
+    input_list: List[TResponseInputItem]
+    current_history: List[TResponseInputItem]
+    run_context: BotRunContext
+    investigation_job: TicketInvestigationJob
+    workflow_name: str
+    send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None
+
+
 def _resolve_agent(agent_key: str):
     if agent_key == "data":
         return yearn_data_agent
@@ -182,47 +193,37 @@ class TicketInvestigationRuntime:
             )
         return hints
 
-    async def run_agent_flow(
-        self,
-        *,
-        aggregated_text: str,
-        input_list: List[TResponseInputItem],
-        current_history: List[TResponseInputItem],
-        run_context: BotRunContext,
-        investigation_job: TicketInvestigationJob,
-        workflow_name: str,
-        send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None,
-    ) -> TicketAgentFlowOutcome:
+    async def run_turn(self, request: TicketTurnRequest) -> TicketAgentFlowOutcome:
         agent_key = _select_ticket_starting_agent(
-            aggregated_text,
-            run_context,
-            current_history,
-            investigation_job,
+            request.aggregated_text,
+            request.run_context,
+            request.current_history,
+            request.investigation_job,
         )
         logging.info(
             "Selected starting agent '%s' for channel %s (intent=%s)",
             agent_key,
-            investigation_job.channel_id,
-            run_context.initial_button_intent,
+            request.investigation_job.channel_id,
+            request.run_context.initial_button_intent,
         )
 
         if agent_key == "triage":
             router_result: RunResult = await self.runner.run(
                 starting_agent=ticket_triage_router_agent,
-                input=input_list,
+                input=request.input_list,
                 max_turns=4,
                 run_config=RunConfig(
-                    workflow_name=f"{workflow_name} / ticket-triage-router",
-                    group_id=str(run_context.channel_id),
+                    workflow_name=f"{request.workflow_name} / ticket-triage-router",
+                    group_id=str(request.run_context.channel_id),
                 ),
-                context=run_context,
+                context=request.run_context,
             )
             decision = _normalize_ticket_triage_decision(
                 router_result.final_output_as(TicketTriageDecision)
             )
             logging.info(
                 "Ticket triage router decision for channel %s: action=%s reasoning=%s",
-                investigation_job.channel_id,
+                request.investigation_job.channel_id,
                 decision.action,
                 decision.reasoning,
             )
@@ -232,8 +233,8 @@ class TicketInvestigationRuntime:
                 return TicketAgentFlowOutcome(
                     raw_final_reply=decision.message or "I need a bit more detail to help with this.",
                     conversation_history=_append_ticket_reply_to_history(
-                        current_history,
-                        aggregated_text,
+                        request.current_history,
+                        request.aggregated_text,
                         decision.message or "I need a bit more detail to help with this.",
                     ),
                     completed_agent_key=None,
@@ -242,18 +243,18 @@ class TicketInvestigationRuntime:
 
             agent_key = routed_agent_key
 
-        if agent_key == "bug" and send_bug_review_status is not None:
-            await send_bug_review_status()
+        if agent_key == "bug" and request.send_bug_review_status is not None:
+            await request.send_bug_review_status()
 
         result: RunResult = await self.runner.run(
             starting_agent=_resolve_agent(agent_key),
-            input=input_list,
+            input=request.input_list,
             max_turns=config.MAX_TICKET_CONVERSATION_TURNS,
             run_config=RunConfig(
-                workflow_name=workflow_name,
-                group_id=str(run_context.channel_id),
+                workflow_name=request.workflow_name,
+                group_id=str(request.run_context.channel_id),
             ),
-            context=run_context,
+            context=request.run_context,
         )
         raw_final_reply = result.final_output or "I'm not sure how to respond to that."
         return TicketAgentFlowOutcome(

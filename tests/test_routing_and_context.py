@@ -26,6 +26,7 @@ from ticket_investigation_runtime import (
     _reply_requests_human_handoff,
     _select_ticket_starting_agent,
     TicketInvestigationRuntime,
+    TicketTurnRequest,
 )
 
 
@@ -257,13 +258,15 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             runtime = TicketInvestigationRuntime(fake_runner)
-            outcome = await runtime.run_agent_flow(
-                aggregated_text="I need help finding where to see my stYFI position.",
-                input_list=[{"role": "user", "content": "I need help finding where to see my stYFI position."}],
-                current_history=[],
-                run_context=context,
-                investigation_job=investigation_job,
-                workflow_name="tests.ticket_flow",
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="I need help finding where to see my stYFI position.",
+                    input_list=[{"role": "user", "content": "I need help finding where to see my stYFI position."}],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
             )
         finally:
             clear_ticket_investigation_job(channel_id)
@@ -297,13 +300,15 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
         try:
             runtime = TicketInvestigationRuntime(fake_runner)
-            outcome = await runtime.run_agent_flow(
-                aggregated_text="I finished verification but still cannot access the Discord.",
-                input_list=[{"role": "user", "content": "I finished verification but still cannot access the Discord."}],
-                current_history=[],
-                run_context=context,
-                investigation_job=investigation_job,
-                workflow_name="tests.ticket_flow",
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="I finished verification but still cannot access the Discord.",
+                    input_list=[{"role": "user", "content": "I finished verification but still cannot access the Discord."}],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
             )
         finally:
             clear_ticket_investigation_job(channel_id)
@@ -351,13 +356,15 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             runtime = TicketInvestigationRuntime(fake_runner)
-            outcome = await runtime.run_agent_flow(
-                aggregated_text="The app is broken.",
-                input_list=[{"role": "user", "content": "The app is broken."}],
-                current_history=[],
-                run_context=context,
-                investigation_job=investigation_job,
-                workflow_name="tests.ticket_flow",
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="The app is broken.",
+                    input_list=[{"role": "user", "content": "The app is broken."}],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
             )
         finally:
             clear_ticket_investigation_job(channel_id)

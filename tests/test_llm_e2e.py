@@ -18,7 +18,7 @@ from support_agents import (
     yearn_data_agent,
     yearn_docs_qa_agent,
 )
-from ticket_investigation_runtime import TicketInvestigationRuntime
+from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest
 
 
 RUN_LLM_E2E = bool(config.OPENAI_API_KEY) and os.getenv("RUN_LLM_E2E_TESTS") == "1"
@@ -97,13 +97,15 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         input_list = history + [{"role": "user", "content": message}]
         runtime = TicketInvestigationRuntime(Runner)
         try:
-            return await runtime.run_agent_flow(
-                aggregated_text=message,
-                input_list=input_list,
-                current_history=history,
-                run_context=context,
-                investigation_job=investigation_job,
-                workflow_name="tests.ticket_flow",
+            return await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text=message,
+                    input_list=input_list,
+                    current_history=history,
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
             )
         finally:
             clear_ticket_investigation_job(channel_id)

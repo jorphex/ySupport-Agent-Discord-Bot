@@ -43,7 +43,7 @@ from state import (
     public_conversations,
     stopped_channels,
 )
-from ticket_investigation_runtime import TicketInvestigationRuntime, _resolve_agent
+from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest, _resolve_agent
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
 
@@ -405,14 +405,16 @@ class TicketBot(discord.Client):
                         f"Button Intent: {run_context.initial_button_intent})"
                     )
                     investigation_job.begin_investigating()
-                    flow_outcome = await self.investigation_runtime.run_agent_flow(
-                        aggregated_text=aggregated_text,
-                        input_list=input_list,
-                        current_history=current_history,
-                        run_context=run_context,
-                        investigation_job=investigation_job,
-                        workflow_name=workflow_name,
-                        send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
+                    flow_outcome = await self.investigation_runtime.run_turn(
+                        TicketTurnRequest(
+                            aggregated_text=aggregated_text,
+                            input_list=input_list,
+                            current_history=current_history,
+                            run_context=run_context,
+                            investigation_job=investigation_job,
+                            workflow_name=workflow_name,
+                            send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
+                        )
                     )
                     conversation_threads[channel_id] = flow_outcome.conversation_history
                     completed_agent_key = flow_outcome.completed_agent_key
