@@ -96,6 +96,8 @@ class TicketBot(discord.Client):
             "Ticket execution runtime configured: %s",
             config.ticket_execution_runtime_summary(),
         )
+        for warning in config.ticket_execution_runtime_warnings():
+            logging.warning("Ticket execution rollout warning: %s", warning)
 
     async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
         message = (

@@ -103,6 +103,7 @@ class FailoverTicketExecutionJsonEndpoint:
 def build_ticket_execution_json_endpoint(
     delegate: TicketInvestigationExecutor,
 ) -> TicketExecutionJsonEndpoint:
+    config.validate_ticket_execution_runtime_config()
     primary = _build_single_ticket_execution_json_endpoint(
         config.TICKET_EXECUTION_ENDPOINT,
         delegate,

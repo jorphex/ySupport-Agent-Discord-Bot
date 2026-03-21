@@ -23,6 +23,11 @@ Optional failover:
 - `TICKET_EXECUTION_FALLBACK_ENDPOINT=local`
 - `TICKET_EXECUTION_FALLBACK_ENDPOINT=subprocess`
 
+Operational policy:
+
+- if any execution mode uses `codex_exec`, set either `TICKET_EXECUTION_ARTIFACT_DIR` or `TICKET_EXECUTION_RUN_DIR_ROOT`
+- if `codex_exec` is the primary mode, a fallback endpoint is strongly recommended
+
 Useful rollout env vars:
 
 - `TICKET_EXECUTION_CODEX_COMMAND`

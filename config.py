@@ -151,6 +151,30 @@ def ticket_execution_runtime_summary() -> str:
         parts.append(f"run_dir_root={TICKET_EXECUTION_RUN_DIR_ROOT}")
     return ", ".join(parts)
 
+
+def ticket_execution_runtime_warnings() -> list[str]:
+    warnings: list[str] = []
+    if TICKET_EXECUTION_ENDPOINT == "codex_exec" and not TICKET_EXECUTION_FALLBACK_ENDPOINT:
+        warnings.append(
+            "primary codex_exec is enabled without a fallback endpoint"
+        )
+    return warnings
+
+
+def validate_ticket_execution_runtime_config() -> None:
+    uses_codex = (
+        TICKET_EXECUTION_ENDPOINT == "codex_exec"
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_exec"
+    )
+    has_persistent_workspace = bool(
+        TICKET_EXECUTION_ARTIFACT_DIR or TICKET_EXECUTION_RUN_DIR_ROOT
+    )
+    if uses_codex and not has_persistent_workspace:
+        raise ValueError(
+            "codex_exec requires TICKET_EXECUTION_ARTIFACT_DIR or "
+            "TICKET_EXECUTION_RUN_DIR_ROOT so each run has persistent workspace state."
+        )
+
 # --- Repo Context ---
 ENABLE_REPO_CONTEXT = _env_bool("ENABLE_REPO_CONTEXT", default=False)
 REPO_CONTEXT_MANIFEST_PATH = Path(
