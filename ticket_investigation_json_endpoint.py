@@ -78,6 +78,7 @@ def build_ticket_execution_json_endpoint(
             allowed_command_prefixes=_allowed_subprocess_prefixes(command),
             cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
             env=_subprocess_env(),
+            artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
         )
     raise ValueError(
         "Unsupported TICKET_EXECUTION_ENDPOINT value: "

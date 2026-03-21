@@ -1,6 +1,9 @@
 import asyncio
 from collections.abc import Sequence
+import json
 import os
+from pathlib import Path
+import uuid
 
 from ticket_investigation_executor import TicketExecutionHooks
 from ticket_investigation_transport import (
@@ -18,6 +21,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         inherit_parent_env: bool = False,
+        artifact_dir: str | None = None,
         timeout_seconds: float = 300.0,
         max_output_chars: int = 200000,
         max_error_chars: int = 4000,
@@ -32,6 +36,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         self.cwd = cwd
         self.env = dict(env) if env is not None else None
         self.inherit_parent_env = inherit_parent_env
+        self.artifact_dir = artifact_dir
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
@@ -46,6 +51,7 @@ class SubprocessTicketExecutionJsonEndpoint:
             if hooks.send_bug_review_status is not None:
                 await hooks.send_bug_review_status()
 
+        artifact_run_dir = self._start_artifact_run(request_json)
         process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
@@ -62,17 +68,41 @@ class SubprocessTicketExecutionJsonEndpoint:
         except asyncio.TimeoutError as exc:
             process.kill()
             await process.wait()
+            self._write_artifacts(
+                artifact_run_dir,
+                stdout_text="",
+                stderr_text="",
+                metadata={
+                    "command": self.command,
+                    "cwd": self.cwd,
+                    "timed_out": True,
+                },
+            )
             raise RuntimeError(
                 f"Ticket execution subprocess timed out after {self.timeout_seconds} seconds."
             ) from exc
 
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        self._write_artifacts(
+            artifact_run_dir,
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            metadata={
+                "command": self.command,
+                "cwd": self.cwd,
+                "returncode": process.returncode,
+                "timed_out": False,
+            },
+        )
+
         if process.returncode != 0:
-            error_text = stderr.decode("utf-8", errors="replace").strip()
+            error_text = stderr_text
             if not error_text:
                 error_text = "Subprocess exited without stderr output."
             raise RuntimeError(error_text[: self.max_error_chars])
 
-        response_text = stdout.decode("utf-8", errors="replace").strip()
+        response_text = stdout_text
         if not response_text:
             raise RuntimeError("Ticket execution subprocess returned empty stdout.")
         if len(response_text) > self.max_output_chars:
@@ -102,4 +132,29 @@ class SubprocessTicketExecutionJsonEndpoint:
                 return
         raise ValueError(
             "Ticket execution subprocess command is not in the allowed prefix list."
+        )
+
+    def _start_artifact_run(self, request_json: str) -> Path | None:
+        if not self.artifact_dir:
+            return None
+        run_dir = Path(self.artifact_dir) / f"run-{uuid.uuid4().hex}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "request.json").write_text(request_json, encoding="utf-8")
+        return run_dir
+
+    def _write_artifacts(
+        self,
+        run_dir: Path | None,
+        *,
+        stdout_text: str,
+        stderr_text: str,
+        metadata: dict,
+    ) -> None:
+        if run_dir is None:
+            return
+        (run_dir / "stdout.txt").write_text(stdout_text, encoding="utf-8")
+        (run_dir / "stderr.txt").write_text(stderr_text, encoding="utf-8")
+        (run_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
         )

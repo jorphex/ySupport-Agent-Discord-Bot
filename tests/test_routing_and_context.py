@@ -985,6 +985,81 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).to_execution_parts()
         self.assertEqual(flow_outcome.raw_final_reply, temp_dir)
 
+    async def test_subprocess_json_endpoint_writes_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            endpoint = SubprocessTicketExecutionJsonEndpoint(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json,sys; "
+                        "print('worker-stderr', file=sys.stderr); "
+                        "response={"
+                        "'flow_outcome':{"
+                        "'raw_final_reply':'artifact-ok',"
+                        "'conversation_history':[],"
+                        "'completed_agent_key':'docs',"
+                        "'requires_human_handoff':False"
+                        "},"
+                        "'updated_job':{"
+                        "'channel_id':104,"
+                        "'mode':'investigating',"
+                        "'current_specialty':'docs',"
+                        "'last_specialty':'docs',"
+                        "'evidence':{'tx_hashes':[]}"
+                        "}"
+                        "}; "
+                        "sys.stdout.write(json.dumps(response))"
+                    ),
+                ],
+                artifact_dir=artifact_dir,
+            )
+
+            response_json = await endpoint.execute_json_turn(
+                TicketExecutionTransportRequest(
+                    aggregated_text="help",
+                    input_list=[],
+                    current_history=[],
+                    run_context={
+                        "channel_id": 104,
+                        "project_context": "yearn",
+                        "repo_last_search_artifact_refs": [],
+                    },
+                    investigation_job={
+                        "channel_id": 104,
+                        "mode": "idle",
+                        "evidence": {"tx_hashes": []},
+                    },
+                    workflow_name="tests.endpoint.subprocess_artifacts",
+                    wants_bug_review_status=False,
+                ).to_json()
+            )
+
+            artifact_entries = os.listdir(artifact_dir)
+            self.assertEqual(len(artifact_entries), 1)
+            run_dir = os.path.join(artifact_dir, artifact_entries[0])
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "request.json")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "stdout.txt")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "stderr.txt")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "metadata.json")))
+            with open(os.path.join(run_dir, "stdout.txt"), encoding="utf-8") as stdout_file:
+                stdout_text = stdout_file.read()
+            with open(os.path.join(run_dir, "stderr.txt"), encoding="utf-8") as stderr_file:
+                stderr_text = stderr_file.read()
+            self.assertIn(
+                "artifact-ok",
+                stdout_text,
+            )
+            self.assertIn(
+                "worker-stderr",
+                stderr_text,
+            )
+
+        flow_outcome, _updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "artifact-ok")
+
 
 class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:
