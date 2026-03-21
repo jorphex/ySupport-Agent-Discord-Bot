@@ -99,7 +99,14 @@ def _probe_command(mode: str) -> dict[str, Any] | None:
     executable = command[0]
     resolved_path: str | None = None
     if "/" in executable:
-        resolved_path = str(Path(executable).resolve()) if Path(executable).exists() else None
+        executable_path = Path(executable)
+        if not executable_path.is_absolute():
+            executable_path = Path(config.TICKET_EXECUTION_SUBPROCESS_CWD) / executable_path
+        resolved_path = (
+            str(executable_path.resolve())
+            if executable_path.exists()
+            else None
+        )
     else:
         resolved_path = shutil.which(executable)
 
@@ -139,8 +146,8 @@ def _probe_endpoint_smoke() -> dict[str, Any]:
     try:
         from ticket_investigation_json_endpoint import build_ticket_execution_json_endpoint
         from ticket_investigation_transport import (
-            TicketExecutionTransportRequest,
             TicketExecutionTransportResult,
+            build_smoke_transport_request,
         )
     except ModuleNotFoundError as exc:
         return {
@@ -149,38 +156,7 @@ def _probe_endpoint_smoke() -> dict[str, Any]:
             "raw_final_reply": None,
         }
 
-    request = TicketExecutionTransportRequest(
-        aggregated_text="ticket execution smoke probe",
-        input_list=[],
-        current_history=[],
-        run_context={
-            "channel_id": 0,
-            "category_id": None,
-            "is_public_trigger": False,
-            "project_context": "yearn",
-            "initial_button_intent": None,
-            "repo_search_calls": 0,
-            "repo_fetch_calls": 0,
-            "repo_searches_without_fetch": 0,
-            "repo_last_search_query": None,
-            "repo_last_search_artifact_refs": [],
-        },
-        investigation_job={
-            "channel_id": 0,
-            "requested_intent": "smoke_probe",
-            "mode": "idle",
-            "current_specialty": None,
-            "last_specialty": None,
-            "evidence": {
-                "wallet": None,
-                "chain": None,
-                "tx_hashes": [],
-            },
-        },
-        workflow_name="ticket_execution_status.smoke_probe",
-        wants_bug_review_status=False,
-        smoke_mode="ping",
-    )
+    request = build_smoke_transport_request()
     try:
         endpoint = build_ticket_execution_json_endpoint(_StatusExecutor())
         response_json = asyncio.run(endpoint.execute_json_turn(request.to_json()))
@@ -209,22 +185,24 @@ class _StatusExecutor:
 
 
 def _resolve_base_command(mode: str) -> list[str] | None:
-    if mode == "subprocess":
-        if config.TICKET_EXECUTION_SUBPROCESS_COMMAND:
-            return list(config.TICKET_EXECUTION_SUBPROCESS_COMMAND)
-        return [sys.executable, "-m", "ticket_investigation_worker_cli"]
-    if mode == "codex_exec":
-        if config.TICKET_EXECUTION_CODEX_COMMAND:
-            return list(config.TICKET_EXECUTION_CODEX_COMMAND)
-        return [
-            "codex",
-            "exec",
-            "--skip-git-repo-check",
-            "--color",
-            "never",
-            "--ephemeral",
-        ]
-    return None
+    try:
+        from ticket_investigation_json_endpoint import (
+            resolve_ticket_execution_base_command,
+        )
+    except ModuleNotFoundError:
+        if mode == "subprocess":
+            return [sys.executable, "-m", "ticket_investigation_worker_cli"]
+        if mode == "codex_exec":
+            return [
+                "codex",
+                "exec",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "--ephemeral",
+            ]
+        return None
+    return resolve_ticket_execution_base_command(mode)
 
 
 if __name__ == "__main__":

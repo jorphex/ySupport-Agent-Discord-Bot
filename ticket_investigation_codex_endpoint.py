@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import os
 from pathlib import Path
 from typing import Sequence
 
 from ticket_investigation_codex_bundle import (
     DEFAULT_CODEX_EXEC_COMMAND,
     build_codex_ticket_execution_bundle,
+)
+from ticket_execution_subprocess_utils import (
+    build_effective_execution_env,
+    run_bounded_subprocess,
+    safe_export_workspace_copy,
+    validate_allowed_command_prefix,
 )
 from ticket_execution_workspace import TicketExecutionWorkspace
 from ticket_investigation_executor import TicketExecutionHooks
@@ -45,7 +48,13 @@ class CodexExecTicketExecutionJsonEndpoint:
         self.allowed_command_prefixes = [
             list(prefix) for prefix in (allowed_command_prefixes or [])
         ]
-        self._validate_command_prefix()
+        validate_allowed_command_prefix(
+            self.codex_command,
+            self.allowed_command_prefixes,
+            error_message=(
+                "Codex ticket execution command is not in the allowed prefix list."
+            ),
+        )
         self.cwd = cwd
         self.env = dict(env) if env is not None else None
         self.inherit_parent_env = inherit_parent_env
@@ -85,108 +94,40 @@ class CodexExecTicketExecutionJsonEndpoint:
                 model=self.model,
                 response_json_override=smoke_response_json,
             )
-            process = await asyncio.create_subprocess_exec(
-                *bundle.command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.cwd or str(run_dir),
-                env=self._effective_env(run_dir),
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(bundle.prompt_text.encode("utf-8")),
-                    timeout=self.timeout_seconds,
-                )
-            except asyncio.TimeoutError as exc:
-                process.kill()
-                await process.wait()
-                self._write_artifacts(
-                    run_dir,
-                    stdout_text="",
-                    stderr_text="",
+                response_text = await run_bounded_subprocess(
+                    command=bundle.command,
+                    stdin_text=bundle.prompt_text,
+                    cwd=self.cwd or str(run_dir),
+                    env=build_effective_execution_env(
+                        env=self.env,
+                        inherit_parent_env=self.inherit_parent_env,
+                        run_dir=run_dir,
+                    ),
+                    timeout_seconds=self.timeout_seconds,
+                    max_output_chars=self.max_output_chars,
+                    max_error_chars=self.max_error_chars,
+                    timeout_message=(
+                        f"Codex ticket execution timed out after {self.timeout_seconds} seconds."
+                    ),
+                    empty_stdout_message="Codex execution returned empty stdout.",
+                    oversized_stdout_message="Codex execution returned too much stdout.",
                     metadata={
                         "base_command": self.codex_command,
                         "command": bundle.command,
                         "cwd": self.cwd or str(run_dir),
-                        "timed_out": True,
                     },
+                    artifact_run_dir=run_dir,
                 )
-                workspace.export_copy()
-                raise RuntimeError(
-                    f"Codex ticket execution timed out after {self.timeout_seconds} seconds."
-                ) from exc
-
-            stdout_text = stdout.decode("utf-8", errors="replace").strip()
-            stderr_text = stderr.decode("utf-8", errors="replace").strip()
-            self._write_artifacts(
-                run_dir,
-                stdout_text=stdout_text,
-                stderr_text=stderr_text,
-                metadata={
-                    "base_command": self.codex_command,
-                    "command": bundle.command,
-                    "cwd": self.cwd or str(run_dir),
-                    "returncode": process.returncode,
-                    "timed_out": False,
-                },
-            )
-            workspace.export_copy()
-
-            if process.returncode != 0:
-                error_text = stderr_text or "Codex execution exited without stderr output."
-                raise RuntimeError(error_text[: self.max_error_chars])
-
-            response_text = stdout_text
-            if not response_text:
-                raise RuntimeError("Codex execution returned empty stdout.")
-            if len(response_text) > self.max_output_chars:
-                raise RuntimeError("Codex execution returned too much stdout.")
+            finally:
+                safe_export_workspace_copy(
+                    workspace,
+                    logger_name=__name__,
+                    context="codex ticket execution",
+                )
 
             TicketExecutionTransportResult.from_json(response_text)
             return response_text
-
-    def _effective_env(self, run_dir: Path) -> dict[str, str] | None:
-        if self.env is None:
-            if self.inherit_parent_env:
-                env = None
-            else:
-                env = {}
-        elif not self.inherit_parent_env:
-            env = dict(self.env)
-        else:
-            env = dict(os.environ)
-            env.update(self.env)
-
-        if env is None:
-            env = dict(os.environ)
-        env["TICKET_EXECUTION_RUN_DIR"] = str(run_dir)
-        return env
-
-    def _validate_command_prefix(self) -> None:
-        if not self.allowed_command_prefixes:
-            return
-        for prefix in self.allowed_command_prefixes:
-            if self.codex_command[: len(prefix)] == prefix:
-                return
-        raise ValueError(
-            "Codex ticket execution command is not in the allowed prefix list."
-        )
-
-    def _write_artifacts(
-        self,
-        run_dir: Path,
-        *,
-        stdout_text: str,
-        stderr_text: str,
-        metadata: dict,
-    ) -> None:
-        (run_dir / "stdout.txt").write_text(stdout_text, encoding="utf-8")
-        (run_dir / "stderr.txt").write_text(stderr_text, encoding="utf-8")
-        (run_dir / "metadata.json").write_text(
-            json.dumps(metadata, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
 
 
 def build_codex_exec_allowed_prefixes(

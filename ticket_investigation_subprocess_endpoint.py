@@ -1,9 +1,13 @@
-import asyncio
 from collections.abc import Sequence
 import json
-import os
 from pathlib import Path
 
+from ticket_execution_subprocess_utils import (
+    build_effective_execution_env,
+    run_bounded_subprocess,
+    safe_export_workspace_copy,
+    validate_allowed_command_prefix,
+)
 from ticket_execution_workspace import TicketExecutionWorkspace
 from ticket_investigation_executor import TicketExecutionHooks
 from ticket_investigation_transport import (
@@ -35,7 +39,13 @@ class SubprocessTicketExecutionJsonEndpoint:
         self.allowed_command_prefixes = [
             list(prefix) for prefix in (allowed_command_prefixes or [])
         ]
-        self._validate_command_prefix()
+        validate_allowed_command_prefix(
+            self.command,
+            self.allowed_command_prefixes,
+            error_message=(
+                "Ticket execution subprocess command is not in the allowed prefix list."
+            ),
+        )
         self.cwd = cwd
         self.env = dict(env) if env is not None else None
         self.inherit_parent_env = inherit_parent_env
@@ -65,97 +75,43 @@ class SubprocessTicketExecutionJsonEndpoint:
                 run_dir if self.artifact_dir else None,
                 request_json,
             )
-            process = await asyncio.create_subprocess_exec(
-                *self.command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.cwd,
-                env=self._effective_env(run_dir),
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(request_json.encode("utf-8")),
-                    timeout=self.timeout_seconds,
-                )
-            except asyncio.TimeoutError as exc:
-                process.kill()
-                await process.wait()
-                self._write_artifacts(
-                    run_dir if self.artifact_dir else None,
-                    stdout_text="",
-                    stderr_text="",
+                response_text = await run_bounded_subprocess(
+                    command=self.command,
+                    stdin_text=request_json,
+                    cwd=self.cwd,
+                    env=build_effective_execution_env(
+                        env=self.env,
+                        inherit_parent_env=self.inherit_parent_env,
+                        run_dir=run_dir,
+                    ),
+                    timeout_seconds=self.timeout_seconds,
+                    max_output_chars=self.max_output_chars,
+                    max_error_chars=self.max_error_chars,
+                    timeout_message=(
+                        f"Ticket execution subprocess timed out after {self.timeout_seconds} seconds."
+                    ),
+                    empty_stdout_message=(
+                        "Ticket execution subprocess returned empty stdout."
+                    ),
+                    oversized_stdout_message=(
+                        "Ticket execution subprocess returned too much stdout."
+                    ),
                     metadata={
                         "command": self.command,
                         "cwd": self.cwd,
-                        "timed_out": True,
                     },
+                    artifact_run_dir=run_dir if self.artifact_dir else None,
                 )
-                workspace.export_copy()
-                raise RuntimeError(
-                    f"Ticket execution subprocess timed out after {self.timeout_seconds} seconds."
-                ) from exc
-
-            stdout_text = stdout.decode("utf-8", errors="replace").strip()
-            stderr_text = stderr.decode("utf-8", errors="replace").strip()
-            self._write_artifacts(
-                run_dir if self.artifact_dir else None,
-                stdout_text=stdout_text,
-                stderr_text=stderr_text,
-                metadata={
-                    "command": self.command,
-                    "cwd": self.cwd,
-                    "returncode": process.returncode,
-                    "timed_out": False,
-                },
-            )
-            workspace.export_copy()
-
-            if process.returncode != 0:
-                error_text = stderr_text
-                if not error_text:
-                    error_text = "Subprocess exited without stderr output."
-                raise RuntimeError(error_text[: self.max_error_chars])
-
-            response_text = stdout_text
-            if not response_text:
-                raise RuntimeError("Ticket execution subprocess returned empty stdout.")
-            if len(response_text) > self.max_output_chars:
-                raise RuntimeError(
-                    "Ticket execution subprocess returned too much stdout."
+            finally:
+                safe_export_workspace_copy(
+                    workspace,
+                    logger_name=__name__,
+                    context="ticket execution subprocess",
                 )
 
             TicketExecutionTransportResult.from_json(response_text)
             return response_text
-
-    def _effective_env(self, run_dir: Path | None) -> dict[str, str] | None:
-        if self.env is None:
-            if self.inherit_parent_env:
-                env = None
-            else:
-                env = {}
-        elif not self.inherit_parent_env:
-            env = dict(self.env)
-        else:
-            env = dict(os.environ)
-            env.update(self.env)
-
-        if run_dir is None:
-            return env
-        if env is None:
-            env = dict(os.environ)
-        env["TICKET_EXECUTION_RUN_DIR"] = str(run_dir)
-        return env
-
-    def _validate_command_prefix(self) -> None:
-        if not self.allowed_command_prefixes:
-            return
-        for prefix in self.allowed_command_prefixes:
-            if self.command[: len(prefix)] == prefix:
-                return
-        raise ValueError(
-            "Ticket execution subprocess command is not in the allowed prefix list."
-        )
 
     def _start_artifact_run(self, run_dir: Path | None, request_json: str) -> Path | None:
         if run_dir is None or not self.artifact_dir:
@@ -170,20 +126,3 @@ class SubprocessTicketExecutionJsonEndpoint:
             encoding="utf-8",
         )
         return run_dir
-
-    def _write_artifacts(
-        self,
-        run_dir: Path | None,
-        *,
-        stdout_text: str,
-        stderr_text: str,
-        metadata: dict,
-    ) -> None:
-        if run_dir is None:
-            return
-        (run_dir / "stdout.txt").write_text(stdout_text, encoding="utf-8")
-        (run_dir / "stderr.txt").write_text(stderr_text, encoding="utf-8")
-        (run_dir / "metadata.json").write_text(
-            json.dumps(metadata, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )

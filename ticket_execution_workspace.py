@@ -45,7 +45,9 @@ class TicketExecutionWorkspace:
         if not self.export_root:
             return None
 
-        export_dir = Path(self.export_root) / f"run-{uuid.uuid4().hex}"
+        export_root = Path(self.export_root)
+        export_root.mkdir(parents=True, exist_ok=True)
+        export_dir = export_root / f"run-{uuid.uuid4().hex}"
         shutil.copytree(self.run_dir, export_dir)
         self._make_read_only(export_dir)
         self._exported_run_dir = export_dir

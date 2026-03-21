@@ -93,13 +93,20 @@ class FailoverTicketExecutionJsonEndpoint:
     ) -> str:
         effective_hooks = _one_shot_hooks(hooks)
         try:
-            return await self.primary.execute_json_turn(request_json, hooks=effective_hooks)
-        except (OSError, RuntimeError):
+            response_json = await self.primary.execute_json_turn(
+                request_json,
+                hooks=effective_hooks,
+            )
+            TicketExecutionTransportResult.from_json(response_json)
+            return response_json
+        except Exception:
             try:
-                return await self.fallback.execute_json_turn(
+                response_json = await self.fallback.execute_json_turn(
                     request_json,
                     hooks=effective_hooks,
                 )
+                TicketExecutionTransportResult.from_json(response_json)
+                return response_json
             except Exception as fallback_exc:
                 raise RuntimeError(
                     "Primary and fallback ticket execution endpoints both failed."
