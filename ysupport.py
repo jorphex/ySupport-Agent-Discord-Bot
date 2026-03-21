@@ -1,9 +1,7 @@
 import asyncio
 import logging
-import re
-from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Awaitable, Callable, List, Optional
+from typing import List
 
 import discord
 from dotenv import load_dotenv
@@ -27,14 +25,6 @@ from router import (
     is_wallet_confirmation,
     is_wallet_rejection,
 )
-from support_agents import (
-    TicketTriageDecision,
-    ticket_triage_router_agent,
-    triage_agent,
-    yearn_bug_triage_agent,
-    yearn_data_agent,
-    yearn_docs_qa_agent,
-)
 from state import (
     BotRunContext,
     PublicConversation,
@@ -53,6 +43,7 @@ from state import (
     public_conversations,
     stopped_channels,
 )
+from ticket_investigation_runtime import TicketInvestigationRuntime, _resolve_agent
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
 
@@ -66,213 +57,6 @@ logging.basicConfig(level=logging.INFO,
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
-CHAIN_NAMES = ("ethereum", "base", "arbitrum", "optimism", "polygon", "sonic", "katana")
-ROUTE_ACTION_TO_AGENT_KEY = {
-    "route_data": "data",
-    "route_docs": "docs",
-    "route_bug": "bug",
-}
-
-
-@dataclass
-class TicketAgentFlowOutcome:
-    raw_final_reply: str
-    conversation_history: List[TResponseInputItem]
-    completed_agent_key: Optional[str]
-    requires_human_handoff: bool
-
-
-def _resolve_agent(agent_key: str):
-    if agent_key == "data":
-        return yearn_data_agent
-    if agent_key == "docs":
-        return yearn_docs_qa_agent
-    if agent_key == "bug":
-        return yearn_bug_triage_agent
-    return triage_agent
-
-
-def _select_ticket_starting_agent(
-    aggregated_text: str,
-    run_context: BotRunContext,
-    current_history: List[TResponseInputItem],
-    investigation_job,
-) -> str:
-    prior_specialist = investigation_job.last_specialty
-    if (
-        run_context.initial_button_intent is None
-        and current_history
-        and prior_specialist in {"data", "docs", "bug"}
-    ):
-        logging.info(
-            "Reusing prior specialist '%s' for follow-up in channel %s",
-            prior_specialist,
-            investigation_job.channel_id,
-        )
-        return prior_specialist
-    return select_starting_agent(aggregated_text, run_context)
-
-
-def _agent_to_key(agent) -> str | None:
-    if agent is yearn_data_agent:
-        return "data"
-    if agent is yearn_docs_qa_agent:
-        return "docs"
-    if agent is yearn_bug_triage_agent:
-        return "bug"
-    if agent is triage_agent:
-        return "triage"
-    return None
-
-
-def _merge_explicit_evidence_into_job(investigation_job, text: str) -> None:
-    if not text:
-        return
-
-    tx_hashes = TX_HASH_RE.findall(text)
-    for tx_hash in tx_hashes:
-        investigation_job.remember_tx_hash(tx_hash)
-
-    lowered = text.lower()
-    for chain_name in CHAIN_NAMES:
-        if chain_name in lowered:
-            investigation_job.remember_chain(chain_name)
-            break
-
-
-def _append_ticket_reply_to_history(
-    current_history: List[TResponseInputItem],
-    aggregated_text: str,
-    reply_text: str,
-) -> List[TResponseInputItem]:
-    return current_history + [
-        {"role": "user", "content": aggregated_text},
-        {"role": "assistant", "content": reply_text},
-    ]
-
-
-def _normalize_ticket_triage_decision(
-    decision: TicketTriageDecision,
-) -> TicketTriageDecision:
-    if decision.action in ROUTE_ACTION_TO_AGENT_KEY:
-        return TicketTriageDecision(
-            action=decision.action,
-            message=None,
-            reasoning=decision.reasoning,
-        )
-
-    message = (decision.message or "").strip()
-    if not message:
-        if decision.action == "ask_clarifying":
-            message = "Can you clarify what you need help with?"
-        elif decision.action == "respond_directly":
-            message = "Can you share a bit more detail about what you need?"
-        else:
-            message = (
-                "This needs human review. "
-                f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
-            )
-
-    if (
-        decision.action == "human_escalation"
-        and config.HUMAN_HANDOFF_TAG_PLACEHOLDER not in message
-    ):
-        message = f"{message} {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}".strip()
-
-    return TicketTriageDecision(
-        action=decision.action,
-        message=message,
-        reasoning=decision.reasoning,
-    )
-
-
-def _reply_requests_human_handoff(reply_text: str) -> bool:
-    return config.HUMAN_HANDOFF_TAG_PLACEHOLDER in reply_text
-
-
-async def _run_ticket_agent_flow(
-    *,
-    runner,
-    aggregated_text: str,
-    input_list: List[TResponseInputItem],
-    current_history: List[TResponseInputItem],
-    run_context: BotRunContext,
-    investigation_job,
-    workflow_name: str,
-    send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None,
-) -> TicketAgentFlowOutcome:
-    agent_key = _select_ticket_starting_agent(
-        aggregated_text,
-        run_context,
-        current_history,
-        investigation_job,
-    )
-    logging.info(
-        "Selected starting agent '%s' for channel %s (intent=%s)",
-        agent_key,
-        investigation_job.channel_id,
-        run_context.initial_button_intent,
-    )
-
-    if agent_key == "triage":
-        router_result: RunResult = await runner.run(
-            starting_agent=ticket_triage_router_agent,
-            input=input_list,
-            max_turns=4,
-            run_config=RunConfig(
-                workflow_name=f"{workflow_name} / ticket-triage-router",
-                group_id=str(run_context.channel_id),
-            ),
-            context=run_context,
-        )
-        decision = _normalize_ticket_triage_decision(
-            router_result.final_output_as(TicketTriageDecision)
-        )
-        logging.info(
-            "Ticket triage router decision for channel %s: action=%s reasoning=%s",
-            investigation_job.channel_id,
-            decision.action,
-            decision.reasoning,
-        )
-
-        routed_agent_key = ROUTE_ACTION_TO_AGENT_KEY.get(decision.action)
-        if routed_agent_key is None:
-            return TicketAgentFlowOutcome(
-                raw_final_reply=decision.message or "I need a bit more detail to help with this.",
-                conversation_history=_append_ticket_reply_to_history(
-                    current_history,
-                    aggregated_text,
-                    decision.message or "I need a bit more detail to help with this.",
-                ),
-                completed_agent_key=None,
-                requires_human_handoff=decision.action == "human_escalation",
-            )
-
-        agent_key = routed_agent_key
-
-    if agent_key == "bug" and send_bug_review_status is not None:
-        await send_bug_review_status()
-
-    result: RunResult = await runner.run(
-        starting_agent=_resolve_agent(agent_key),
-        input=input_list,
-        max_turns=config.MAX_TICKET_CONVERSATION_TURNS,
-        run_config=RunConfig(
-            workflow_name=workflow_name,
-            group_id=str(run_context.channel_id),
-        ),
-        context=run_context,
-    )
-    raw_final_reply = result.final_output or "I'm not sure how to respond to that."
-    return TicketAgentFlowOutcome(
-        raw_final_reply=raw_final_reply,
-        conversation_history=result.to_input_list(),
-        completed_agent_key=_agent_to_key(result.last_agent),
-        requires_human_handoff=_reply_requests_human_handoff(raw_final_reply),
-    )
-
-
 def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int:
     if run_context.initial_button_intent == "bug_report" or channel_id in bug_report_debounce_channels:
         return config.BUG_REPORT_COOLDOWN_SECONDS
@@ -284,6 +68,7 @@ class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
         self.runner = Runner
+        self.investigation_runtime = TicketInvestigationRuntime(self.runner)
 
     async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
         message = (
@@ -529,7 +314,7 @@ class TicketBot(discord.Client):
                 aggregated_text = pending_messages.pop(channel_id, None)
             if not aggregated_text:
                 return
-            _merge_explicit_evidence_into_job(investigation_job, aggregated_text)
+            self.investigation_runtime.merge_explicit_evidence(investigation_job, aggregated_text)
 
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -594,17 +379,12 @@ class TicketBot(discord.Client):
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
 
             contextual_hints: List[str] = []
-            if investigation_job.evidence.chain and TX_HASH_RE.search(aggregated_text):
-                contextual_hints.append(
-                    f"Known chain for this ticket is {investigation_job.evidence.chain}. Use that chain for tx investigation unless the user explicitly corrects it."
+            contextual_hints.extend(
+                self.investigation_runtime.build_contextual_hints(
+                    investigation_job,
+                    aggregated_text,
                 )
-            if (
-                investigation_job.evidence.wallet
-                and investigation_job.evidence.wallet not in aggregated_text
-            ):
-                contextual_hints.append(
-                    f"Known wallet for this ticket is {investigation_job.evidence.wallet}. Use it if needed; do not ask again unless the user corrects it."
-                )
+            )
             if contextual_hints:
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(contextual_hints)}] + [input_list[-1]]
 
@@ -625,8 +405,7 @@ class TicketBot(discord.Client):
                         f"Button Intent: {run_context.initial_button_intent})"
                     )
                     investigation_job.begin_investigating()
-                    flow_outcome = await _run_ticket_agent_flow(
-                        runner=self.runner,
+                    flow_outcome = await self.investigation_runtime.run_agent_flow(
                         aggregated_text=aggregated_text,
                         input_list=input_list,
                         current_history=current_history,

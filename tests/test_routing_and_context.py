@@ -20,12 +20,12 @@ from support_agents import (
     yearn_docs_qa_agent,
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
-from ysupport import (
+from ticket_investigation_runtime import (
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
-    _run_ticket_agent_flow,
     _select_ticket_starting_agent,
+    TicketInvestigationRuntime,
 )
 
 
@@ -256,8 +256,8 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             initial_button_intent="investigate_issue",
         )
         try:
-            outcome = await _run_ticket_agent_flow(
-                runner=fake_runner,
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_agent_flow(
                 aggregated_text="I need help finding where to see my stYFI position.",
                 input_list=[{"role": "user", "content": "I need help finding where to see my stYFI position."}],
                 current_history=[],
@@ -296,8 +296,8 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
         try:
-            outcome = await _run_ticket_agent_flow(
-                runner=fake_runner,
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_agent_flow(
                 aggregated_text="I finished verification but still cannot access the Discord.",
                 input_list=[{"role": "user", "content": "I finished verification but still cannot access the Discord."}],
                 current_history=[],
@@ -350,8 +350,8 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             initial_button_intent="bug_report",
         )
         try:
-            outcome = await _run_ticket_agent_flow(
-                runner=fake_runner,
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_agent_flow(
                 aggregated_text="The app is broken.",
                 input_list=[{"role": "user", "content": "The app is broken."}],
                 current_history=[],
