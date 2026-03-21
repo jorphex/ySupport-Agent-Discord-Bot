@@ -15,6 +15,7 @@ from ticket_investigation_executor import (
 )
 from ticket_investigation_subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
 from ticket_investigation_transport import (
+    build_smoke_transport_result,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -39,6 +40,11 @@ class ExecutorBackedTicketExecutionJsonEndpoint:
         hooks: TicketExecutionHooks | None = None,
     ) -> str:
         transport_request = TicketExecutionTransportRequest.from_json(request_json)
+        if transport_request.smoke_mode:
+            return build_smoke_transport_result(
+                transport_request,
+                endpoint_mode="local",
+            ).to_json()
         hydrated_request = transport_request.to_turn_request()
         hydrated_hooks = None
         if transport_request.wants_bug_review_status and hooks is not None:

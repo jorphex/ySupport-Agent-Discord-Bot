@@ -27,6 +27,7 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "investigation_job": {"type": "object"},
         "workflow_name": {"type": "string"},
         "wants_bug_review_status": {"type": "boolean"},
+        "smoke_mode": {"type": ["string", "null"]},
     },
     "additionalProperties": False,
 }
@@ -66,6 +67,7 @@ class TicketExecutionTransportRequest:
     investigation_job: dict[str, Any]
     workflow_name: str
     wants_bug_review_status: bool = False
+    smoke_mode: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -76,6 +78,7 @@ class TicketExecutionTransportRequest:
             "investigation_job": dict(self.investigation_job),
             "workflow_name": self.workflow_name,
             "wants_bug_review_status": self.wants_bug_review_status,
+            "smoke_mode": self.smoke_mode,
         }
 
     @classmethod
@@ -91,6 +94,7 @@ class TicketExecutionTransportRequest:
             investigation_job=dict(payload.get("investigation_job", {})),
             workflow_name=payload["workflow_name"],
             wants_bug_review_status=payload.get("wants_bug_review_status", False),
+            smoke_mode=payload.get("smoke_mode"),
         )
 
     def to_json(self) -> str:
@@ -137,6 +141,7 @@ class TicketExecutionTransportRequest:
             },
             workflow_name=request.workflow_name,
             wants_bug_review_status=wants_bug_review_status,
+            smoke_mode=None,
         )
 
     def to_turn_request(self) -> TicketTurnRequest:
@@ -248,3 +253,19 @@ class TicketExecutionTransportResult:
                 ),
             ),
         )
+
+
+def build_smoke_transport_result(
+    request: TicketExecutionTransportRequest,
+    *,
+    endpoint_mode: str,
+) -> TicketExecutionTransportResult:
+    return TicketExecutionTransportResult(
+        flow_outcome={
+            "raw_final_reply": f"ticket_execution_smoke_ok:{endpoint_mode}",
+            "conversation_history": [],
+            "completed_agent_key": None,
+            "requires_human_handoff": False,
+        },
+        updated_job=dict(request.investigation_job),
+    )

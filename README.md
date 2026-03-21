@@ -59,3 +59,4 @@ Health check:
   - repo-context status
 - exit code is nonzero when the runtime environment or ticket execution config is invalid
 - the Docker image also uses this command as its container `HEALTHCHECK`
+- run `python -m ticket_execution_status --smoke` to execute a deterministic smoke turn through the currently configured endpoint and fallback path

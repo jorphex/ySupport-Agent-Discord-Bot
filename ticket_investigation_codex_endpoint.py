@@ -14,6 +14,7 @@ from ticket_investigation_codex_bundle import (
 )
 from ticket_investigation_executor import TicketExecutionHooks
 from ticket_investigation_transport import (
+    build_smoke_transport_result,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -66,12 +67,19 @@ class CodexExecTicketExecutionJsonEndpoint:
                 await hooks.send_bug_review_status()
 
         with self._run_workspace() as run_dir:
+            smoke_response_json = None
+            if request.smoke_mode:
+                smoke_response_json = build_smoke_transport_result(
+                    request,
+                    endpoint_mode="codex_exec",
+                ).to_json()
             bundle = build_codex_ticket_execution_bundle(
                 request_json=request_json,
                 run_dir=run_dir,
                 repo_root=self.repo_root,
                 codex_command=self.codex_command,
                 model=self.model,
+                response_json_override=smoke_response_json,
             )
             process = await asyncio.create_subprocess_exec(
                 *bundle.command,

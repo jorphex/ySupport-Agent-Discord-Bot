@@ -243,6 +243,17 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
         self.assertEqual(status["repo_context"]["state"], "ready")
 
+    def test_build_ticket_execution_status_smoke_probe_reports_success_for_local_endpoint(self) -> None:
+        with patch(
+            "ticket_execution_status.get_repo_context_status",
+            return_value={"state": "ready", "fresh": True},
+        ):
+            status = build_ticket_execution_status(include_smoke_probe=True)
+
+        smoke_probe = status["ticket_execution"]["smoke_probe"]
+        self.assertTrue(smoke_probe["ok"])
+        self.assertEqual(smoke_probe["raw_final_reply"], "ticket_execution_smoke_ok:local")
+
     def test_ticket_execution_status_main_returns_nonzero_for_invalid_codex_policy(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
@@ -697,6 +708,39 @@ class _FakeExecutor:
 
 
 class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_executor_backed_json_endpoint_short_circuits_smoke_request(self) -> None:
+        class _ExplodingExecutor:
+            async def execute_turn(self, request, hooks=None):
+                raise AssertionError("Smoke requests should not reach the delegate.")
+
+        endpoint = ExecutorBackedTicketExecutionJsonEndpoint(_ExplodingExecutor())
+        response_json = await endpoint.execute_json_turn(
+            TicketExecutionTransportRequest(
+                aggregated_text="smoke",
+                input_list=[],
+                current_history=[],
+                run_context={
+                    "channel_id": 104,
+                    "project_context": "yearn",
+                    "repo_last_search_artifact_refs": [],
+                },
+                investigation_job={
+                    "channel_id": 104,
+                    "mode": "idle",
+                    "evidence": {"tx_hashes": []},
+                },
+                workflow_name="tests.endpoint.smoke",
+                wants_bug_review_status=False,
+                smoke_mode="ping",
+            ).to_json()
+        )
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "ticket_execution_smoke_ok:local")
+        self.assertEqual(updated_job.channel_id, 104)
+
     async def test_local_executor_injects_hooks_into_request(self) -> None:
         worker = _FakeWorker(requests=[])
         executor = LocalTicketInvestigationExecutor(worker)
@@ -1412,6 +1456,52 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 allowed_command_prefixes=[["codex", "exec"]],
             )
 
+    async def test_codex_exec_json_endpoint_smoke_uses_expected_response_bundle(self) -> None:
+        fake_codex = (
+            "import pathlib,sys; "
+            "cwd=pathlib.Path.cwd(); "
+            "sys.stdout.write((cwd/'expected_response.json').read_text())"
+        )
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            endpoint = CodexExecTicketExecutionJsonEndpoint(
+                repo_root="/root/bots/discord/ysupport",
+                codex_command=[sys.executable, "-c", fake_codex],
+                allowed_command_prefixes=[[sys.executable, "-c", fake_codex]],
+                artifact_dir=artifact_dir,
+            )
+            request = TicketExecutionTransportRequest(
+                aggregated_text="smoke",
+                input_list=[],
+                current_history=[],
+                run_context={
+                    "channel_id": 107,
+                    "project_context": "yearn",
+                    "repo_last_search_artifact_refs": [],
+                },
+                investigation_job={
+                    "channel_id": 107,
+                    "requested_intent": "smoke_probe",
+                    "mode": "idle",
+                    "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
+                },
+                workflow_name="tests.endpoint.codex_smoke",
+                wants_bug_review_status=False,
+                smoke_mode="ping",
+            )
+
+            response_json = await endpoint.execute_json_turn(request.to_json())
+
+            artifact_entries = os.listdir(artifact_dir)
+            self.assertEqual(len(artifact_entries), 1)
+            run_dir = os.path.join(artifact_dir, artifact_entries[0])
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "expected_response.json")))
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "ticket_execution_smoke_ok:codex_exec")
+        self.assertEqual(updated_job.channel_id, 107)
+
     async def test_failover_json_endpoint_uses_fallback_and_deduplicates_hook(self) -> None:
         hook_calls: list[str] = []
 
@@ -1705,6 +1795,31 @@ class TicketTransportTests(unittest.TestCase):
         self.assertEqual(hydrated.run_context.channel_id, 97)
         self.assertEqual(hydrated.investigation_job.mode, "collecting")
         self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
+        self.assertIsNone(TicketExecutionTransportRequest.from_json(transport.to_json()).smoke_mode)
+
+    def test_transport_request_json_round_trip_preserves_smoke_mode(self) -> None:
+        transport = TicketExecutionTransportRequest(
+            aggregated_text="smoke",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 99,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 99,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.transport.smoke",
+            wants_bug_review_status=False,
+            smoke_mode="ping",
+        )
+
+        hydrated = TicketExecutionTransportRequest.from_json(transport.to_json())
+
+        self.assertEqual(hydrated.smoke_mode, "ping")
 
     def test_transport_result_round_trip_preserves_flow_and_job(self) -> None:
         job = TicketInvestigationJob(channel_id=95)
@@ -1743,6 +1858,7 @@ class CodexBundleTests(unittest.TestCase):
             self.assertTrue(bundle.prompt_path.exists())
             self.assertIn("request.json", bundle.prompt_text)
             self.assertIn("response_schema.json", bundle.prompt_text)
+            self.assertIsNone(bundle.expected_response_path)
             self.assertIn("--output-schema", bundle.command)
             self.assertIn("--add-dir", bundle.command)
 
@@ -1757,6 +1873,25 @@ class CodexBundleTests(unittest.TestCase):
 
             self.assertIn("-m", bundle.command)
             self.assertIn("gpt-5.4", bundle.command)
+
+    def test_build_codex_ticket_execution_bundle_writes_expected_response_for_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = build_codex_ticket_execution_bundle(
+                request_json='{"example":"request"}',
+                run_dir=temp_dir,
+                repo_root="/root/bots/discord/ysupport",
+                response_json_override=(
+                    '{"flow_outcome":{"raw_final_reply":"ticket_execution_smoke_ok:codex_exec",'
+                    '"conversation_history":[],"completed_agent_key":null,'
+                    '"requires_human_handoff":false},"updated_job":{"channel_id":0,'
+                    '"mode":"idle","evidence":{"tx_hashes":[]}}}'
+                ),
+            )
+
+            self.assertIsNotNone(bundle.expected_response_path)
+            assert bundle.expected_response_path is not None
+            self.assertTrue(bundle.expected_response_path.exists())
+            self.assertIn("expected_response.json", bundle.prompt_text)
 
     def test_transport_result_json_round_trip_preserves_flow_and_job(self) -> None:
         job = TicketInvestigationJob(channel_id=98)

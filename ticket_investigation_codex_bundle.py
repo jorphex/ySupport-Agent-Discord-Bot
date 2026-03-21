@@ -23,6 +23,7 @@ class CodexTicketExecutionBundle:
     prompt_path: Path
     request_path: Path
     response_schema_path: Path
+    expected_response_path: Path | None
     run_dir: Path
 
 
@@ -33,6 +34,7 @@ def build_codex_ticket_execution_bundle(
     repo_root: str | Path,
     codex_command: Sequence[str] | None = None,
     model: str | None = None,
+    response_json_override: str | None = None,
 ) -> CodexTicketExecutionBundle:
     run_dir_path = Path(run_dir)
     repo_root_path = Path(repo_root)
@@ -41,16 +43,24 @@ def build_codex_ticket_execution_bundle(
     request_path = run_dir_path / "request.json"
     response_schema_path = run_dir_path / "response_schema.json"
     prompt_path = run_dir_path / "codex_prompt.txt"
+    expected_response_path = (
+        run_dir_path / "expected_response.json"
+        if response_json_override is not None
+        else None
+    )
 
     request_path.write_text(request_json, encoding="utf-8")
     response_schema_path.write_text(
         json.dumps(TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    if expected_response_path is not None:
+        expected_response_path.write_text(response_json_override, encoding="utf-8")
     prompt_text = _codex_ticket_execution_prompt(
         request_path=request_path,
         response_schema_path=response_schema_path,
         repo_root=repo_root_path,
+        expected_response_path=expected_response_path,
     )
     prompt_path.write_text(prompt_text, encoding="utf-8")
 
@@ -75,6 +85,7 @@ def build_codex_ticket_execution_bundle(
         prompt_path=prompt_path,
         request_path=request_path,
         response_schema_path=response_schema_path,
+        expected_response_path=expected_response_path,
         run_dir=run_dir_path,
     )
 
@@ -84,7 +95,15 @@ def _codex_ticket_execution_prompt(
     request_path: Path,
     response_schema_path: Path,
     repo_root: Path,
+    expected_response_path: Path | None,
 ) -> str:
+    if expected_response_path is not None:
+        return (
+            "You are running a deterministic smoke probe for the ticket execution boundary.\n\n"
+            f"Return exactly the JSON contents of {expected_response_path.name}.\n"
+            "Do not modify the JSON.\n"
+            "Do not emit prose outside the JSON object.\n"
+        )
     return (
         "You are an isolated ticket investigation worker.\n\n"
         f"Read the ticket execution request from {request_path.name}.\n"
