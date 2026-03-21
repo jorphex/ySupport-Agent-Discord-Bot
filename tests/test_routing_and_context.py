@@ -11,6 +11,7 @@ from state import (
     clear_ticket_investigation_job,
     get_or_create_ticket_investigation_job,
 )
+from ticket_investigation_worker import TicketInvestigationWorker
 from support_agents import (
     TicketTriageDecision,
     ticket_triage_router_agent,
@@ -21,6 +22,7 @@ from support_agents import (
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
+    TicketAgentFlowOutcome,
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
@@ -372,6 +374,75 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake_runner.calls), 1)
         self.assertEqual(outcome.completed_agent_key, "bug")
         self.assertTrue(outcome.requires_human_handoff)
+
+
+@dataclass
+class _FakeRuntime:
+    outcome: object
+    requests: list
+
+    async def run_turn(self, request):
+        self.requests.append(request)
+        return self.outcome
+
+
+class TicketWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_updates_job_state_after_specialist_turn(self) -> None:
+        job = TicketInvestigationJob(channel_id=90)
+        runtime = _FakeRuntime(
+            outcome=TicketAgentFlowOutcome(
+                raw_final_reply="Done.",
+                conversation_history=[],
+                completed_agent_key="data",
+                requires_human_handoff=False,
+            ),
+            requests=[],
+        )
+        worker = TicketInvestigationWorker(runtime)
+
+        result = await worker.execute_turn(
+            TicketTurnRequest(
+                aggregated_text="help",
+                input_list=[],
+                current_history=[],
+                run_context=BotRunContext(channel_id=90, project_context="yearn"),
+                investigation_job=job,
+                workflow_name="tests.worker",
+            )
+        )
+
+        self.assertEqual(len(runtime.requests), 1)
+        self.assertEqual(result.flow_outcome.completed_agent_key, "data")
+        self.assertEqual(job.mode, "waiting_for_user")
+        self.assertEqual(job.current_specialty, "data")
+        self.assertEqual(job.last_specialty, "data")
+
+    async def test_worker_marks_human_escalation_on_handoff_outcome(self) -> None:
+        job = TicketInvestigationJob(channel_id=91)
+        runtime = _FakeRuntime(
+            outcome=TicketAgentFlowOutcome(
+                raw_final_reply=f"Needs help. {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}",
+                conversation_history=[],
+                completed_agent_key=None,
+                requires_human_handoff=True,
+            ),
+            requests=[],
+        )
+        worker = TicketInvestigationWorker(runtime)
+
+        await worker.execute_turn(
+            TicketTurnRequest(
+                aggregated_text="help",
+                input_list=[],
+                current_history=[],
+                run_context=BotRunContext(channel_id=91, project_context="yearn"),
+                investigation_job=job,
+                workflow_name="tests.worker",
+            )
+        )
+
+        self.assertEqual(job.mode, "escalated_to_human")
+        self.assertIsNone(job.current_specialty)
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):

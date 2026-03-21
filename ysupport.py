@@ -44,6 +44,7 @@ from state import (
     stopped_channels,
 )
 from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest, _resolve_agent
+from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
 
@@ -69,6 +70,7 @@ class TicketBot(discord.Client):
         super().__init__(intents=intents, **options)
         self.runner = Runner
         self.investigation_runtime = TicketInvestigationRuntime(self.runner)
+        self.investigation_worker = TicketInvestigationWorker(self.investigation_runtime)
 
     async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
         message = (
@@ -404,8 +406,7 @@ class TicketBot(discord.Client):
                         f"Ticket Channel {channel_id} ({run_context.project_context}, "
                         f"Button Intent: {run_context.initial_button_intent})"
                     )
-                    investigation_job.begin_investigating()
-                    flow_outcome = await self.investigation_runtime.run_turn(
+                    worker_result = await self.investigation_worker.execute_turn(
                         TicketTurnRequest(
                             aggregated_text=aggregated_text,
                             input_list=input_list,
@@ -416,22 +417,17 @@ class TicketBot(discord.Client):
                             send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
                         )
                     )
+                    flow_outcome = worker_result.flow_outcome
                     conversation_threads[channel_id] = flow_outcome.conversation_history
-                    completed_agent_key = flow_outcome.completed_agent_key
-                    investigation_job.complete_specialist_turn(completed_agent_key)
 
                     raw_final_reply = flow_outcome.raw_final_reply
                     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
                     final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
-
                     if flow_outcome.requires_human_handoff:
-                        investigation_job.mark_escalated_to_human()
                         logging.info(
                             "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
                             channel_id,
                         )
-                    else:
-                        investigation_job.mark_waiting_for_user()
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                     guardrail_info = e.guardrail_result.output.output_info

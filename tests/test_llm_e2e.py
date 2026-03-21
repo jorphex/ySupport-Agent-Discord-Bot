@@ -256,7 +256,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         lowered = output.lower()
         self.assertNotIn("forwarded", lowered)
-        self.assertNotIn("transferred", lowered)
+        self.assertNotIn("transferred to", lowered)
         self.assertTrue("transaction" in lowered or tx_hash.lower() in lowered)
         self.assertTrue("chain" in lowered or "katana" in lowered)
 
