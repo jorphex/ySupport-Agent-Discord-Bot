@@ -137,6 +137,31 @@ class RoutingTests(unittest.TestCase):
             clear_ticket_investigation_job(channel_id)
 
 
+class ConfigSummaryTests(unittest.TestCase):
+    def test_ticket_execution_runtime_summary_includes_fallback_and_codex_details(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        original_model = config.TICKET_EXECUTION_CODEX_MODEL
+        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
+            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
+            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
+
+            summary = config.ticket_execution_runtime_summary()
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
+            config.TICKET_EXECUTION_CODEX_MODEL = original_model
+            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
+
+        self.assertIn("primary=codex_exec", summary)
+        self.assertIn("fallback=local", summary)
+        self.assertIn("codex_model=gpt-5.4", summary)
+        self.assertIn("artifact_dir=/tmp/ticket-artifacts", summary)
+
+
 class InvestigationJobTests(unittest.TestCase):
     def test_job_tracks_lifecycle_and_evidence(self) -> None:
         job = TicketInvestigationJob(channel_id=77)

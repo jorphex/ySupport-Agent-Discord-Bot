@@ -92,6 +92,10 @@ class TicketBot(discord.Client):
         self.investigation_executor = TransportTicketInvestigationExecutor(
             self.investigation_transport
         )
+        logging.info(
+            "Ticket execution runtime configured: %s",
+            config.ticket_execution_runtime_summary(),
+        )
 
     async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
         message = (

@@ -135,6 +135,22 @@ TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES = _env_csv(
 TICKET_EXECUTION_ARTIFACT_DIR = os.getenv("TICKET_EXECUTION_ARTIFACT_DIR", "").strip()
 TICKET_EXECUTION_RUN_DIR_ROOT = os.getenv("TICKET_EXECUTION_RUN_DIR_ROOT", "").strip()
 
+
+def ticket_execution_runtime_summary() -> str:
+    parts = [f"primary={TICKET_EXECUTION_ENDPOINT}"]
+    if TICKET_EXECUTION_FALLBACK_ENDPOINT:
+        parts.append(f"fallback={TICKET_EXECUTION_FALLBACK_ENDPOINT}")
+    if (
+        TICKET_EXECUTION_ENDPOINT == "codex_exec"
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_exec"
+    ):
+        parts.append(f"codex_model={TICKET_EXECUTION_CODEX_MODEL or 'default'}")
+    if TICKET_EXECUTION_ARTIFACT_DIR:
+        parts.append(f"artifact_dir={TICKET_EXECUTION_ARTIFACT_DIR}")
+    elif TICKET_EXECUTION_RUN_DIR_ROOT:
+        parts.append(f"run_dir_root={TICKET_EXECUTION_RUN_DIR_ROOT}")
+    return ", ".join(parts)
+
 # --- Repo Context ---
 ENABLE_REPO_CONTEXT = _env_bool("ENABLE_REPO_CONTEXT", default=False)
 REPO_CONTEXT_MANIFEST_PATH = Path(
