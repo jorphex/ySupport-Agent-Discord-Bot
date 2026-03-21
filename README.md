@@ -47,3 +47,13 @@ Suggested rollout order:
 2. `subprocess`
 3. `codex_exec` with `TICKET_EXECUTION_FALLBACK_ENDPOINT=local`
 4. `codex_exec` without fallback only after you trust the worker path
+
+Health check:
+
+- run `python -m ticket_execution_status`
+- it prints JSON with:
+  - execution primary/fallback
+  - workspace/artifact policy
+  - validation result and warnings
+  - repo-context status
+- exit code is nonzero when the ticket execution config is invalid

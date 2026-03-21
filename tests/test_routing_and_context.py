@@ -1,9 +1,12 @@
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import dataclass
+import io
 import json
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 
 from agents import RunContextWrapper
 
@@ -45,6 +48,7 @@ from ticket_investigation_transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
+from ticket_execution_status import build_ticket_execution_status, main as ticket_execution_status_main
 from ticket_investigation_worker import TicketInvestigationWorker, TicketWorkerResult
 from support_agents import (
     TicketTriageDecision,
@@ -194,6 +198,48 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
             config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
+
+
+class TicketExecutionStatusTests(unittest.TestCase):
+    def test_build_ticket_execution_status_reports_repo_context_and_valid_config(self) -> None:
+        with patch(
+            "ticket_execution_status.get_repo_context_status",
+            return_value={"state": "ready", "fresh": True},
+        ):
+            status = build_ticket_execution_status()
+
+        self.assertIn("ticket_execution", status)
+        self.assertIn("repo_context", status)
+        self.assertTrue(status["ticket_execution"]["validation_ok"])
+        self.assertEqual(status["repo_context"]["state"], "ready")
+
+    def test_ticket_execution_status_main_returns_nonzero_for_invalid_codex_policy(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
+        original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
+            config.TICKET_EXECUTION_ARTIFACT_DIR = ""
+            config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
+            captured = io.StringIO()
+            with patch(
+                "ticket_execution_status.get_repo_context_status",
+                return_value={"state": "disabled", "fresh": False},
+            ):
+                with redirect_stdout(captured):
+                    exit_code = ticket_execution_status_main()
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
+            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
+            config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(captured.getvalue())
+        self.assertFalse(payload["ticket_execution"]["validation_ok"])
+        self.assertIn("requires TICKET_EXECUTION_ARTIFACT_DIR", payload["ticket_execution"]["validation_error"])
 
 
 class InvestigationJobTests(unittest.TestCase):
