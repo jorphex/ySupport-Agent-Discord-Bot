@@ -1060,6 +1060,64 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).to_execution_parts()
         self.assertEqual(flow_outcome.raw_final_reply, "artifact-ok")
 
+    async def test_subprocess_json_endpoint_exports_run_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as run_root:
+            endpoint = SubprocessTicketExecutionJsonEndpoint(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json,os,sys; "
+                        "run_dir=os.getenv('TICKET_EXECUTION_RUN_DIR'); "
+                        "response={"
+                        "'flow_outcome':{"
+                        "'raw_final_reply':run_dir,"
+                        "'conversation_history':[],"
+                        "'completed_agent_key':'docs',"
+                        "'requires_human_handoff':False"
+                        "},"
+                        "'updated_job':{"
+                        "'channel_id':105,"
+                        "'mode':'investigating',"
+                        "'current_specialty':'docs',"
+                        "'last_specialty':'docs',"
+                        "'evidence':{'tx_hashes':[]}"
+                        "}"
+                        "}; "
+                        "sys.stdout.write(json.dumps(response))"
+                    ),
+                ],
+                run_dir_root=run_root,
+            )
+
+            response_json = await endpoint.execute_json_turn(
+                TicketExecutionTransportRequest(
+                    aggregated_text="help",
+                    input_list=[],
+                    current_history=[],
+                    run_context={
+                        "channel_id": 105,
+                        "project_context": "yearn",
+                        "repo_last_search_artifact_refs": [],
+                    },
+                    investigation_job={
+                        "channel_id": 105,
+                        "mode": "idle",
+                        "evidence": {"tx_hashes": []},
+                    },
+                    workflow_name="tests.endpoint.subprocess_run_dir",
+                    wants_bug_review_status=False,
+                ).to_json()
+            )
+
+            flow_outcome, _updated_job = TicketExecutionTransportResult.from_json(
+                response_json
+            ).to_execution_parts()
+            self.assertIsNotNone(flow_outcome.raw_final_reply)
+            assert flow_outcome.raw_final_reply is not None
+            self.assertTrue(flow_outcome.raw_final_reply.startswith(run_root))
+            self.assertTrue(os.path.isdir(flow_outcome.raw_final_reply))
+
 
 class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:

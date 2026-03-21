@@ -22,6 +22,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         env: dict[str, str] | None = None,
         inherit_parent_env: bool = False,
         artifact_dir: str | None = None,
+        run_dir_root: str | None = None,
         timeout_seconds: float = 300.0,
         max_output_chars: int = 200000,
         max_error_chars: int = 4000,
@@ -37,6 +38,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         self.env = dict(env) if env is not None else None
         self.inherit_parent_env = inherit_parent_env
         self.artifact_dir = artifact_dir
+        self.run_dir_root = run_dir_root
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
@@ -51,14 +53,15 @@ class SubprocessTicketExecutionJsonEndpoint:
             if hooks.send_bug_review_status is not None:
                 await hooks.send_bug_review_status()
 
-        artifact_run_dir = self._start_artifact_run(request_json)
+        run_dir = self._start_run_dir()
+        artifact_run_dir = self._start_artifact_run(run_dir, request_json)
         process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.cwd,
-            env=self._effective_env(),
+            env=self._effective_env(run_dir),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -113,16 +116,24 @@ class SubprocessTicketExecutionJsonEndpoint:
         TicketExecutionTransportResult.from_json(response_text)
         return response_text
 
-    def _effective_env(self) -> dict[str, str] | None:
+    def _effective_env(self, run_dir: Path | None) -> dict[str, str] | None:
         if self.env is None:
             if self.inherit_parent_env:
-                return None
-            return {}
-        if not self.inherit_parent_env:
-            return dict(self.env)
-        merged = dict(os.environ)
-        merged.update(self.env)
-        return merged
+                env = None
+            else:
+                env = {}
+        elif not self.inherit_parent_env:
+            env = dict(self.env)
+        else:
+            env = dict(os.environ)
+            env.update(self.env)
+
+        if run_dir is None:
+            return env
+        if env is None:
+            env = dict(os.environ)
+        env["TICKET_EXECUTION_RUN_DIR"] = str(run_dir)
+        return env
 
     def _validate_command_prefix(self) -> None:
         if not self.allowed_command_prefixes:
@@ -134,11 +145,17 @@ class SubprocessTicketExecutionJsonEndpoint:
             "Ticket execution subprocess command is not in the allowed prefix list."
         )
 
-    def _start_artifact_run(self, request_json: str) -> Path | None:
-        if not self.artifact_dir:
+    def _start_run_dir(self) -> Path | None:
+        run_root = self.artifact_dir or self.run_dir_root
+        if not run_root:
             return None
-        run_dir = Path(self.artifact_dir) / f"run-{uuid.uuid4().hex}"
+        run_dir = Path(run_root) / f"run-{uuid.uuid4().hex}"
         run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    def _start_artifact_run(self, run_dir: Path | None, request_json: str) -> Path | None:
+        if run_dir is None or not self.artifact_dir:
+            return run_dir
         (run_dir / "request.json").write_text(request_json, encoding="utf-8")
         return run_dir
 
