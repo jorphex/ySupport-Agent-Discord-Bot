@@ -1,5 +1,7 @@
 import os
 import json
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -18,7 +20,16 @@ from support_agents import (
     yearn_data_agent,
     yearn_docs_qa_agent,
 )
+from ticket_investigation_executor import (
+    LocalTicketInvestigationExecutor,
+    TransportTicketInvestigationExecutor,
+)
+from ticket_investigation_json_endpoint import (
+    JsonEndpointTicketExecutionTransport,
+    build_ticket_execution_json_endpoint,
+)
 from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest
+from ticket_investigation_worker import TicketInvestigationWorker
 
 
 RUN_LLM_E2E = bool(config.OPENAI_API_KEY) and os.getenv("RUN_LLM_E2E_TESTS") == "1"
@@ -105,6 +116,42 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     run_context=context,
                     investigation_job=investigation_job,
                     workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+    async def _run_ticket_flow_through_executor(
+        self,
+        message: str,
+        *,
+        initial_button_intent: str | None = None,
+        channel_id: int = 9300,
+        current_history=None,
+    ):
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent=initial_button_intent,
+        )
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        history = current_history or []
+        input_list = history + [{"role": "user", "content": message}]
+        runtime = TicketInvestigationRuntime(Runner)
+        worker = TicketInvestigationWorker(runtime)
+        local_executor = LocalTicketInvestigationExecutor(worker)
+        endpoint = build_ticket_execution_json_endpoint(local_executor)
+        transport = JsonEndpointTicketExecutionTransport(endpoint)
+        executor = TransportTicketInvestigationExecutor(transport)
+        try:
+            return await executor.execute_turn(
+                TicketTurnRequest(
+                    aggregated_text=message,
+                    input_list=input_list,
+                    current_history=history,
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow.executor",
                 )
             )
         finally:
@@ -410,6 +457,106 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         lowered = outcome.raw_final_reply.lower()
         self.assertNotIn("transfer", lowered)
         self.assertNotIn("forward", lowered)
+
+    async def test_ticket_flow_runs_through_codex_exec_endpoint_mode(self) -> None:
+        fake_codex = (
+            "import asyncio,pathlib,sys; "
+            "from dotenv import load_dotenv; "
+            "from agents import set_default_openai_key; "
+            "import config; "
+            "from ticket_investigation_worker_cli import execute_request_json; "
+            "load_dotenv(); "
+            "set_default_openai_key(config.OPENAI_API_KEY); "
+            "sys.stdin.read(); "
+            "args=sys.argv[1:]; "
+            "run_dir=pathlib.Path(args[args.index('-C') + 1]); "
+            "request_json=(run_dir/'request.json').read_text(encoding='utf-8'); "
+            "sys.stdout.write(asyncio.run(execute_request_json(request_json)))"
+        )
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        original_codex_command = config.TICKET_EXECUTION_CODEX_COMMAND
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
+        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
+        try:
+            with tempfile.TemporaryDirectory() as artifact_dir:
+                config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+                config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
+                config.TICKET_EXECUTION_CODEX_COMMAND = [sys.executable, "-c", fake_codex]
+                config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [
+                    [sys.executable, "-c", fake_codex]
+                ]
+                config.TICKET_EXECUTION_ARTIFACT_DIR = artifact_dir
+
+                result = await self._run_ticket_flow_through_executor(
+                    "I sent an encrypted security report earlier. Can you confirm it was received?",
+                    channel_id=9310,
+                )
+
+                artifact_entries = os.listdir(artifact_dir)
+                self.assertEqual(len(artifact_entries), 1)
+                run_dir = os.path.join(artifact_dir, artifact_entries[0])
+                self.assertTrue(os.path.exists(os.path.join(run_dir, "request.json")))
+                self.assertTrue(os.path.exists(os.path.join(run_dir, "codex_prompt.txt")))
+                self.assertTrue(os.path.exists(os.path.join(run_dir, "stdout.txt")))
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
+            config.TICKET_EXECUTION_CODEX_COMMAND = original_codex_command
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
+            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
+
+        self.assertTrue(result.flow_outcome.requires_human_handoff)
+        self.assertIn(
+            config.HUMAN_HANDOFF_TAG_PLACEHOLDER,
+            result.flow_outcome.raw_final_reply,
+        )
+
+    async def test_ticket_flow_falls_back_from_codex_exec_to_local_endpoint(self) -> None:
+        failing_codex = (
+            "import sys; "
+            "sys.stdin.read(); "
+            "print('codex wrapper failed', file=sys.stderr); "
+            "raise SystemExit(1)"
+        )
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        original_codex_command = config.TICKET_EXECUTION_CODEX_COMMAND
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
+        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
+        try:
+            with tempfile.TemporaryDirectory() as artifact_dir:
+                config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+                config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
+                config.TICKET_EXECUTION_CODEX_COMMAND = [sys.executable, "-c", failing_codex]
+                config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [
+                    [sys.executable, "-c", failing_codex]
+                ]
+                config.TICKET_EXECUTION_ARTIFACT_DIR = artifact_dir
+
+                result = await self._run_ticket_flow_through_executor(
+                    "I sent an encrypted security report earlier. Can you confirm it was received?",
+                    channel_id=9311,
+                )
+
+                artifact_entries = os.listdir(artifact_dir)
+                self.assertEqual(len(artifact_entries), 1)
+                run_dir = os.path.join(artifact_dir, artifact_entries[0])
+                with open(os.path.join(run_dir, "metadata.json"), encoding="utf-8") as file:
+                    metadata = json.load(file)
+                self.assertEqual(metadata["returncode"], 1)
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
+            config.TICKET_EXECUTION_CODEX_COMMAND = original_codex_command
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
+            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
+
+        self.assertTrue(result.flow_outcome.requires_human_handoff)
+        self.assertIn(
+            config.HUMAN_HANDOFF_TAG_PLACEHOLDER,
+            result.flow_outcome.raw_final_reply,
+        )
 
     async def test_data_agent_free_form_withdrawal_request_calls_withdrawal_tool(
         self,
