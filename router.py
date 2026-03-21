@@ -175,6 +175,8 @@ def select_starting_agent(text: str, run_context) -> AgentKey:
         return "docs"
     if intent == "bug_report":
         return "bug"
+    if intent == "investigate_issue":
+        return "triage"
     if should_force_docs_route(text):
         return "docs"
     return "triage"

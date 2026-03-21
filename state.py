@@ -44,6 +44,9 @@ bug_report_debounce_channels: set[int] = set()
 
 public_conversations: Dict[int, PublicConversation] = {}
 
+# Last non-triage specialist that handled a ticket channel.
+last_specialist_by_channel: Dict[int, str] = {}
+
 # Last known wallet address per channel (checksummed)
 last_wallet_by_channel: Dict[int, str] = {}
 

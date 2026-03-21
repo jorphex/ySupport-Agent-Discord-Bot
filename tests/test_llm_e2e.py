@@ -57,7 +57,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def _run_agent_turn(
         self,
         starting_agent_key: str,
-        message: str,
+        message,
         *,
         context: BotRunContext,
     ) -> tuple[str, BotRunContext, str]:
@@ -181,6 +181,44 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reverted", lowered)
         self.assertNotIn("what browser", lowered)
 
+    async def test_data_agent_tx_hash_followup_investigates_instead_of_claiming_forward(
+        self,
+    ) -> None:
+        tx_hash = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        context = BotRunContext(
+            channel_id=9010,
+            project_context="yearn",
+        )
+        output, _, starting_agent_key = await self._run_agent_turn(
+            "data",
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "I deposited 1990.3798 frxusd into the usdt vault on katana "
+                        "but was only credited with 650.9147 yvvbusdt."
+                    ),
+                },
+                {
+                    "role": "assistant",
+                    "content": "Please send the transaction hash and I will check it.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Katana tx hash: {tx_hash}",
+                },
+            ],
+            context=context,
+        )
+
+        self.assertEqual(starting_agent_key, "data")
+
+        lowered = output.lower()
+        self.assertNotIn("forwarded", lowered)
+        self.assertNotIn("transferred", lowered)
+        self.assertTrue("transaction" in lowered or tx_hash.lower() in lowered)
+        self.assertTrue("chain" in lowered or "katana" in lowered)
+
     async def test_deposit_button_intent_calls_check_all_deposits_tool(self) -> None:
         tool_calls: list[dict] = []
         tool = self._get_agent_tool(yearn_data_agent, "check_all_deposits_tool")
@@ -209,7 +247,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("yvusdc", output.lower())
 
-    async def test_vault_search_button_intent_calls_search_vaults_tool(self) -> None:
+    async def test_combined_data_button_routes_vault_query_to_search_tool(self) -> None:
         tool_calls: list[dict] = []
         tool = self._get_agent_tool(yearn_data_agent, "search_vaults_tool")
 
@@ -225,7 +263,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(tool, "on_invoke_tool", new=fake_on_invoke_tool):
             output, _, starting_agent_key = await self._run_support_turn(
                 "usdc",
-                initial_button_intent="data_vault_search",
+                initial_button_intent="data_deposits_withdrawals_start",
                 channel_id=9003,
             )
 

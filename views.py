@@ -42,14 +42,13 @@ class InitialInquiryView(View):
 
         logging.info(f"Button '{button_custom_id}' clicked in {interaction.channel.id}. Intent set to '{intent_category}'. Sent follow-up prompt.")
 
-    @button(label="ℹ️ Vault Info", style=discord.ButtonStyle.secondary, custom_id="initial_find_vaults", row=0)
-    async def find_vaults_button(self, interaction: discord.Interaction, button: Button):
-        prompt = "Okay, you want to find vaults. What token, vault, or criteria (e.g., 'current APY for yvUSDS', 'highest APY for USDC on Ethereum') are you looking for? Please be as specific as possible for the best results."
-        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "data_vault_search")
-
     @button(label="💼 Deposits / Withdrawals", style=discord.ButtonStyle.secondary, custom_id="initial_deposits_withdrawals", row=0)
     async def deposits_withdrawals_button(self, interaction: discord.Interaction, button: Button):
-        prompt = "Got it. Please provide your wallet address (0x...) so I can check your deposits and help with withdrawals if needed."
+        prompt = (
+            "Got it. If you want deposit or withdrawal help, send your wallet address (0x...). "
+            "If you are trying to find a vault or check vault info first, send the token, vault name, "
+            "or vault address instead."
+        )
         await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "data_deposits_withdrawals_start")
 
     @button(label="📖 General Info/How-To", style=discord.ButtonStyle.secondary, custom_id="initial_general_info", row=1)
@@ -60,18 +59,18 @@ class InitialInquiryView(View):
         prompt = f"Great! What specific information or product are you looking for, or what how-to question do you have about {project_ctx_name}?"
         await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "docs_qa")
 
-    @button(label="🐞 Bug Report/UI Issue", style=discord.ButtonStyle.secondary, custom_id="initial_bug_report", row=1)
+    @button(label="🔎 Investigate Issue", style=discord.ButtonStyle.secondary, custom_id="initial_bug_report", row=1)
     async def bug_report_button(self, interaction: discord.Interaction, button: Button):
         prompt = (
-            "Describe the bug or UI problem in as much detail as you have. You can send multiple messages now and I will review them together. "
+            "Describe the issue in as much detail as you have. You can send multiple messages now and I will review them together. "
             "Include the product or vault involved, the exact page or URL if relevant, what you expected to happen, what actually happened, "
             "any error text, any tx hash, and your browser/device or wallet if that matters."
         )
-        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "bug_report")
+        await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "investigate_issue")
         bug_report_debounce_channels.add(interaction.channel.id)
-        logging.info(f"Bug report initiated in {interaction.channel.id}. Awaiting bug report details.")
+        logging.info(f"Issue investigation initiated in {interaction.channel.id}. Awaiting issue details.")
 
-    @button(label="🤝 Business/Partnerships/Marketing", style=discord.ButtonStyle.secondary, custom_id="initial_bd_partner", row=2)
+    @button(label="🤝 BD / Partnerships / Listings", style=discord.ButtonStyle.secondary, custom_id="initial_bd_partner", row=2)
     async def bd_partner_button(self, interaction: discord.Interaction, button: Button):
         await self.handle_button_click(interaction, button.custom_id)
         if interaction.channel:

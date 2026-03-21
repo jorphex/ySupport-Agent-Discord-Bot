@@ -4,9 +4,10 @@ from agents import RunContextWrapper
 
 import config
 from router import select_starting_agent
-from state import BotRunContext
+from state import BotRunContext, last_specialist_by_channel
 from support_agents import triage_agent, yearn_bug_triage_agent, yearn_data_agent
 from support_tools import _extract_artifact_refs, _repo_search_block_message
+from ysupport import _select_ticket_starting_agent
 
 
 class RoutingTests(unittest.TestCase):
@@ -26,6 +27,14 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(select_starting_agent("the claim button is missing", context), "bug")
 
+    def test_select_starting_agent_uses_investigate_issue_button_intent(self) -> None:
+        context = BotRunContext(
+            channel_id=21,
+            project_context="yearn",
+            initial_button_intent="investigate_issue",
+        )
+        self.assertEqual(select_starting_agent("the claim button is missing", context), "triage")
+
     def test_select_starting_agent_routes_styfi_question_to_docs(self) -> None:
         context = BotRunContext(channel_id=3, project_context="yearn")
         self.assertEqual(select_starting_agent("Where do I see my stYFI position?", context), "docs")
@@ -38,6 +47,21 @@ class RoutingTests(unittest.TestCase):
             "on ethereum using wallet 0x1111111111111111111111111111111111111111?"
         )
         self.assertEqual(select_starting_agent(message, context), "triage")
+
+    def test_follow_up_routing_reuses_last_specialist(self) -> None:
+        channel_id = 9
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        last_specialist_by_channel[channel_id] = "data"
+        try:
+            agent_key = _select_ticket_starting_agent(
+                channel_id,
+                "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+                context,
+                current_history=[{"role": "user", "content": "Previous issue context"}],
+            )
+            self.assertEqual(agent_key, "data")
+        finally:
+            last_specialist_by_channel.pop(channel_id, None)
 
 
 class RepoHelperTests(unittest.TestCase):

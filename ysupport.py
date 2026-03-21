@@ -38,6 +38,7 @@ from state import (
     channel_intent_after_button,
     bug_report_debounce_channels,
     public_conversations,
+    last_specialist_by_channel,
     last_wallet_by_channel,
     pending_wallet_confirmation_by_channel,
     last_bot_reply_ts_by_channel,
@@ -63,6 +64,39 @@ def _resolve_agent(agent_key: str):
     if agent_key == "bug":
         return yearn_bug_triage_agent
     return triage_agent
+
+
+def _select_ticket_starting_agent(
+    channel_id: int,
+    aggregated_text: str,
+    run_context: BotRunContext,
+    current_history: List[TResponseInputItem],
+) -> str:
+    prior_specialist = last_specialist_by_channel.get(channel_id)
+    if (
+        run_context.initial_button_intent is None
+        and current_history
+        and prior_specialist in {"data", "docs", "bug"}
+    ):
+        logging.info(
+            "Reusing prior specialist '%s' for follow-up in channel %s",
+            prior_specialist,
+            channel_id,
+        )
+        return prior_specialist
+    return select_starting_agent(aggregated_text, run_context)
+
+
+def _agent_to_key(agent) -> str | None:
+    if agent is yearn_data_agent:
+        return "data"
+    if agent is yearn_docs_qa_agent:
+        return "docs"
+    if agent is yearn_bug_triage_agent:
+        return "bug"
+    if agent is triage_agent:
+        return "triage"
+    return None
 
 
 def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int:
@@ -102,6 +136,7 @@ class TicketBot(discord.Client):
                 project_context = config.CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown")
                 logging.info(f"New {project_context.capitalize()} ticket channel created: {channel.name} (ID: {channel.id}). Initializing state.")
                 conversation_threads[channel.id] = []
+                last_specialist_by_channel.pop(channel.id, None)
                 stopped_channels.discard(channel.id)
                 bug_report_debounce_channels.discard(channel.id)
                 pending_messages.pop(channel.id, None)
@@ -394,7 +429,12 @@ class TicketBot(discord.Client):
                         workflow_name=f"Ticket Channel {channel_id} ({run_context.project_context}, Button Intent: {run_context.initial_button_intent})",
                         group_id=str(channel_id)
                     )
-                    agent_key = select_starting_agent(aggregated_text, run_context)
+                    agent_key = _select_ticket_starting_agent(
+                        channel_id,
+                        aggregated_text,
+                        run_context,
+                        current_history,
+                    )
                     logging.info(
                         "Selected starting agent '%s' for channel %s (intent=%s)",
                         agent_key,
@@ -412,6 +452,11 @@ class TicketBot(discord.Client):
                         context=run_context
                     )
                     conversation_threads[channel_id] = result.to_input_list()
+                    completed_agent_key = _agent_to_key(result.last_agent)
+                    if completed_agent_key in {"data", "docs", "bug"}:
+                        last_specialist_by_channel[channel_id] = completed_agent_key
+                    elif completed_agent_key == "triage":
+                        last_specialist_by_channel.pop(channel_id, None)
 
                     raw_final_reply = result.final_output if result.final_output else "I'm not sure how to respond to that."
                     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
@@ -431,6 +476,7 @@ class TicketBot(discord.Client):
                         final_reply = "Your request could not be processed due to input checks."
                     should_stop_processing = True
                     conversation_threads.pop(channel_id, None)
+                    last_specialist_by_channel.pop(channel_id, None)
                 except MaxTurnsExceeded:
                     logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                     if run_context.repo_search_calls:
@@ -445,14 +491,17 @@ class TicketBot(discord.Client):
                         )
                     should_stop_processing = True
                     conversation_threads.pop(channel_id, None)
+                    last_specialist_by_channel.pop(channel_id, None)
                 except AgentsException as e:
                     logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
                     final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                     should_stop_processing = True
+                    last_specialist_by_channel.pop(channel_id, None)
                 except Exception as e:
                     logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                     final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                     should_stop_processing = True
+                    last_specialist_by_channel.pop(channel_id, None)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
