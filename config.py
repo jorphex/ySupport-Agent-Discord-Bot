@@ -28,6 +28,11 @@ def _env_command_prefixes(name: str) -> list[list[str]]:
     return prefixes
 
 
+def _env_csv(name: str) -> list[str]:
+    raw_value = os.getenv(name, "")
+    return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- Secrets ---
@@ -109,6 +114,16 @@ TICKET_EXECUTION_SUBPROCESS_COMMAND = shlex.split(
 )
 TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = _env_command_prefixes(
     "TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES"
+)
+TICKET_EXECUTION_SUBPROCESS_CWD = os.getenv(
+    "TICKET_EXECUTION_SUBPROCESS_CWD",
+    str(BASE_DIR),
+)
+TICKET_EXECUTION_SUBPROCESS_ENV_KEYS = _env_csv(
+    "TICKET_EXECUTION_SUBPROCESS_ENV_KEYS"
+)
+TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES = _env_csv(
+    "TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES"
 )
 
 # --- Repo Context ---

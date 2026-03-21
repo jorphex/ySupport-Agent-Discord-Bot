@@ -1,6 +1,8 @@
 import unittest
 from dataclasses import dataclass
+import os
 import sys
+import tempfile
 
 from agents import RunContextWrapper
 
@@ -866,6 +868,122 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     wants_bug_review_status=False,
                 ).to_json()
             )
+
+    async def test_subprocess_json_endpoint_uses_explicit_env_without_parent_inheritance(self) -> None:
+        original_blocked = os.environ.get("BLOCKED_TEST_ENV")
+        os.environ["BLOCKED_TEST_ENV"] = "blocked"
+        try:
+            endpoint = SubprocessTicketExecutionJsonEndpoint(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json,os,sys; "
+                        "response={"
+                        "'flow_outcome':{"
+                        "'raw_final_reply':f\"{os.getenv('ALLOWED_TEST_ENV')}:{os.getenv('BLOCKED_TEST_ENV')}\","
+                        "'conversation_history':[],"
+                        "'completed_agent_key':'docs',"
+                        "'requires_human_handoff':False"
+                        "},"
+                        "'updated_job':{"
+                        "'channel_id':102,"
+                        "'mode':'investigating',"
+                        "'current_specialty':'docs',"
+                        "'last_specialty':'docs',"
+                        "'evidence':{'tx_hashes':[]}"
+                        "}"
+                        "}; "
+                        "sys.stdout.write(json.dumps(response))"
+                    ),
+                ],
+                env={"ALLOWED_TEST_ENV": "allowed"},
+                inherit_parent_env=False,
+            )
+
+            response_json = await endpoint.execute_json_turn(
+                TicketExecutionTransportRequest(
+                    aggregated_text="help",
+                    input_list=[],
+                    current_history=[],
+                    run_context={
+                        "channel_id": 102,
+                        "project_context": "yearn",
+                        "repo_last_search_artifact_refs": [],
+                    },
+                    investigation_job={
+                        "channel_id": 102,
+                        "mode": "idle",
+                        "evidence": {"tx_hashes": []},
+                    },
+                    workflow_name="tests.endpoint.subprocess_env",
+                    wants_bug_review_status=False,
+                ).to_json()
+            )
+        finally:
+            if original_blocked is None:
+                os.environ.pop("BLOCKED_TEST_ENV", None)
+            else:
+                os.environ["BLOCKED_TEST_ENV"] = original_blocked
+
+        flow_outcome, _updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, "allowed:None")
+
+    async def test_subprocess_json_endpoint_uses_configured_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            endpoint = SubprocessTicketExecutionJsonEndpoint(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json,os,sys; "
+                        "response={"
+                        "'flow_outcome':{"
+                        "'raw_final_reply':os.getcwd(),"
+                        "'conversation_history':[],"
+                        "'completed_agent_key':'docs',"
+                        "'requires_human_handoff':False"
+                        "},"
+                        "'updated_job':{"
+                        "'channel_id':103,"
+                        "'mode':'investigating',"
+                        "'current_specialty':'docs',"
+                        "'last_specialty':'docs',"
+                        "'evidence':{'tx_hashes':[]}"
+                        "}"
+                        "}; "
+                        "sys.stdout.write(json.dumps(response))"
+                    ),
+                ],
+                cwd=temp_dir,
+            )
+
+            response_json = await endpoint.execute_json_turn(
+                TicketExecutionTransportRequest(
+                    aggregated_text="help",
+                    input_list=[],
+                    current_history=[],
+                    run_context={
+                        "channel_id": 103,
+                        "project_context": "yearn",
+                        "repo_last_search_artifact_refs": [],
+                    },
+                    investigation_job={
+                        "channel_id": 103,
+                        "mode": "idle",
+                        "evidence": {"tx_hashes": []},
+                    },
+                    workflow_name="tests.endpoint.subprocess_cwd",
+                    wants_bug_review_status=False,
+                ).to_json()
+            )
+
+        flow_outcome, _updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(flow_outcome.raw_final_reply, temp_dir)
 
 
 class TicketExecutionEndpointFactoryTests(unittest.TestCase):

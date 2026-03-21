@@ -17,6 +17,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         allowed_command_prefixes: Sequence[Sequence[str]] | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        inherit_parent_env: bool = False,
         timeout_seconds: float = 300.0,
         max_output_chars: int = 200000,
         max_error_chars: int = 4000,
@@ -30,6 +31,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         self._validate_command_prefix()
         self.cwd = cwd
         self.env = dict(env) if env is not None else None
+        self.inherit_parent_env = inherit_parent_env
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
@@ -83,7 +85,11 @@ class SubprocessTicketExecutionJsonEndpoint:
 
     def _effective_env(self) -> dict[str, str] | None:
         if self.env is None:
-            return None
+            if self.inherit_parent_env:
+                return None
+            return {}
+        if not self.inherit_parent_env:
+            return dict(self.env)
         merged = dict(os.environ)
         merged.update(self.env)
         return merged

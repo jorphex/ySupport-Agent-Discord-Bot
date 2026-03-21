@@ -1,3 +1,4 @@
+import os
 import sys
 from collections.abc import Sequence
 from typing import Protocol
@@ -75,6 +76,8 @@ def build_ticket_execution_json_endpoint(
         return SubprocessTicketExecutionJsonEndpoint(
             command,
             allowed_command_prefixes=_allowed_subprocess_prefixes(command),
+            cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
+            env=_subprocess_env(),
         )
     raise ValueError(
         "Unsupported TICKET_EXECUTION_ENDPOINT value: "
@@ -94,3 +97,27 @@ def _allowed_subprocess_prefixes(command: Sequence[str]) -> list[list[str]]:
         if prefix not in prefixes:
             prefixes.append(prefix)
     return prefixes
+
+
+def _subprocess_env() -> dict[str, str]:
+    allowed_keys = {
+        "OPENAI_API_KEY",
+        "PINECONE_API_KEY",
+        "ALCHEMY_KEY",
+        "MCP_SERVER_API_KEY",
+        "GITHUB_TOKEN",
+        "RUN_LLM_E2E_TESTS",
+    }
+    allowed_keys.update(config.TICKET_EXECUTION_SUBPROCESS_ENV_KEYS)
+
+    allowed_prefixes = (
+        "LLM_",
+        "REPO_CONTEXT_",
+        "TICKET_EXECUTION_",
+    ) + tuple(config.TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES)
+
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in allowed_keys or any(key.startswith(prefix) for prefix in allowed_prefixes):
+            env[key] = value
+    return env
