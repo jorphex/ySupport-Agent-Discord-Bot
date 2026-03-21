@@ -42,15 +42,57 @@ class PublicConversation:
 
 
 @dataclass
-class TicketInvestigationState:
+class InvestigationEvidence:
+    wallet: Optional[str] = None
+    chain: Optional[str] = None
+    tx_hashes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TicketInvestigationJob:
     channel_id: int
     requested_intent: Optional[str] = None
-    active_mode: InvestigationMode = "idle"
+    mode: InvestigationMode = "idle"
     current_specialty: Optional[SpecialtyKey] = None
     last_specialty: Optional[SpecialtyKey] = None
-    known_wallet: Optional[str] = None
-    known_chain: Optional[str] = None
-    known_tx_hashes: List[str] = field(default_factory=list)
+    evidence: InvestigationEvidence = field(default_factory=InvestigationEvidence)
+
+    def record_requested_intent(self, intent: Optional[str]) -> None:
+        self.requested_intent = intent
+
+    def begin_collecting(self, intent: Optional[str] = None) -> None:
+        if intent is not None:
+            self.record_requested_intent(intent)
+        self.mode = "collecting"
+
+    def begin_investigating(self) -> None:
+        self.mode = "investigating"
+
+    def mark_waiting_for_user(self) -> None:
+        self.mode = "waiting_for_user"
+
+    def mark_escalated_to_human(self) -> None:
+        self.mode = "escalated_to_human"
+
+    def clear_current_specialty(self) -> None:
+        self.current_specialty = None
+
+    def complete_specialist_turn(self, specialty: Optional[SpecialtyKey]) -> None:
+        if specialty in {"data", "docs", "bug"}:
+            self.last_specialty = specialty
+            self.current_specialty = specialty
+            return
+        self.clear_current_specialty()
+
+    def remember_wallet(self, wallet: str) -> None:
+        self.evidence.wallet = wallet
+
+    def remember_chain(self, chain: str) -> None:
+        self.evidence.chain = chain
+
+    def remember_tx_hash(self, tx_hash: str) -> None:
+        if tx_hash not in self.evidence.tx_hashes:
+            self.evidence.tx_hashes.append(tx_hash)
 
 
 # Globals
@@ -66,7 +108,7 @@ bug_report_debounce_channels: set[int] = set()
 
 public_conversations: Dict[int, PublicConversation] = {}
 
-ticket_investigation_states: Dict[int, TicketInvestigationState] = {}
+ticket_investigation_jobs: Dict[int, TicketInvestigationJob] = {}
 
 # Last known wallet address per channel (checksummed)
 last_wallet_by_channel: Dict[int, str] = {}
@@ -78,9 +120,13 @@ pending_wallet_confirmation_by_channel: Dict[int, str] = {}
 last_bot_reply_ts_by_channel: Dict[int, datetime] = {}
 
 
-def get_or_create_ticket_investigation_state(channel_id: int) -> TicketInvestigationState:
-    state = ticket_investigation_states.get(channel_id)
-    if state is None:
-        state = TicketInvestigationState(channel_id=channel_id)
-        ticket_investigation_states[channel_id] = state
-    return state
+def get_or_create_ticket_investigation_job(channel_id: int) -> TicketInvestigationJob:
+    job = ticket_investigation_jobs.get(channel_id)
+    if job is None:
+        job = TicketInvestigationJob(channel_id=channel_id)
+        ticket_investigation_jobs[channel_id] = job
+    return job
+
+
+def clear_ticket_investigation_job(channel_id: int) -> None:
+    ticket_investigation_jobs.pop(channel_id, None)

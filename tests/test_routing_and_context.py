@@ -5,7 +5,12 @@ from agents import RunContextWrapper
 
 import config
 from router import select_starting_agent
-from state import BotRunContext, ticket_investigation_states, get_or_create_ticket_investigation_state
+from state import (
+    BotRunContext,
+    TicketInvestigationJob,
+    clear_ticket_investigation_job,
+    get_or_create_ticket_investigation_job,
+)
 from support_agents import (
     TicketTriageDecision,
     ticket_triage_router_agent,
@@ -16,7 +21,7 @@ from support_agents import (
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ysupport import (
-    _merge_explicit_evidence_into_state,
+    _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
     _run_ticket_agent_flow,
@@ -65,34 +70,67 @@ class RoutingTests(unittest.TestCase):
     def test_follow_up_routing_reuses_last_specialist(self) -> None:
         channel_id = 9
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
-        investigation_state.last_specialty = "data"
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = "data"
         try:
             agent_key = _select_ticket_starting_agent(
                 "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
                 context,
                 current_history=[{"role": "user", "content": "Previous issue context"}],
-                investigation_state=investigation_state,
+                investigation_job=investigation_job,
             )
             self.assertEqual(agent_key, "data")
         finally:
-            ticket_investigation_states.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
 
-    def test_merge_explicit_evidence_into_state_tracks_chain_and_tx_hash(self) -> None:
+    def test_merge_explicit_evidence_into_job_tracks_chain_and_tx_hash(self) -> None:
         channel_id = 22
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
         try:
-            _merge_explicit_evidence_into_state(
-                investigation_state,
+            _merge_explicit_evidence_into_job(
+                investigation_job,
                 "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
             )
-            self.assertEqual(investigation_state.known_chain, "katana")
+            self.assertEqual(investigation_job.evidence.chain, "katana")
             self.assertEqual(
-                investigation_state.known_tx_hashes,
+                investigation_job.evidence.tx_hashes,
                 ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
             )
         finally:
-            ticket_investigation_states.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+
+class InvestigationJobTests(unittest.TestCase):
+    def test_job_tracks_lifecycle_and_evidence(self) -> None:
+        job = TicketInvestigationJob(channel_id=77)
+
+        job.begin_collecting("investigate_issue")
+        job.remember_wallet("0x1111111111111111111111111111111111111111")
+        job.remember_chain("katana")
+        job.remember_tx_hash("0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0")
+        job.begin_investigating()
+        job.complete_specialist_turn("data")
+        job.mark_waiting_for_user()
+        job.mark_escalated_to_human()
+
+        self.assertEqual(job.requested_intent, "investigate_issue")
+        self.assertEqual(job.mode, "escalated_to_human")
+        self.assertEqual(job.current_specialty, "data")
+        self.assertEqual(job.last_specialty, "data")
+        self.assertEqual(job.evidence.wallet, "0x1111111111111111111111111111111111111111")
+        self.assertEqual(job.evidence.chain, "katana")
+        self.assertEqual(
+            job.evidence.tx_hashes,
+            ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
+        )
+
+    def test_job_clears_current_specialty_when_non_specialist_turn_completes(self) -> None:
+        job = TicketInvestigationJob(channel_id=78, current_specialty="bug", last_specialty="bug")
+
+        job.complete_specialist_turn(None)
+
+        self.assertIsNone(job.current_specialty)
+        self.assertEqual(job.last_specialty, "bug")
 
 
 class RepoHelperTests(unittest.TestCase):
@@ -189,7 +227,7 @@ class _FakeRunner:
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_ticket_agent_flow_routes_triage_decision_to_docs_specialist(self) -> None:
         channel_id = 31
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
         fake_runner = _FakeRunner(
             [
                 _FakeResult(
@@ -224,11 +262,11 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 input_list=[{"role": "user", "content": "I need help finding where to see my stYFI position."}],
                 current_history=[],
                 run_context=context,
-                investigation_state=investigation_state,
+                investigation_job=investigation_job,
                 workflow_name="tests.ticket_flow",
             )
         finally:
-            ticket_investigation_states.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
 
         self.assertEqual(len(fake_runner.calls), 2)
         self.assertIs(fake_runner.calls[0]["starting_agent"], ticket_triage_router_agent)
@@ -238,7 +276,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ticket_agent_flow_returns_direct_router_message_without_second_run(self) -> None:
         channel_id = 32
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
         fake_runner = _FakeRunner(
             [
                 _FakeResult(
@@ -264,11 +302,11 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 input_list=[{"role": "user", "content": "I finished verification but still cannot access the Discord."}],
                 current_history=[],
                 run_context=context,
-                investigation_state=investigation_state,
+                investigation_job=investigation_job,
                 workflow_name="tests.ticket_flow",
             )
         finally:
-            ticket_investigation_states.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
 
         self.assertEqual(len(fake_runner.calls), 1)
         self.assertIsNone(outcome.completed_agent_key)
@@ -284,7 +322,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ticket_agent_flow_marks_specialist_reply_handoff_explicitly(self) -> None:
         channel_id = 33
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
         fake_runner = _FakeRunner(
             [
                 _FakeResult(
@@ -318,11 +356,11 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 input_list=[{"role": "user", "content": "The app is broken."}],
                 current_history=[],
                 run_context=context,
-                investigation_state=investigation_state,
+                investigation_job=investigation_job,
                 workflow_name="tests.ticket_flow",
             )
         finally:
-            ticket_investigation_states.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
 
         self.assertEqual(len(fake_runner.calls), 1)
         self.assertEqual(outcome.completed_agent_key, "bug")

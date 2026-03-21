@@ -38,20 +38,20 @@ from support_agents import (
 from state import (
     BotRunContext,
     PublicConversation,
-    stopped_channels,
-    conversation_threads,
-    pending_messages,
-    pending_tasks,
-    monitored_new_channels,
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
     bug_report_debounce_channels,
-    public_conversations,
-    ticket_investigation_states,
-    get_or_create_ticket_investigation_state,
+    clear_ticket_investigation_job,
+    conversation_threads,
+    get_or_create_ticket_investigation_job,
     last_wallet_by_channel,
-    pending_wallet_confirmation_by_channel,
     last_bot_reply_ts_by_channel,
+    monitored_new_channels,
+    pending_messages,
+    pending_tasks,
+    pending_wallet_confirmation_by_channel,
+    public_conversations,
+    stopped_channels,
 )
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
@@ -97,9 +97,9 @@ def _select_ticket_starting_agent(
     aggregated_text: str,
     run_context: BotRunContext,
     current_history: List[TResponseInputItem],
-    investigation_state,
+    investigation_job,
 ) -> str:
-    prior_specialist = investigation_state.last_specialty
+    prior_specialist = investigation_job.last_specialty
     if (
         run_context.initial_button_intent is None
         and current_history
@@ -108,7 +108,7 @@ def _select_ticket_starting_agent(
         logging.info(
             "Reusing prior specialist '%s' for follow-up in channel %s",
             prior_specialist,
-            investigation_state.channel_id,
+            investigation_job.channel_id,
         )
         return prior_specialist
     return select_starting_agent(aggregated_text, run_context)
@@ -126,19 +126,18 @@ def _agent_to_key(agent) -> str | None:
     return None
 
 
-def _merge_explicit_evidence_into_state(investigation_state, text: str) -> None:
+def _merge_explicit_evidence_into_job(investigation_job, text: str) -> None:
     if not text:
         return
 
     tx_hashes = TX_HASH_RE.findall(text)
     for tx_hash in tx_hashes:
-        if tx_hash not in investigation_state.known_tx_hashes:
-            investigation_state.known_tx_hashes.append(tx_hash)
+        investigation_job.remember_tx_hash(tx_hash)
 
     lowered = text.lower()
     for chain_name in CHAIN_NAMES:
         if chain_name in lowered:
-            investigation_state.known_chain = chain_name
+            investigation_job.remember_chain(chain_name)
             break
 
 
@@ -199,7 +198,7 @@ async def _run_ticket_agent_flow(
     input_list: List[TResponseInputItem],
     current_history: List[TResponseInputItem],
     run_context: BotRunContext,
-    investigation_state,
+    investigation_job,
     workflow_name: str,
     send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> TicketAgentFlowOutcome:
@@ -207,12 +206,12 @@ async def _run_ticket_agent_flow(
         aggregated_text,
         run_context,
         current_history,
-        investigation_state,
+        investigation_job,
     )
     logging.info(
         "Selected starting agent '%s' for channel %s (intent=%s)",
         agent_key,
-        investigation_state.channel_id,
+        investigation_job.channel_id,
         run_context.initial_button_intent,
     )
 
@@ -232,7 +231,7 @@ async def _run_ticket_agent_flow(
         )
         logging.info(
             "Ticket triage router decision for channel %s: action=%s reasoning=%s",
-            investigation_state.channel_id,
+            investigation_job.channel_id,
             decision.action,
             decision.reasoning,
         )
@@ -311,7 +310,7 @@ class TicketBot(discord.Client):
                 project_context = config.CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown")
                 logging.info(f"New {project_context.capitalize()} ticket channel created: {channel.name} (ID: {channel.id}). Initializing state.")
                 conversation_threads[channel.id] = []
-                ticket_investigation_states.pop(channel.id, None)
+                clear_ticket_investigation_job(channel.id)
                 stopped_channels.discard(channel.id)
                 bug_report_debounce_channels.discard(channel.id)
                 pending_messages.pop(channel.id, None)
@@ -472,10 +471,10 @@ class TicketBot(discord.Client):
             return
 
         current_intent_from_map = channel_intent_after_button.pop(channel_id, None)
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
         if current_intent_from_map:
             logging.info(f"Message in {channel_id} is a follow-up to button intent: {current_intent_from_map}")
-            investigation_state.requested_intent = current_intent_from_map
+            investigation_job.record_requested_intent(current_intent_from_map)
 
         ticket_run_context = BotRunContext(
             channel_id=channel_id,
@@ -515,7 +514,7 @@ class TicketBot(discord.Client):
     async def process_ticket_message(self, channel_id: int, run_context: BotRunContext, is_button_trigger: bool = False, synthetic_user_message_for_log: str = ""):
         current_task = asyncio.current_task()
         try:
-            investigation_state = get_or_create_ticket_investigation_state(channel_id)
+            investigation_job = get_or_create_ticket_investigation_job(channel_id)
             aggregated_text = None
             if is_button_trigger:
                 aggregated_text = synthetic_user_message_for_log.strip()
@@ -530,7 +529,7 @@ class TicketBot(discord.Client):
                 aggregated_text = pending_messages.pop(channel_id, None)
             if not aggregated_text:
                 return
-            _merge_explicit_evidence_into_state(investigation_state, aggregated_text)
+            _merge_explicit_evidence_into_job(investigation_job, aggregated_text)
 
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -565,7 +564,7 @@ class TicketBot(discord.Client):
                     last_wallet = last_wallet_by_channel.get(channel_id)
                     if is_data_intent:
                         last_wallet_by_channel[channel_id] = parsed_address
-                        investigation_state.known_wallet = parsed_address
+                        investigation_job.remember_wallet(parsed_address)
                         system_hints.append(
                             f"Resolved wallet address for this turn: {parsed_address}. Use this exact address for any wallet-based tool call."
                         )
@@ -577,7 +576,7 @@ class TicketBot(discord.Client):
                         )
                     else:
                         last_wallet_by_channel[channel_id] = parsed_address
-                        investigation_state.known_wallet = parsed_address
+                        investigation_job.remember_wallet(parsed_address)
 
                     if is_data_intent:
                         ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
@@ -595,13 +594,16 @@ class TicketBot(discord.Client):
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
 
             contextual_hints: List[str] = []
-            if investigation_state.known_chain and TX_HASH_RE.search(aggregated_text):
+            if investigation_job.evidence.chain and TX_HASH_RE.search(aggregated_text):
                 contextual_hints.append(
-                    f"Known chain for this ticket is {investigation_state.known_chain}. Use that chain for tx investigation unless the user explicitly corrects it."
+                    f"Known chain for this ticket is {investigation_job.evidence.chain}. Use that chain for tx investigation unless the user explicitly corrects it."
                 )
-            if investigation_state.known_wallet and investigation_state.known_wallet not in aggregated_text:
+            if (
+                investigation_job.evidence.wallet
+                and investigation_job.evidence.wallet not in aggregated_text
+            ):
                 contextual_hints.append(
-                    f"Known wallet for this ticket is {investigation_state.known_wallet}. Use it if needed; do not ask again unless the user corrects it."
+                    f"Known wallet for this ticket is {investigation_job.evidence.wallet}. Use it if needed; do not ask again unless the user corrects it."
                 )
             if contextual_hints:
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(contextual_hints)}] + [input_list[-1]]
@@ -618,41 +620,37 @@ class TicketBot(discord.Client):
                 should_stop_processing = False
 
                 try:
-                    investigation_state.active_mode = "investigating"
                     workflow_name = (
                         f"Ticket Channel {channel_id} ({run_context.project_context}, "
                         f"Button Intent: {run_context.initial_button_intent})"
                     )
+                    investigation_job.begin_investigating()
                     flow_outcome = await _run_ticket_agent_flow(
                         runner=self.runner,
                         aggregated_text=aggregated_text,
                         input_list=input_list,
                         current_history=current_history,
                         run_context=run_context,
-                        investigation_state=investigation_state,
+                        investigation_job=investigation_job,
                         workflow_name=workflow_name,
                         send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
                     )
                     conversation_threads[channel_id] = flow_outcome.conversation_history
                     completed_agent_key = flow_outcome.completed_agent_key
-                    if completed_agent_key in {"data", "docs", "bug"}:
-                        investigation_state.last_specialty = completed_agent_key
-                        investigation_state.current_specialty = completed_agent_key
-                    else:
-                        investigation_state.current_specialty = None
+                    investigation_job.complete_specialist_turn(completed_agent_key)
 
                     raw_final_reply = flow_outcome.raw_final_reply
                     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
                     final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
 
                     if flow_outcome.requires_human_handoff:
-                        investigation_state.active_mode = "escalated_to_human"
+                        investigation_job.mark_escalated_to_human()
                         logging.info(
                             "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
                             channel_id,
                         )
                     else:
-                        investigation_state.active_mode = "waiting_for_user"
+                        investigation_job.mark_waiting_for_user()
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                     guardrail_info = e.guardrail_result.output.output_info
@@ -662,7 +660,7 @@ class TicketBot(discord.Client):
                         final_reply = "Your request could not be processed due to input checks."
                     should_stop_processing = True
                     conversation_threads.pop(channel_id, None)
-                    ticket_investigation_states.pop(channel_id, None)
+                    clear_ticket_investigation_job(channel_id)
                 except MaxTurnsExceeded:
                     logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                     if run_context.repo_search_calls:
@@ -677,17 +675,17 @@ class TicketBot(discord.Client):
                         )
                     should_stop_processing = True
                     conversation_threads.pop(channel_id, None)
-                    ticket_investigation_states.pop(channel_id, None)
+                    clear_ticket_investigation_job(channel_id)
                 except AgentsException as e:
                     logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
                     final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                     should_stop_processing = True
-                    ticket_investigation_states.pop(channel_id, None)
+                    clear_ticket_investigation_job(channel_id)
                 except Exception as e:
                     logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                     final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                     should_stop_processing = True
-                    ticket_investigation_states.pop(channel_id, None)
+                    clear_ticket_investigation_job(channel_id)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None

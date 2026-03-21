@@ -9,8 +9,8 @@ from state import (
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
     bug_report_debounce_channels,
-    ticket_investigation_states,
-    get_or_create_ticket_investigation_state,
+    clear_ticket_investigation_job,
+    get_or_create_ticket_investigation_job,
     stopped_channels,
     pending_messages,
     pending_tasks,
@@ -36,12 +36,12 @@ class InitialInquiryView(View):
 
         channels_awaiting_initial_button_press.discard(interaction.channel.id)
         channel_intent_after_button[interaction.channel.id] = intent_category
-        investigation_state = get_or_create_ticket_investigation_state(interaction.channel.id)
-        investigation_state.requested_intent = intent_category
+        investigation_job = get_or_create_ticket_investigation_job(interaction.channel.id)
+        investigation_job.record_requested_intent(intent_category)
         if intent_category == "investigate_issue":
-            investigation_state.active_mode = "collecting"
+            investigation_job.begin_collecting()
         else:
-            investigation_state.active_mode = "waiting_for_user"
+            investigation_job.mark_waiting_for_user()
 
         if interaction.channel:
             await interaction.channel.send(prompt_message)
@@ -97,9 +97,9 @@ class InitialInquiryView(View):
         else:
             await interaction.followup.send(prompt, ephemeral=False)
         channel_intent_after_button[interaction.channel.id] = "other_free_form"
-        investigation_state = get_or_create_ticket_investigation_state(interaction.channel.id)
-        investigation_state.requested_intent = "other_free_form"
-        investigation_state.active_mode = "waiting_for_user"
+        investigation_job = get_or_create_ticket_investigation_job(interaction.channel.id)
+        investigation_job.record_requested_intent("other_free_form")
+        investigation_job.mark_waiting_for_user()
         logging.info(f"User selected 'Other' in {interaction.channel.id}. Awaiting free-form input.")
 
     async def handle_button_click(self, interaction: discord.Interaction, button_custom_id: str):
@@ -133,7 +133,7 @@ class StopBotView(View):
 
         stopped_channels.add(channel_id)
         bug_report_debounce_channels.discard(channel_id)
-        ticket_investigation_states.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
         pending_messages.pop(channel_id, None)
         task = pending_tasks.pop(channel_id, None)
         if task:

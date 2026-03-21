@@ -9,8 +9,8 @@ import config
 from router import select_starting_agent
 from state import (
     BotRunContext,
-    get_or_create_ticket_investigation_state,
-    ticket_investigation_states,
+    clear_ticket_investigation_job,
+    get_or_create_ticket_investigation_job,
 )
 from support_agents import (
     triage_agent,
@@ -92,7 +92,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
             project_context="yearn",
             initial_button_intent=initial_button_intent,
         )
-        investigation_state = get_or_create_ticket_investigation_state(channel_id)
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
         history = current_history or []
         input_list = history + [{"role": "user", "content": message}]
         try:
@@ -102,11 +102,11 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 input_list=input_list,
                 current_history=history,
                 run_context=context,
-                investigation_state=investigation_state,
+                investigation_job=investigation_job,
                 workflow_name="tests.ticket_flow",
             )
         finally:
-            ticket_investigation_states.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
 
     @staticmethod
     def _get_agent_tool(agent, tool_name: str):
