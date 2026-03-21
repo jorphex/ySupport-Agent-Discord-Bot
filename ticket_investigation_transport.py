@@ -4,7 +4,6 @@ from typing import Any
 from agents import TResponseInputItem
 
 from state import BotRunContext, InvestigationEvidence, TicketInvestigationJob
-from ticket_investigation_executor import TicketExecutionResult
 from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketTurnRequest
 
 
@@ -96,40 +95,41 @@ class TicketExecutionTransportResult:
     updated_job: dict[str, Any]
 
     @classmethod
-    def from_execution_result(
+    def from_execution_parts(
         cls,
-        result: TicketExecutionResult,
+        flow_outcome: TicketAgentFlowOutcome,
+        updated_job: TicketInvestigationJob,
     ) -> "TicketExecutionTransportResult":
         return cls(
             flow_outcome={
-                "raw_final_reply": result.flow_outcome.raw_final_reply,
-                "conversation_history": list(result.flow_outcome.conversation_history),
-                "completed_agent_key": result.flow_outcome.completed_agent_key,
-                "requires_human_handoff": result.flow_outcome.requires_human_handoff,
+                "raw_final_reply": flow_outcome.raw_final_reply,
+                "conversation_history": list(flow_outcome.conversation_history),
+                "completed_agent_key": flow_outcome.completed_agent_key,
+                "requires_human_handoff": flow_outcome.requires_human_handoff,
             },
             updated_job={
-                "channel_id": result.updated_job.channel_id,
-                "requested_intent": result.updated_job.requested_intent,
-                "mode": result.updated_job.mode,
-                "current_specialty": result.updated_job.current_specialty,
-                "last_specialty": result.updated_job.last_specialty,
+                "channel_id": updated_job.channel_id,
+                "requested_intent": updated_job.requested_intent,
+                "mode": updated_job.mode,
+                "current_specialty": updated_job.current_specialty,
+                "last_specialty": updated_job.last_specialty,
                 "evidence": {
-                    "wallet": result.updated_job.evidence.wallet,
-                    "chain": result.updated_job.evidence.chain,
-                    "tx_hashes": list(result.updated_job.evidence.tx_hashes),
+                    "wallet": updated_job.evidence.wallet,
+                    "chain": updated_job.evidence.chain,
+                    "tx_hashes": list(updated_job.evidence.tx_hashes),
                 },
             },
         )
 
-    def to_execution_result(self) -> TicketExecutionResult:
-        return TicketExecutionResult(
-            flow_outcome=TicketAgentFlowOutcome(
+    def to_execution_parts(self) -> tuple[TicketAgentFlowOutcome, TicketInvestigationJob]:
+        return (
+            TicketAgentFlowOutcome(
                 raw_final_reply=self.flow_outcome["raw_final_reply"],
                 conversation_history=list(self.flow_outcome["conversation_history"]),
                 completed_agent_key=self.flow_outcome.get("completed_agent_key"),
                 requires_human_handoff=self.flow_outcome.get("requires_human_handoff", False),
             ),
-            updated_job=TicketInvestigationJob(
+            TicketInvestigationJob(
                 channel_id=self.updated_job["channel_id"],
                 requested_intent=self.updated_job.get("requested_intent"),
                 mode=self.updated_job.get("mode", "idle"),

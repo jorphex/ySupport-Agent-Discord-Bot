@@ -43,7 +43,11 @@ from state import (
     public_conversations,
     stopped_channels,
 )
-from ticket_investigation_executor import LocalTicketInvestigationExecutor, TicketExecutionHooks
+from ticket_investigation_executor import (
+    LocalTicketInvestigationExecutor,
+    LoopbackTransportTicketInvestigationExecutor,
+    TicketExecutionHooks,
+)
 from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest, _resolve_agent
 from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
@@ -72,7 +76,12 @@ class TicketBot(discord.Client):
         self.runner = Runner
         self.investigation_runtime = TicketInvestigationRuntime(self.runner)
         self.investigation_worker = TicketInvestigationWorker(self.investigation_runtime)
-        self.investigation_executor = LocalTicketInvestigationExecutor(self.investigation_worker)
+        self.local_investigation_executor = LocalTicketInvestigationExecutor(
+            self.investigation_worker
+        )
+        self.investigation_executor = LoopbackTransportTicketInvestigationExecutor(
+            self.local_investigation_executor
+        )
 
     async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
         message = (

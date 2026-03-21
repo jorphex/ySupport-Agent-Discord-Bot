@@ -13,9 +13,11 @@ from state import (
 )
 from ticket_investigation_executor import (
     LocalTicketInvestigationExecutor,
+    LoopbackTicketExecutionTransport,
     LoopbackTransportTicketInvestigationExecutor,
-    TicketExecutionResult,
+    TicketExecutionTransport,
     TicketExecutionHooks,
+    TransportTicketInvestigationExecutor,
 )
 from ticket_investigation_transport import (
     TicketExecutionTransportRequest,
@@ -524,6 +526,89 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.updated_job.current_specialty, "docs")
         self.assertEqual(result.updated_job.mode, "investigating")
 
+    async def test_transport_executor_uses_transport_boundary(self) -> None:
+        @dataclass
+        class _FakeTransport:
+            requests: list
+            hooks: list
+
+            async def execute_transport_turn(self, request, hooks=None):
+                self.requests.append(request)
+                self.hooks.append(hooks)
+                updated_job = TicketInvestigationJob(
+                    channel_id=request.investigation_job["channel_id"]
+                )
+                updated_job.begin_investigating()
+                updated_job.complete_specialist_turn("bug")
+                return TicketExecutionTransportResult.from_execution_parts(
+                    TicketAgentFlowOutcome(
+                        raw_final_reply="transport-ok",
+                        conversation_history=[],
+                        completed_agent_key="bug",
+                        requires_human_handoff=False,
+                    ),
+                    updated_job,
+                )
+
+        async def fake_send_bug_review_status() -> None:
+            return None
+
+        transport: TicketExecutionTransport = _FakeTransport(requests=[], hooks=[])
+        executor = TransportTicketInvestigationExecutor(transport)
+        request = TicketTurnRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[],
+            run_context=BotRunContext(channel_id=95, project_context="yearn"),
+            investigation_job=TicketInvestigationJob(channel_id=95),
+            workflow_name="tests.executor.transport",
+        )
+
+        result = await executor.execute_turn(
+            request,
+            hooks=TicketExecutionHooks(
+                send_bug_review_status=fake_send_bug_review_status,
+            ),
+        )
+
+        self.assertEqual(len(transport.requests), 1)
+        self.assertTrue(transport.requests[0].wants_bug_review_status)
+        self.assertIs(transport.hooks[0].send_bug_review_status, fake_send_bug_review_status)
+        self.assertEqual(result.flow_outcome.raw_final_reply, "transport-ok")
+        self.assertEqual(result.updated_job.current_specialty, "bug")
+        self.assertEqual(result.updated_job.mode, "investigating")
+
+    async def test_loopback_transport_rehydrates_request_for_delegate(self) -> None:
+        worker = _FakeWorker(requests=[])
+        transport = LoopbackTicketExecutionTransport(
+            LocalTicketInvestigationExecutor(worker)
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[],
+            run_context={
+                "channel_id": 96,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 96,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.transport.loopback",
+            wants_bug_review_status=False,
+        )
+
+        result = await transport.execute_transport_turn(request)
+        flow_outcome, updated_job = result.to_execution_parts()
+
+        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(worker.requests[0].run_context.channel_id, 96)
+        self.assertEqual(flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(updated_job.current_specialty, "docs")
+
 
 class TicketTransportTests(unittest.TestCase):
     def test_transport_request_round_trip_preserves_job_and_context(self) -> None:
@@ -566,24 +651,22 @@ class TicketTransportTests(unittest.TestCase):
         job = TicketInvestigationJob(channel_id=95)
         job.begin_investigating()
         job.complete_specialist_turn("bug")
-        result = TicketExecutionTransportResult.from_execution_result(
-            TicketExecutionResult(
-                flow_outcome=TicketAgentFlowOutcome(
-                    raw_final_reply="ok",
-                    conversation_history=[{"role": "assistant", "content": "ok"}],
-                    completed_agent_key="bug",
-                    requires_human_handoff=False,
-                ),
-                updated_job=job,
-            )
+        result = TicketExecutionTransportResult.from_execution_parts(
+            TicketAgentFlowOutcome(
+                raw_final_reply="ok",
+                conversation_history=[{"role": "assistant", "content": "ok"}],
+                completed_agent_key="bug",
+                requires_human_handoff=False,
+            ),
+            job,
         )
 
-        hydrated = result.to_execution_result()
+        flow_outcome, updated_job = result.to_execution_parts()
 
-        self.assertEqual(hydrated.flow_outcome.raw_final_reply, "ok")
-        self.assertEqual(hydrated.flow_outcome.completed_agent_key, "bug")
-        self.assertEqual(hydrated.updated_job.mode, "investigating")
-        self.assertEqual(hydrated.updated_job.current_specialty, "bug")
+        self.assertEqual(flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(flow_outcome.completed_agent_key, "bug")
+        self.assertEqual(updated_job.mode, "investigating")
+        self.assertEqual(updated_job.current_specialty, "bug")
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
