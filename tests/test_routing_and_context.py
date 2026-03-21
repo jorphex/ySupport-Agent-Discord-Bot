@@ -647,6 +647,35 @@ class TicketTransportTests(unittest.TestCase):
             ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
         )
 
+    def test_transport_request_json_round_trip_preserves_job_and_context(self) -> None:
+        request = TicketTurnRequest(
+            aggregated_text="help",
+            input_list=[{"role": "user", "content": "help"}],
+            current_history=[{"role": "assistant", "content": "context"}],
+            run_context=BotRunContext(
+                channel_id=97,
+                category_id=12,
+                project_context="yearn",
+                initial_button_intent="investigate_issue",
+            ),
+            investigation_job=TicketInvestigationJob(channel_id=97),
+            workflow_name="tests.transport.json",
+        )
+        request.investigation_job.begin_collecting("investigate_issue")
+        request.investigation_job.remember_chain("katana")
+        transport = TicketExecutionTransportRequest.from_turn_request(
+            request,
+            wants_bug_review_status=True,
+        )
+
+        hydrated = TicketExecutionTransportRequest.from_json(
+            transport.to_json()
+        ).to_turn_request()
+
+        self.assertEqual(hydrated.run_context.channel_id, 97)
+        self.assertEqual(hydrated.investigation_job.mode, "collecting")
+        self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
+
     def test_transport_result_round_trip_preserves_flow_and_job(self) -> None:
         job = TicketInvestigationJob(channel_id=95)
         job.begin_investigating()
@@ -667,6 +696,29 @@ class TicketTransportTests(unittest.TestCase):
         self.assertEqual(flow_outcome.completed_agent_key, "bug")
         self.assertEqual(updated_job.mode, "investigating")
         self.assertEqual(updated_job.current_specialty, "bug")
+
+    def test_transport_result_json_round_trip_preserves_flow_and_job(self) -> None:
+        job = TicketInvestigationJob(channel_id=98)
+        job.begin_investigating()
+        job.complete_specialist_turn("data")
+        transport_result = TicketExecutionTransportResult.from_execution_parts(
+            TicketAgentFlowOutcome(
+                raw_final_reply="answer",
+                conversation_history=[{"role": "assistant", "content": "answer"}],
+                completed_agent_key="data",
+                requires_human_handoff=False,
+            ),
+            job,
+        )
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            transport_result.to_json()
+        ).to_execution_parts()
+
+        self.assertEqual(flow_outcome.raw_final_reply, "answer")
+        self.assertEqual(flow_outcome.completed_agent_key, "data")
+        self.assertEqual(updated_job.mode, "investigating")
+        self.assertEqual(updated_job.current_specialty, "data")
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):

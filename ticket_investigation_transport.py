@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 from typing import Any
 
 from agents import TResponseInputItem
@@ -16,6 +17,39 @@ class TicketExecutionTransportRequest:
     investigation_job: dict[str, Any]
     workflow_name: str
     wants_bug_review_status: bool = False
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "aggregated_text": self.aggregated_text,
+            "input_list": list(self.input_list),
+            "current_history": list(self.current_history),
+            "run_context": dict(self.run_context),
+            "investigation_job": dict(self.investigation_job),
+            "workflow_name": self.workflow_name,
+            "wants_bug_review_status": self.wants_bug_review_status,
+        }
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, Any],
+    ) -> "TicketExecutionTransportRequest":
+        return cls(
+            aggregated_text=payload["aggregated_text"],
+            input_list=list(payload.get("input_list", [])),
+            current_history=list(payload.get("current_history", [])),
+            run_context=dict(payload.get("run_context", {})),
+            investigation_job=dict(payload.get("investigation_job", {})),
+            workflow_name=payload["workflow_name"],
+            wants_bug_review_status=payload.get("wants_bug_review_status", False),
+        )
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_payload())
+
+    @classmethod
+    def from_json(cls, raw_json: str) -> "TicketExecutionTransportRequest":
+        return cls.from_payload(json.loads(raw_json))
 
     @classmethod
     def from_turn_request(
@@ -93,6 +127,29 @@ class TicketExecutionTransportRequest:
 class TicketExecutionTransportResult:
     flow_outcome: dict[str, Any]
     updated_job: dict[str, Any]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "flow_outcome": dict(self.flow_outcome),
+            "updated_job": dict(self.updated_job),
+        }
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, Any],
+    ) -> "TicketExecutionTransportResult":
+        return cls(
+            flow_outcome=dict(payload.get("flow_outcome", {})),
+            updated_job=dict(payload.get("updated_job", {})),
+        )
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_payload())
+
+    @classmethod
+    def from_json(cls, raw_json: str) -> "TicketExecutionTransportResult":
+        return cls.from_payload(json.loads(raw_json))
 
     @classmethod
     def from_execution_parts(

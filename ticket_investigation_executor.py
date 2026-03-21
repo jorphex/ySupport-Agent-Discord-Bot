@@ -72,7 +72,9 @@ class LoopbackTicketExecutionTransport:
         request: TicketExecutionTransportRequest,
         hooks: TicketExecutionHooks | None = None,
     ) -> TicketExecutionTransportResult:
-        hydrated_request = request.to_turn_request()
+        hydrated_request = TicketExecutionTransportRequest.from_json(
+            request.to_json()
+        ).to_turn_request()
         hydrated_hooks = None
         if request.wants_bug_review_status and hooks is not None:
             hydrated_hooks = TicketExecutionHooks(
@@ -82,9 +84,11 @@ class LoopbackTicketExecutionTransport:
             hydrated_request,
             hooks=hydrated_hooks,
         )
-        return TicketExecutionTransportResult.from_execution_parts(
-            result.flow_outcome,
-            result.updated_job,
+        return TicketExecutionTransportResult.from_json(
+            TicketExecutionTransportResult.from_execution_parts(
+                result.flow_outcome,
+                result.updated_job,
+            ).to_json()
         )
 
 
