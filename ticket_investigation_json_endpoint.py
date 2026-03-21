@@ -4,6 +4,11 @@ from collections.abc import Sequence
 from typing import Protocol
 
 import config
+from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
+from ticket_investigation_codex_endpoint import (
+    CodexExecTicketExecutionJsonEndpoint,
+    build_codex_exec_allowed_prefixes,
+)
 from ticket_investigation_executor import (
     TicketExecutionHooks,
     TicketInvestigationExecutor,
@@ -81,6 +86,21 @@ def build_ticket_execution_json_endpoint(
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
+    if config.TICKET_EXECUTION_ENDPOINT == "codex_exec":
+        command = list(_codex_command())
+        return CodexExecTicketExecutionJsonEndpoint(
+            repo_root=config.BASE_DIR,
+            codex_command=command,
+            model=config.TICKET_EXECUTION_CODEX_MODEL,
+            allowed_command_prefixes=build_codex_exec_allowed_prefixes(
+                command,
+                config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES,
+            ),
+            cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
+            env=_subprocess_env(),
+            artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
+            run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
+        )
     raise ValueError(
         "Unsupported TICKET_EXECUTION_ENDPOINT value: "
         f"{config.TICKET_EXECUTION_ENDPOINT}"
@@ -91,6 +111,12 @@ def _subprocess_command() -> Sequence[str]:
     if config.TICKET_EXECUTION_SUBPROCESS_COMMAND:
         return config.TICKET_EXECUTION_SUBPROCESS_COMMAND
     return [sys.executable, "-m", "ticket_investigation_worker_cli"]
+
+
+def _codex_command() -> Sequence[str]:
+    if config.TICKET_EXECUTION_CODEX_COMMAND:
+        return config.TICKET_EXECUTION_CODEX_COMMAND
+    return DEFAULT_CODEX_EXEC_COMMAND
 
 
 def _allowed_subprocess_prefixes(command: Sequence[str]) -> list[list[str]]:
@@ -109,6 +135,8 @@ def _subprocess_env() -> dict[str, str]:
         "MCP_SERVER_API_KEY",
         "GITHUB_TOKEN",
         "RUN_LLM_E2E_TESTS",
+        "PATH",
+        "HOME",
     }
     allowed_keys.update(config.TICKET_EXECUTION_SUBPROCESS_ENV_KEYS)
 

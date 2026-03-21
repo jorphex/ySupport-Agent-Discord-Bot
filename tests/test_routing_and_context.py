@@ -23,6 +23,9 @@ from ticket_investigation_codex_bundle import (
     DEFAULT_CODEX_EXEC_COMMAND,
     build_codex_ticket_execution_bundle,
 )
+from ticket_investigation_codex_endpoint import (
+    CodexExecTicketExecutionJsonEndpoint,
+)
 from ticket_investigation_subprocess_endpoint import (
     SubprocessTicketExecutionJsonEndpoint,
 )
@@ -1126,6 +1129,93 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(flow_outcome.raw_final_reply.startswith(run_root))
             self.assertTrue(os.path.isdir(flow_outcome.raw_final_reply))
 
+    async def test_codex_exec_json_endpoint_round_trips_response_and_writes_bundle(self) -> None:
+        fake_codex = (
+            "import json,os,pathlib,sys; "
+            "prompt=sys.stdin.read(); "
+            "cwd=pathlib.Path(os.getcwd()); "
+            "request=json.loads((cwd/'request.json').read_text()); "
+            "reply='codex-ok:{}:{}:{}:{}:{}'.format("
+            "request['investigation_job'].get('evidence',{}).get('chain'),"
+            "'--output-schema' in sys.argv,"
+            "(cwd/'response_schema.json').exists(),"
+            "(cwd/'codex_prompt.txt').exists(),"
+            "'Read the ticket execution request from request.json.' in prompt"
+            "); "
+            "response={"
+            "'flow_outcome':{"
+            "'raw_final_reply':reply,"
+            "'conversation_history':[],"
+            "'completed_agent_key':'data',"
+            "'requires_human_handoff':False"
+            "},"
+            "'updated_job':{"
+            "'channel_id':request['investigation_job']['channel_id'],"
+            "'requested_intent':request['investigation_job'].get('requested_intent'),"
+            "'mode':'investigating',"
+            "'current_specialty':'data',"
+            "'last_specialty':'data',"
+            "'evidence':request['investigation_job'].get('evidence',{})"
+            "}"
+            "}; "
+            "print('codex-stderr', file=sys.stderr); "
+            "sys.stdout.write(json.dumps(response))"
+        )
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            endpoint = CodexExecTicketExecutionJsonEndpoint(
+                repo_root="/root/bots/discord/ysupport",
+                codex_command=[sys.executable, "-c", fake_codex],
+                allowed_command_prefixes=[[sys.executable, "-c", fake_codex]],
+                artifact_dir=artifact_dir,
+            )
+            request = TicketExecutionTransportRequest(
+                aggregated_text="investigate",
+                input_list=[{"role": "user", "content": "investigate"}],
+                current_history=[],
+                run_context={
+                    "channel_id": 106,
+                    "project_context": "yearn",
+                    "repo_last_search_artifact_refs": [],
+                },
+                investigation_job={
+                    "channel_id": 106,
+                    "requested_intent": "investigate_issue",
+                    "mode": "collecting",
+                    "evidence": {"wallet": None, "chain": "katana", "tx_hashes": []},
+                },
+                workflow_name="tests.endpoint.codex_exec",
+                wants_bug_review_status=False,
+            )
+
+            response_json = await endpoint.execute_json_turn(request.to_json())
+
+            artifact_entries = os.listdir(artifact_dir)
+            self.assertEqual(len(artifact_entries), 1)
+            run_dir = os.path.join(artifact_dir, artifact_entries[0])
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "request.json")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "response_schema.json")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "codex_prompt.txt")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "stdout.txt")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "stderr.txt")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "metadata.json")))
+
+        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
+            response_json
+        ).to_execution_parts()
+        self.assertEqual(
+            flow_outcome.raw_final_reply,
+            "codex-ok:katana:True:True:True:True",
+        )
+        self.assertEqual(updated_job.current_specialty, "data")
+
+    def test_codex_exec_json_endpoint_rejects_disallowed_command(self) -> None:
+        with self.assertRaises(ValueError):
+            CodexExecTicketExecutionJsonEndpoint(
+                repo_root="/root/bots/discord/ysupport",
+                codex_command=[sys.executable, "-c", "print('nope')"],
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+
 
 class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_returns_local_endpoint_by_default(self) -> None:
@@ -1178,17 +1268,41 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
     def test_build_endpoint_rejects_unknown_mode(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_command = config.TICKET_EXECUTION_SUBPROCESS_COMMAND
+        original_codex_command = config.TICKET_EXECUTION_CODEX_COMMAND
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         try:
             config.TICKET_EXECUTION_ENDPOINT = "invalid"
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
+            config.TICKET_EXECUTION_CODEX_COMMAND = []
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
             with self.assertRaises(ValueError):
                 build_ticket_execution_json_endpoint(_FakeExecutor())
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = original_command
+            config.TICKET_EXECUTION_CODEX_COMMAND = original_codex_command
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
+
+    def test_build_endpoint_returns_codex_exec_endpoint(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
+        original_model = config.TICKET_EXECUTION_CODEX_MODEL
+        original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
+            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
+            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
+            config.TICKET_EXECUTION_CODEX_MODEL = original_model
+            config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
+
+        self.assertIsInstance(endpoint, CodexExecTicketExecutionJsonEndpoint)
+        self.assertEqual(endpoint.codex_command[:2], ["codex", "exec"])
+        self.assertEqual(endpoint.model, "gpt-5.4")
 
 
 class TicketTransportTests(unittest.TestCase):
