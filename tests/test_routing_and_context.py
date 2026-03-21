@@ -11,7 +11,8 @@ from state import (
     clear_ticket_investigation_job,
     get_or_create_ticket_investigation_job,
 )
-from ticket_investigation_worker import TicketInvestigationWorker
+from ticket_investigation_executor import LocalTicketInvestigationExecutor, TicketExecutionHooks
+from ticket_investigation_worker import TicketInvestigationWorker, TicketWorkerResult
 from support_agents import (
     TicketTriageDecision,
     ticket_triage_router_agent,
@@ -443,6 +444,50 @@ class TicketWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(job.mode, "escalated_to_human")
         self.assertIsNone(job.current_specialty)
+
+
+@dataclass
+class _FakeWorker:
+    requests: list
+
+    async def execute_turn(self, request):
+        self.requests.append(request)
+        return TicketWorkerResult(
+            flow_outcome=TicketAgentFlowOutcome(
+                raw_final_reply="ok",
+                conversation_history=[],
+                completed_agent_key=None,
+                requires_human_handoff=False,
+            )
+        )
+
+
+class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_executor_injects_hooks_into_request(self) -> None:
+        worker = _FakeWorker(requests=[])
+        executor = LocalTicketInvestigationExecutor(worker)
+
+        async def fake_send_bug_review_status() -> None:
+            return None
+
+        request = TicketTurnRequest(
+            aggregated_text="help",
+            input_list=[],
+            current_history=[],
+            run_context=BotRunContext(channel_id=92, project_context="yearn"),
+            investigation_job=TicketInvestigationJob(channel_id=92),
+            workflow_name="tests.executor",
+        )
+        await executor.execute_turn(
+            request,
+            hooks=TicketExecutionHooks(
+                send_bug_review_status=fake_send_bug_review_status,
+            ),
+        )
+
+        self.assertEqual(len(worker.requests), 1)
+        self.assertIs(worker.requests[0].send_bug_review_status, fake_send_bug_review_status)
+        self.assertIsNone(request.send_bug_review_status)
 
 
 class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):

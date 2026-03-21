@@ -43,6 +43,7 @@ from state import (
     public_conversations,
     stopped_channels,
 )
+from ticket_investigation_executor import LocalTicketInvestigationExecutor, TicketExecutionHooks
 from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest, _resolve_agent
 from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
@@ -71,6 +72,7 @@ class TicketBot(discord.Client):
         self.runner = Runner
         self.investigation_runtime = TicketInvestigationRuntime(self.runner)
         self.investigation_worker = TicketInvestigationWorker(self.investigation_runtime)
+        self.investigation_executor = LocalTicketInvestigationExecutor(self.investigation_worker)
 
     async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
         message = (
@@ -406,7 +408,7 @@ class TicketBot(discord.Client):
                         f"Ticket Channel {channel_id} ({run_context.project_context}, "
                         f"Button Intent: {run_context.initial_button_intent})"
                     )
-                    worker_result = await self.investigation_worker.execute_turn(
+                    worker_result = await self.investigation_executor.execute_turn(
                         TicketTurnRequest(
                             aggregated_text=aggregated_text,
                             input_list=input_list,
@@ -414,8 +416,10 @@ class TicketBot(discord.Client):
                             run_context=run_context,
                             investigation_job=investigation_job,
                             workflow_name=workflow_name,
+                        ),
+                        hooks=TicketExecutionHooks(
                             send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
-                        )
+                        ),
                     )
                     flow_outcome = worker_result.flow_outcome
                     conversation_threads[channel_id] = flow_outcome.conversation_history
