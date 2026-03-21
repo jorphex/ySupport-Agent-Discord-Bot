@@ -164,6 +164,14 @@ def _codex_command() -> Sequence[str]:
     return DEFAULT_CODEX_EXEC_COMMAND
 
 
+def resolve_ticket_execution_base_command(mode: str) -> list[str] | None:
+    if mode == "subprocess":
+        return list(_subprocess_command())
+    if mode == "codex_exec":
+        return list(_codex_command())
+    return None
+
+
 def _allowed_subprocess_prefixes(command: Sequence[str]) -> list[list[str]]:
     prefixes = [list(command)]
     for prefix in config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES:

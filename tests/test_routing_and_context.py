@@ -211,6 +211,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertIn("ticket_execution", status)
         self.assertIn("repo_context", status)
         self.assertTrue(status["ticket_execution"]["validation_ok"])
+        self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
         self.assertEqual(status["repo_context"]["state"], "ready")
 
     def test_ticket_execution_status_main_returns_nonzero_for_invalid_codex_policy(self) -> None:
@@ -239,7 +240,41 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         payload = json.loads(captured.getvalue())
         self.assertFalse(payload["ticket_execution"]["validation_ok"])
+        self.assertFalse(payload["ticket_execution"]["endpoint_build_ok"])
         self.assertIn("requires TICKET_EXECUTION_ARTIFACT_DIR", payload["ticket_execution"]["validation_error"])
+
+    def test_build_ticket_execution_status_reports_command_probe_for_codex(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
+        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
+            config.TICKET_EXECUTION_CODEX_COMMAND = [sys.executable, "-c", "print('ok')"]
+            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
+            with patch(
+                "ticket_execution_status.get_repo_context_status",
+                return_value={"state": "ready", "fresh": True},
+            ):
+                status = build_ticket_execution_status()
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
+            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
+            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
+
+        self.assertTrue(status["ticket_execution"]["validation_ok"])
+        self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
+        self.assertEqual(
+            status["ticket_execution"]["endpoint_class"],
+            "FailoverTicketExecutionJsonEndpoint",
+        )
+        primary_probe = status["ticket_execution"]["primary_command_probe"]
+        self.assertIsNotNone(primary_probe)
+        assert primary_probe is not None
+        self.assertTrue(primary_probe["available"])
+        self.assertEqual(primary_probe["command"][:2], [sys.executable, "-c"])
 
 
 class InvestigationJobTests(unittest.TestCase):
