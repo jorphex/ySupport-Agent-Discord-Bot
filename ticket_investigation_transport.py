@@ -8,6 +8,55 @@ from state import BotRunContext, InvestigationEvidence, TicketInvestigationJob
 from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketTurnRequest
 
 
+TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "aggregated_text",
+        "input_list",
+        "current_history",
+        "run_context",
+        "investigation_job",
+        "workflow_name",
+        "wants_bug_review_status",
+    ],
+    "properties": {
+        "aggregated_text": {"type": "string"},
+        "input_list": {"type": "array"},
+        "current_history": {"type": "array"},
+        "run_context": {"type": "object"},
+        "investigation_job": {"type": "object"},
+        "workflow_name": {"type": "string"},
+        "wants_bug_review_status": {"type": "boolean"},
+    },
+    "additionalProperties": False,
+}
+
+TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["flow_outcome", "updated_job"],
+    "properties": {
+        "flow_outcome": {
+            "type": "object",
+            "required": [
+                "raw_final_reply",
+                "conversation_history",
+                "completed_agent_key",
+                "requires_human_handoff",
+            ],
+            "properties": {
+                "raw_final_reply": {"type": "string"},
+                "conversation_history": {"type": "array"},
+                "completed_agent_key": {"type": ["string", "null"]},
+                "requires_human_handoff": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+        "updated_job": {"type": "object"},
+    },
+    "additionalProperties": False,
+}
+
+
 @dataclass
 class TicketExecutionTransportRequest:
     aggregated_text: str

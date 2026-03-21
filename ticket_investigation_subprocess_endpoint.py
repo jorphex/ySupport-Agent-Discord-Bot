@@ -7,6 +7,8 @@ import uuid
 
 from ticket_investigation_executor import TicketExecutionHooks
 from ticket_investigation_transport import (
+    TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA,
+    TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -157,6 +159,14 @@ class SubprocessTicketExecutionJsonEndpoint:
         if run_dir is None or not self.artifact_dir:
             return run_dir
         (run_dir / "request.json").write_text(request_json, encoding="utf-8")
+        (run_dir / "request_schema.json").write_text(
+            json.dumps(TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        (run_dir / "response_schema.json").write_text(
+            json.dumps(TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
         return run_dir
 
     def _write_artifacts(

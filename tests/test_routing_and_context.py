@@ -31,6 +31,8 @@ from ticket_investigation_executor import (
     TransportTicketInvestigationExecutor,
 )
 from ticket_investigation_transport import (
+    TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA,
+    TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -1039,6 +1041,8 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(artifact_entries), 1)
             run_dir = os.path.join(artifact_dir, artifact_entries[0])
             self.assertTrue(os.path.exists(os.path.join(run_dir, "request.json")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "request_schema.json")))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, "response_schema.json")))
             self.assertTrue(os.path.exists(os.path.join(run_dir, "stdout.txt")))
             self.assertTrue(os.path.exists(os.path.join(run_dir, "stderr.txt")))
             self.assertTrue(os.path.exists(os.path.join(run_dir, "metadata.json")))
@@ -1184,6 +1188,24 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
 
 
 class TicketTransportTests(unittest.TestCase):
+    def test_transport_schemas_cover_required_top_level_fields(self) -> None:
+        self.assertEqual(
+            TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA["required"],
+            [
+                "aggregated_text",
+                "input_list",
+                "current_history",
+                "run_context",
+                "investigation_job",
+                "workflow_name",
+                "wants_bug_review_status",
+            ],
+        )
+        self.assertEqual(
+            TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA["required"],
+            ["flow_outcome", "updated_job"],
+        )
+
     def test_transport_request_round_trip_preserves_job_and_context(self) -> None:
         request = TicketTurnRequest(
             aggregated_text="help",
