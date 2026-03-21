@@ -520,6 +520,9 @@ class TicketBot(discord.Client):
 
 # Run the Bot
 if __name__ == "__main__":
+    config.validate_runtime_environment_config()
+    config.validate_ticket_execution_runtime_config()
+
     intents = discord.Intents.default()
     intents.message_content = True
     intents.guilds = True

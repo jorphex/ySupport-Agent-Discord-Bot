@@ -9,6 +9,14 @@ from repo_context import get_repo_context_status
 
 
 def build_ticket_execution_status() -> dict[str, Any]:
+    runtime_validation_error = None
+    try:
+        config.validate_runtime_environment_config()
+        runtime_validation_ok = True
+    except ValueError as exc:
+        runtime_validation_ok = False
+        runtime_validation_error = str(exc)
+
     validation_error = None
     try:
         config.validate_ticket_execution_runtime_config()
@@ -23,6 +31,11 @@ def build_ticket_execution_status() -> dict[str, Any]:
         or config.TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_exec"
     )
     return {
+        "runtime_environment": {
+            "validation_ok": runtime_validation_ok,
+            "validation_error": runtime_validation_error,
+            "issues": config.runtime_environment_validation_issues(),
+        },
         "ticket_execution": {
             "primary_endpoint": config.TICKET_EXECUTION_ENDPOINT,
             "fallback_endpoint": config.TICKET_EXECUTION_FALLBACK_ENDPOINT or None,
@@ -48,7 +61,12 @@ def build_ticket_execution_status() -> dict[str, Any]:
 def main() -> int:
     status = build_ticket_execution_status()
     print(json.dumps(status, indent=2, sort_keys=True))
-    return 0 if status["ticket_execution"]["validation_ok"] else 1
+    return (
+        0
+        if status["ticket_execution"]["validation_ok"]
+        and status["runtime_environment"]["validation_ok"]
+        else 1
+    )
 
 
 def _probe_command(mode: str) -> dict[str, Any] | None:

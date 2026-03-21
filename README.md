@@ -52,8 +52,10 @@ Health check:
 
 - run `python -m ticket_execution_status`
 - it prints JSON with:
+  - runtime environment validation
   - execution primary/fallback
   - workspace/artifact policy
   - validation result and warnings
   - repo-context status
-- exit code is nonzero when the ticket execution config is invalid
+- exit code is nonzero when the runtime environment or ticket execution config is invalid
+- the Docker image also uses this command as its container `HEALTHCHECK`

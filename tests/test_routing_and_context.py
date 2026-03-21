@@ -199,6 +199,33 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
             config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
 
+    def test_runtime_environment_validation_requires_core_bot_settings(self) -> None:
+        original_openai = config.OPENAI_API_KEY
+        original_token = config.DISCORD_BOT_TOKEN
+        original_category = config.YEARN_TICKET_CATEGORY_ID
+        original_trigger = config.YEARN_PUBLIC_TRIGGER_CHAR
+        original_pr_channel = config.PR_MARKETING_CHANNEL_ID
+        original_handoff = config.HUMAN_HANDOFF_TARGET_USER_ID
+        try:
+            config.OPENAI_API_KEY = None
+            config.DISCORD_BOT_TOKEN = None
+            config.YEARN_TICKET_CATEGORY_ID = None
+            config.YEARN_PUBLIC_TRIGGER_CHAR = None
+            config.PR_MARKETING_CHANNEL_ID = None
+            config.HUMAN_HANDOFF_TARGET_USER_ID = None
+            with self.assertRaises(ValueError) as exc:
+                config.validate_runtime_environment_config()
+        finally:
+            config.OPENAI_API_KEY = original_openai
+            config.DISCORD_BOT_TOKEN = original_token
+            config.YEARN_TICKET_CATEGORY_ID = original_category
+            config.YEARN_PUBLIC_TRIGGER_CHAR = original_trigger
+            config.PR_MARKETING_CHANNEL_ID = original_pr_channel
+            config.HUMAN_HANDOFF_TARGET_USER_ID = original_handoff
+
+        self.assertIn("OPENAI_API_KEY is required", str(exc.exception))
+        self.assertIn("DISCORD_BOT_TOKEN is required", str(exc.exception))
+
 
 class TicketExecutionStatusTests(unittest.TestCase):
     def test_build_ticket_execution_status_reports_repo_context_and_valid_config(self) -> None:
@@ -209,8 +236,10 @@ class TicketExecutionStatusTests(unittest.TestCase):
             status = build_ticket_execution_status()
 
         self.assertIn("ticket_execution", status)
+        self.assertIn("runtime_environment", status)
         self.assertIn("repo_context", status)
         self.assertTrue(status["ticket_execution"]["validation_ok"])
+        self.assertTrue(status["runtime_environment"]["validation_ok"])
         self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
         self.assertEqual(status["repo_context"]["state"], "ready")
 
@@ -242,6 +271,31 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertFalse(payload["ticket_execution"]["validation_ok"])
         self.assertFalse(payload["ticket_execution"]["endpoint_build_ok"])
         self.assertIn("requires TICKET_EXECUTION_ARTIFACT_DIR", payload["ticket_execution"]["validation_error"])
+
+    def test_ticket_execution_status_main_returns_nonzero_for_invalid_runtime_env(self) -> None:
+        original_token = config.DISCORD_BOT_TOKEN
+        original_category = config.YEARN_TICKET_CATEGORY_ID
+        try:
+            config.DISCORD_BOT_TOKEN = None
+            config.YEARN_TICKET_CATEGORY_ID = None
+            captured = io.StringIO()
+            with patch(
+                "ticket_execution_status.get_repo_context_status",
+                return_value={"state": "disabled", "fresh": False},
+            ):
+                with redirect_stdout(captured):
+                    exit_code = ticket_execution_status_main()
+        finally:
+            config.DISCORD_BOT_TOKEN = original_token
+            config.YEARN_TICKET_CATEGORY_ID = original_category
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(captured.getvalue())
+        self.assertFalse(payload["runtime_environment"]["validation_ok"])
+        self.assertIn(
+            "DISCORD_BOT_TOKEN is required",
+            payload["runtime_environment"]["validation_error"],
+        )
 
     def test_build_ticket_execution_status_reports_command_probe_for_codex(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT

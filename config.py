@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_INVALID_ENV_ERRORS: dict[str, str] = {}
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -31,6 +33,17 @@ def _env_command_prefixes(name: str) -> list[list[str]]:
 def _env_csv(name: str) -> list[str]:
     raw_value = os.getenv(name, "")
     return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
+def _env_int(name: str, default: int | None = None) -> int | None:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        _INVALID_ENV_ERRORS[name] = f"{name} must be an integer"
+        return default
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -84,21 +97,25 @@ PUBLIC_TRIGGER_USER_IDS = set(
     for v in os.getenv("PUBLIC_TRIGGER_USER_IDS", "").split(",")
     if v.strip()
 )
-YEARN_TICKET_CATEGORY_ID = int(os.getenv("YEARN_TICKET_CATEGORY_ID"))
+YEARN_TICKET_CATEGORY_ID = _env_int("YEARN_TICKET_CATEGORY_ID")
 YEARN_PUBLIC_TRIGGER_CHAR = os.getenv("YEARN_PUBLIC_TRIGGER_CHAR")
 HUMAN_HANDOFF_TARGET_USER_ID = os.getenv("HUMAN_HANDOFF_TARGET_USER_ID")
 HUMAN_HANDOFF_TAG_PLACEHOLDER = os.getenv("HUMAN_HANDOFF_TAG_PLACEHOLDER", "{HUMAN_HANDOFF_TAG_PLACEHOLDER}",
 )
 
-CATEGORY_CONTEXT_MAP = {
-    YEARN_TICKET_CATEGORY_ID: "yearn",
-}
+CATEGORY_CONTEXT_MAP = (
+    {YEARN_TICKET_CATEGORY_ID: "yearn"}
+    if YEARN_TICKET_CATEGORY_ID is not None
+    else {}
+)
 
-TRIGGER_CONTEXT_MAP = {
-    YEARN_PUBLIC_TRIGGER_CHAR: "yearn",
-}
+TRIGGER_CONTEXT_MAP = (
+    {YEARN_PUBLIC_TRIGGER_CHAR: "yearn"}
+    if YEARN_PUBLIC_TRIGGER_CHAR
+    else {}
+)
 
-PR_MARKETING_CHANNEL_ID = int(os.getenv("PR_MARKETING_CHANNEL_ID"))
+PR_MARKETING_CHANNEL_ID = _env_int("PR_MARKETING_CHANNEL_ID")
 MAX_DISCORD_MESSAGE_LENGTH = 1990
 
 # --- Bot Behavior ---
@@ -174,6 +191,29 @@ def validate_ticket_execution_runtime_config() -> None:
             "codex_exec requires TICKET_EXECUTION_ARTIFACT_DIR or "
             "TICKET_EXECUTION_RUN_DIR_ROOT so each run has persistent workspace state."
         )
+
+
+def runtime_environment_validation_issues() -> list[str]:
+    issues: list[str] = list(_INVALID_ENV_ERRORS.values())
+    if not OPENAI_API_KEY:
+        issues.append("OPENAI_API_KEY is required")
+    if not DISCORD_BOT_TOKEN:
+        issues.append("DISCORD_BOT_TOKEN is required")
+    if YEARN_TICKET_CATEGORY_ID is None:
+        issues.append("YEARN_TICKET_CATEGORY_ID is required")
+    if not YEARN_PUBLIC_TRIGGER_CHAR:
+        issues.append("YEARN_PUBLIC_TRIGGER_CHAR is required")
+    if PR_MARKETING_CHANNEL_ID is None:
+        issues.append("PR_MARKETING_CHANNEL_ID is required")
+    if not HUMAN_HANDOFF_TARGET_USER_ID:
+        issues.append("HUMAN_HANDOFF_TARGET_USER_ID is required")
+    return issues
+
+
+def validate_runtime_environment_config() -> None:
+    issues = runtime_environment_validation_issues()
+    if issues:
+        raise ValueError("; ".join(issues))
 
 # --- Repo Context ---
 ENABLE_REPO_CONTEXT = _env_bool("ENABLE_REPO_CONTEXT", default=False)
