@@ -74,3 +74,12 @@ Health check:
 - exit code is nonzero when the runtime environment or ticket execution config is invalid
 - the Docker image also uses this command as its container `HEALTHCHECK`
 - run `python -m ticket_execution_status --smoke` to execute a deterministic smoke turn through the currently configured endpoint and fallback path
+
+## Ticket Transcript Helper
+
+For regression capture and ticket review, you can fetch a read-only normalized transcript from Discord without copying chat messages manually.
+
+- run `python -m ticket_transcript_fetch <channel_id_or_discord_link>`
+- add `--limit N` to control how many recent messages to fetch
+- add `--json` to emit normalized JSON instead of plain text
+- the helper uses the configured `DISCORD_BOT_TOKEN` and only reads message history for channels the bot can already access
