@@ -350,6 +350,11 @@ class TriageDecisionTests(unittest.TestCase):
                 "Next steps — which would you like? I can run a deeper onchain investigation or escalate."
             )
         )
+        self.assertTrue(
+            _reply_requests_tx_investigation_followup(
+                "If you want, I can (pick one): decode more logs, inspect related calls, or escalate. Which would you like?"
+            )
+        )
         self.assertFalse(
             _reply_requests_tx_investigation_followup(
                 "The tx failed because allowance was too low."

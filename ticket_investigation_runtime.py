@@ -143,35 +143,44 @@ def _reply_requests_human_handoff(reply_text: str) -> bool:
 
 def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
     lowered = reply_text.lower()
+    investigation_markers = (
+        "decode",
+        "deeper decode",
+        "receipt",
+        "log",
+        "contract call",
+        "continue investigating",
+        "continue the investigation",
+        "deeper on-chain inspection",
+        "deeper onchain investigation",
+        "inspect next",
+        "inspect",
+        "proceed",
+    )
+    if not any(marker in lowered for marker in investigation_markers):
+        return False
+
     invitation_markers = (
         "would you like me",
         "which would you like",
         "if you want",
         "if you need",
         "next steps",
+        "pick one",
         "tell me what to inspect next",
         "tell me what to inspect",
         "what to inspect next",
     )
-    if not any(marker in lowered for marker in invitation_markers):
-        return False
-    return any(
-        phrase in lowered
-        for phrase in (
-            "decode",
-            "deeper decode",
-            "receipt",
-            "log",
-            "contract call",
-            "continue investigating",
-            "continue the investigation",
-            "deeper on-chain inspection",
-            "deeper onchain investigation",
-            "inspect next",
-            "inspect",
-            "proceed",
-        )
+    if any(marker in lowered for marker in invitation_markers):
+        return True
+
+    option_menu_markers = (
+        "i can:",
+        "i can (",
+        "which one",
+        "which option",
     )
+    return any(marker in lowered for marker in option_menu_markers) and " or " in lowered
 
 
 def _is_withdrawal_followup(text: str) -> bool:

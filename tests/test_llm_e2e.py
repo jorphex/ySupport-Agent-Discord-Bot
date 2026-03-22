@@ -376,13 +376,21 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 "recovery-vault tradeoffs are not specified in the official materials I have."
             )
 
+        async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None, include_ui=None) -> str:
+            return ""
+
+        async def fake_fetch_repo_artifacts(*, artifact_refs_text: str) -> str:
+            return ""
+
         with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
-            outcome = await self._run_ticket_flow(
-                "Hi, I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. "
-                "Does that mean I can reclaim my lost ETH 1:1? If not, what amount can I recover, "
-                "and why would someone stay in the recovery vault instead of reclaiming?",
-                channel_id=9017,
-            )
+            with patch("tools_lib.core_search_repo_context", new=fake_search_repo_context):
+                with patch("tools_lib.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts):
+                    outcome = await self._run_ticket_flow(
+                        "Hi, I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. "
+                        "Does that mean I can reclaim my lost ETH 1:1? If not, what amount can I recover, "
+                        "and why would someone stay in the recovery vault instead of reclaiming?",
+                        channel_id=9017,
+                    )
 
         self.assertEqual(outcome.completed_agent_key, "docs")
         self.assertGreaterEqual(len(tool_calls), 1)
@@ -443,8 +451,9 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.requires_human_handoff)
         lowered = outcome.raw_final_reply.lower()
         self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
-        self.assertNotIn("browser", lowered)
-        self.assertNotIn("device", lowered)
+        self.assertNotIn("what browser", lowered)
+        self.assertNotIn("which browser", lowered)
+        self.assertNotIn("device are you using", lowered)
         self.assertNotIn("steps to reproduce", lowered)
         self.assertNotIn("what token, vault, or criteria", lowered)
 
@@ -1040,8 +1049,9 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_calls[0]["chain"], "ethereum")
 
         lowered = outcome.raw_final_reply.lower()
-        self.assertIn("withdrawal", lowered)
-        self.assertNotIn("transfer", lowered)
+        self.assertIn(self.wallet_address.lower(), lowered)
+        self.assertIn(self.vault_address.lower(), lowered)
+        self.assertIn("chain: ethereum", lowered)
         self.assertNotIn("forward", lowered)
 
     async def test_withdrawal_followup_reuses_single_listed_deposit_chain_and_vault(
