@@ -228,6 +228,316 @@ def _decode_logs_with_abis(web3_instance: Web3, logs: list[Any], event_abis: lis
     return decoded
 
 
+def _standard_tx_event_abis() -> list[dict[str, Any]]:
+    return [
+        {
+            "anonymous": False,
+            "inputs": [
+                {"indexed": True, "name": "from", "type": "address"},
+                {"indexed": True, "name": "to", "type": "address"},
+                {"indexed": False, "name": "value", "type": "uint256"},
+            ],
+            "name": "Transfer",
+            "type": "event",
+        },
+        {
+            "anonymous": False,
+            "inputs": [
+                {"indexed": True, "name": "owner", "type": "address"},
+                {"indexed": True, "name": "spender", "type": "address"},
+                {"indexed": False, "name": "value", "type": "uint256"},
+            ],
+            "name": "Approval",
+            "type": "event",
+        },
+        {
+            "anonymous": False,
+            "inputs": [
+                {"indexed": True, "name": "sender", "type": "address"},
+                {"indexed": True, "name": "owner", "type": "address"},
+                {"indexed": False, "name": "assets", "type": "uint256"},
+                {"indexed": False, "name": "shares", "type": "uint256"},
+            ],
+            "name": "Deposit",
+            "type": "event",
+        },
+        {
+            "anonymous": False,
+            "inputs": [
+                {"indexed": True, "name": "sender", "type": "address"},
+                {"indexed": True, "name": "receiver", "type": "address"},
+                {"indexed": True, "name": "owner", "type": "address"},
+                {"indexed": False, "name": "assets", "type": "uint256"},
+                {"indexed": False, "name": "shares", "type": "uint256"},
+            ],
+            "name": "Withdraw",
+            "type": "event",
+        },
+    ]
+
+
+async def _call_optional_contract_function(
+    web3_instance: Web3,
+    contract_address: str,
+    function_abi: dict[str, Any],
+    *,
+    block_identifier: Any = None,
+) -> Any:
+    contract = web3_instance.eth.contract(address=contract_address, abi=[function_abi])
+    contract_call = getattr(contract.functions, function_abi["name"])()
+    if block_identifier is None:
+        return await asyncio.to_thread(contract_call.call)
+    return await asyncio.to_thread(contract_call.call, block_identifier=block_identifier)
+
+
+async def _inspect_contract_profile(
+    web3_instance: Web3,
+    contract_address: str,
+    *,
+    block_identifier: Any = None,
+) -> dict[str, Any]:
+    checksum_address = Web3.to_checksum_address(contract_address)
+    profile: dict[str, Any] = {
+        "address": checksum_address,
+        "symbol": None,
+        "name": None,
+        "decimals": None,
+        "asset": None,
+        "asset_symbol": None,
+        "asset_decimals": None,
+        "kind": "unclassified",
+    }
+    code = await asyncio.to_thread(web3_instance.eth.get_code, checksum_address)
+    profile["has_code"] = bool(code and code != b"")
+    if not profile["has_code"]:
+        profile["kind"] = "eoa_or_missing_code"
+        return profile
+
+    symbol_abi = {
+        "type": "function",
+        "name": "symbol",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "string"}],
+    }
+    name_abi = {
+        "type": "function",
+        "name": "name",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "string"}],
+    }
+    decimals_abi = {
+        "type": "function",
+        "name": "decimals",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint8"}],
+    }
+    asset_abi = {
+        "type": "function",
+        "name": "asset",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}],
+    }
+    for field_name, abi in (
+        ("symbol", symbol_abi),
+        ("name", name_abi),
+        ("decimals", decimals_abi),
+    ):
+        try:
+            profile[field_name] = await _call_optional_contract_function(
+                web3_instance,
+                checksum_address,
+                abi,
+                block_identifier=block_identifier,
+            )
+        except Exception:
+            continue
+
+    try:
+        asset_address = await _call_optional_contract_function(
+            web3_instance,
+            checksum_address,
+            asset_abi,
+            block_identifier=block_identifier,
+        )
+        if Web3.is_address(asset_address):
+            checksum_asset = Web3.to_checksum_address(asset_address)
+            profile["asset"] = checksum_asset
+            profile["kind"] = "erc4626_like"
+            for asset_field, abi in (
+                ("asset_symbol", symbol_abi),
+                ("asset_decimals", decimals_abi),
+            ):
+                try:
+                    profile[asset_field] = await _call_optional_contract_function(
+                        web3_instance,
+                        checksum_asset,
+                        abi,
+                        block_identifier=block_identifier,
+                    )
+                except Exception:
+                    continue
+    except Exception:
+        if profile["symbol"] is not None or profile["decimals"] is not None:
+            profile["kind"] = "erc20_like"
+
+    return profile
+
+
+def _format_token_amount(raw_value: Any, decimals: Any) -> str | None:
+    if not isinstance(raw_value, int) or not isinstance(decimals, int):
+        return None
+    if decimals < 0 or decimals > 36:
+        return None
+    scaled_value = raw_value / (10 ** decimals)
+    return f"{scaled_value:.18f}".rstrip("0").rstrip(".")
+
+
+def _enrich_decoded_logs_with_profiles(
+    decoded_logs: list[dict[str, Any]],
+    profiles_by_address: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched_logs: list[dict[str, Any]] = []
+    for entry in decoded_logs:
+        enriched = dict(entry)
+        address = entry.get("address")
+        profile = profiles_by_address.get(Web3.to_checksum_address(address)) if address and Web3.is_address(address) else None
+        if profile:
+            enriched["contract_kind"] = profile.get("kind")
+            enriched["token_symbol"] = profile.get("symbol")
+            enriched["token_decimals"] = profile.get("decimals")
+            if profile.get("asset"):
+                enriched["asset"] = profile.get("asset")
+                enriched["asset_symbol"] = profile.get("asset_symbol")
+                enriched["asset_decimals"] = profile.get("asset_decimals")
+        args = entry.get("args")
+        if isinstance(args, dict):
+            for value_field in ("value", "assets", "shares"):
+                raw_value = args.get(value_field)
+                if isinstance(raw_value, int):
+                    decimals = None
+                    if value_field == "shares" and profile and isinstance(profile.get("decimals"), int):
+                        decimals = profile["decimals"]
+                    elif value_field == "assets" and profile and isinstance(profile.get("asset_decimals"), int):
+                        decimals = profile["asset_decimals"]
+                    elif value_field == "value" and profile and isinstance(profile.get("decimals"), int):
+                        decimals = profile["decimals"]
+                    formatted_value = _format_token_amount(raw_value, decimals)
+                    if formatted_value is not None:
+                        enriched[f"{value_field}_formatted"] = formatted_value
+        enriched_logs.append(enriched)
+    return enriched_logs
+
+
+def _summarize_transaction_investigation(
+    transaction: dict[str, Any],
+    enriched_logs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    tx_from = transaction.get("from")
+    tx_to = transaction.get("to")
+    summary: dict[str, Any] = {
+        "user_transfers_out": [],
+        "user_transfers_in": [],
+        "approvals": [],
+        "deposits": [],
+        "withdrawals": [],
+        "unclassified_logs": 0,
+        "notable_findings": [],
+    }
+
+    for entry in enriched_logs:
+        event_name = entry.get("event")
+        args = entry.get("args") if isinstance(entry.get("args"), dict) else {}
+        if event_name == "Transfer":
+            transfer_summary = {
+                "token": entry.get("token_symbol"),
+                "contract": entry.get("address"),
+                "from": args.get("from"),
+                "to": args.get("to"),
+                "value": args.get("value"),
+                "value_formatted": entry.get("value_formatted"),
+                "contract_kind": entry.get("contract_kind"),
+            }
+            if tx_from and args.get("from") == tx_from:
+                summary["user_transfers_out"].append(transfer_summary)
+            if tx_from and args.get("to") == tx_from:
+                summary["user_transfers_in"].append(transfer_summary)
+        elif event_name == "Approval":
+            summary["approvals"].append(
+                {
+                    "token": entry.get("token_symbol"),
+                    "contract": entry.get("address"),
+                    "owner": args.get("owner"),
+                    "spender": args.get("spender"),
+                    "value": args.get("value"),
+                    "value_formatted": entry.get("value_formatted"),
+                }
+            )
+        elif event_name == "Deposit":
+            summary["deposits"].append(
+                {
+                    "vault": entry.get("address"),
+                    "vault_symbol": entry.get("token_symbol"),
+                    "sender": args.get("sender"),
+                    "owner": args.get("owner"),
+                    "assets": args.get("assets"),
+                    "assets_formatted": entry.get("assets_formatted"),
+                    "asset_symbol": entry.get("asset_symbol"),
+                    "shares": args.get("shares"),
+                    "shares_formatted": entry.get("shares_formatted"),
+                }
+            )
+        elif event_name == "Withdraw":
+            summary["withdrawals"].append(
+                {
+                    "vault": entry.get("address"),
+                    "vault_symbol": entry.get("token_symbol"),
+                    "sender": args.get("sender"),
+                    "receiver": args.get("receiver"),
+                    "owner": args.get("owner"),
+                    "assets": args.get("assets"),
+                    "assets_formatted": entry.get("assets_formatted"),
+                    "asset_symbol": entry.get("asset_symbol"),
+                    "shares": args.get("shares"),
+                    "shares_formatted": entry.get("shares_formatted"),
+                }
+            )
+        elif event_name is None:
+            summary["unclassified_logs"] += 1
+
+    if summary["user_transfers_out"]:
+        summary["notable_findings"].append(
+            f"Observed {len(summary['user_transfers_out'])} transfer(s) out from the tx sender."
+        )
+    if summary["user_transfers_in"]:
+        summary["notable_findings"].append(
+            f"Observed {len(summary['user_transfers_in'])} transfer(s) back to the tx sender."
+        )
+    if summary["deposits"]:
+        summary["notable_findings"].append(
+            f"Decoded {len(summary['deposits'])} explicit deposit event(s)."
+        )
+    if summary["withdrawals"]:
+        summary["notable_findings"].append(
+            f"Decoded {len(summary['withdrawals'])} explicit withdraw event(s)."
+        )
+    if summary["approvals"]:
+        summary["notable_findings"].append(
+            f"Decoded {len(summary['approvals'])} approval event(s)."
+        )
+    if not summary["deposits"] and not summary["withdrawals"]:
+        summary["notable_findings"].append(
+            "No explicit ERC4626 Deposit/Withdraw events were decoded from the transaction logs."
+        )
+    if tx_to:
+        summary["notable_findings"].append(f"Primary transaction target was {tx_to}.")
+
+    return summary
+
+
 async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
     initial_retrieval_k = 15
     rerank_top_n = 8
@@ -664,6 +974,88 @@ async def core_inspect_onchain(
                 },
             )
 
+        if mode_normalized in {"tx_summary", "tx_investigate"}:
+            if not tx_hash:
+                return f"tx_hash is required for mode='{mode_normalized}'."
+            receipt = await asyncio.to_thread(web3_instance.eth.get_transaction_receipt, tx_hash)
+            transaction = await asyncio.to_thread(web3_instance.eth.get_transaction, tx_hash)
+            logs = list(receipt["logs"])
+            summary_block_identifier = _parse_block_identifier(block_identifier)
+            if summary_block_identifier is None:
+                summary_block_identifier = receipt.get("blockNumber")
+            event_limit = len(logs) if mode_normalized == "tx_investigate" else max_results
+            decoded_logs = _decode_logs_with_abis(
+                web3_instance,
+                logs[:event_limit],
+                _standard_tx_event_abis(),
+            )
+            unique_addresses: list[str] = []
+            seen_addresses: set[str] = set()
+            for log in logs:
+                address = log.get("address")
+                if not address or not Web3.is_address(address):
+                    continue
+                checksum_address = Web3.to_checksum_address(address)
+                if checksum_address in seen_addresses:
+                    continue
+                seen_addresses.add(checksum_address)
+                unique_addresses.append(checksum_address)
+            profile_limit = min(len(unique_addresses), 12 if mode_normalized == "tx_investigate" else 8)
+            contract_profiles = [
+                await _inspect_contract_profile(
+                    web3_instance,
+                    address,
+                    block_identifier=summary_block_identifier,
+                )
+                for address in unique_addresses[:profile_limit]
+            ]
+            profiles_by_address = {
+                profile["address"]: profile
+                for profile in contract_profiles
+            }
+            enriched_logs = _enrich_decoded_logs_with_profiles(decoded_logs, profiles_by_address)
+            if mode_normalized == "tx_investigate":
+                investigation_summary = _summarize_transaction_investigation(
+                    transaction,
+                    enriched_logs,
+                )
+                return _format_structured_output(
+                    "Transaction investigation",
+                    {
+                        "chain": chain_name,
+                        "transaction_hash": tx_hash,
+                        "status": receipt.get("status"),
+                        "block_number": receipt.get("blockNumber"),
+                        "from": transaction.get("from"),
+                        "to": transaction.get("to"),
+                        "gas_used": receipt.get("gasUsed"),
+                        "log_count": len(logs),
+                        "events_decoded": len(enriched_logs),
+                        "events_shown": min(len(enriched_logs), event_limit),
+                        "investigation": investigation_summary,
+                        "events": enriched_logs[:max_results],
+                        "contracts_profiled": contract_profiles,
+                        "profiled_at_block": summary_block_identifier,
+                    },
+                )
+            return _format_structured_output(
+                "Transaction summary",
+                {
+                    "chain": chain_name,
+                    "transaction_hash": tx_hash,
+                    "status": receipt.get("status"),
+                    "block_number": receipt.get("blockNumber"),
+                    "from": transaction.get("from"),
+                    "to": transaction.get("to"),
+                    "gas_used": receipt.get("gasUsed"),
+                    "log_count": len(logs),
+                    "events_shown": min(len(enriched_logs), max_results),
+                    "events": enriched_logs,
+                    "contracts_profiled": contract_profiles,
+                    "profiled_at_block": summary_block_identifier,
+                },
+            )
+
         if mode_normalized == "logs":
             parsed_topics = _json_loads_or_default(topics_json, [])
             if not isinstance(parsed_topics, list):
@@ -701,7 +1093,7 @@ async def core_inspect_onchain(
                 },
             )
 
-        return "Unsupported mode. Use one of: call, receipt, logs."
+        return "Unsupported mode. Use one of: call, receipt, logs, tx_summary, tx_investigate."
     except Exception as exc:
         logging.error("[CoreTool:inspect_onchain] Error: %s", exc, exc_info=True)
         return f"Error inspecting onchain data: {exc}"

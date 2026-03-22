@@ -77,7 +77,7 @@ async def check_all_deposits_tool(user_address_or_ens: str, token_symbol: Option
 @function_tool
 async def inspect_onchain_tool(
     chain: str,
-    mode: Literal["call", "receipt", "logs"],
+    mode: Literal["call", "receipt", "logs", "tx_summary", "tx_investigate"],
     to_address: Optional[str] = None,
     function_signature: Optional[str] = None,
     args_json: Optional[str] = None,
@@ -98,6 +98,8 @@ async def inspect_onchain_tool(
     - 'call': execute a read-only contract call using either `function_abi_json` or `function_signature` + `output_types_json`
     - 'receipt': fetch a transaction receipt and optionally decode logs with `event_abis_json`
     - 'logs': query logs for an address/topics range and optionally decode them with `event_abis_json`
+    - 'tx_summary': fetch a transaction receipt, decode common token/vault events, and classify the contracts involved
+    - 'tx_investigate': run a fuller transaction investigation with decoded standard events, transfer/approval/deposit summaries, and profiled contracts
     Use this for allowance, approvals, tx receipt/log inspection, and other targeted chain-state checks.
     """
     return await tools_lib.core_inspect_onchain(

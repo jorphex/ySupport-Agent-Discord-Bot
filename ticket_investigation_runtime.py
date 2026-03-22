@@ -139,6 +139,36 @@ def _reply_requests_human_handoff(reply_text: str) -> bool:
     return config.HUMAN_HANDOFF_TAG_PLACEHOLDER in reply_text
 
 
+def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
+    lowered = reply_text.lower()
+    invitation_markers = (
+        "would you like me",
+        "if you want",
+        "if you need",
+        "tell me what to inspect next",
+        "tell me what to inspect",
+        "what to inspect next",
+    )
+    if not any(marker in lowered for marker in invitation_markers):
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "decode",
+            "deeper decode",
+            "receipt",
+            "log",
+            "contract call",
+            "continue investigating",
+            "continue the investigation",
+            "deeper on-chain inspection",
+            "inspect next",
+            "inspect",
+            "proceed",
+        )
+    )
+
+
 def _merge_explicit_evidence_into_job(
     investigation_job: TicketInvestigationJob,
     text: str,
@@ -175,13 +205,39 @@ class TicketInvestigationRuntime:
         aggregated_text: str,
     ) -> List[str]:
         hints: List[str] = []
+        lowered_text = aggregated_text.lower()
+        known_chain = investigation_job.evidence.chain
+        known_tx_hashes = investigation_job.evidence.tx_hashes
+        combined_chain_and_tx_hint_added = False
         if (
-            investigation_job.evidence.chain
-            and TicketInvestigationRuntime.contains_tx_hash(aggregated_text)
+            known_chain
+            and known_tx_hashes
         ):
+            recent_hashes = ", ".join(known_tx_hashes[-2:])
             hints.append(
-                f"Known chain for this ticket is {investigation_job.evidence.chain}. "
-                "Use that chain for tx investigation unless the user explicitly corrects it."
+                f"For onchain investigation on this ticket, use chain '{known_chain}' and transaction hash(es) {recent_hashes}. "
+                "Do not substitute a different chain or transaction unless the user explicitly corrects you."
+            )
+            combined_chain_and_tx_hint_added = True
+        elif known_chain and known_chain not in lowered_text:
+            hints.append(
+                f"Known chain for this ticket is {known_chain}. "
+                "Use that chain for continued investigation unless the user explicitly corrects it."
+            )
+        if (
+            known_tx_hashes
+            and not combined_chain_and_tx_hint_added
+            and not any(tx_hash in aggregated_text for tx_hash in known_tx_hashes)
+        ):
+            recent_hashes = ", ".join(known_tx_hashes[-2:])
+            hints.append(
+                f"Known transaction hashes for this ticket: {recent_hashes}. "
+                "Reuse them for continued onchain investigation unless the user provides a different transaction."
+            )
+        if known_tx_hashes and not any(tx_hash in aggregated_text for tx_hash in known_tx_hashes):
+            hints.append(
+                "This is a follow-up to an existing transaction investigation. "
+                "Continue the onchain investigation yourself and do not ask the user to choose between receipt decoding, log inspection, or contract calls."
             )
         if (
             investigation_job.evidence.wallet
@@ -257,9 +313,39 @@ class TicketInvestigationRuntime:
             context=request.run_context,
         )
         raw_final_reply = result.final_output or "I'm not sure how to respond to that."
+        conversation_history = result.to_input_list()
+        completed_agent_key = _agent_to_key(result.last_agent)
+        if (
+            request.investigation_job.evidence.tx_hashes
+            and not _reply_requests_human_handoff(raw_final_reply)
+            and _reply_requests_tx_investigation_followup(raw_final_reply)
+        ):
+            corrected_result: RunResult = await self.runner.run(
+                starting_agent=_resolve_agent(agent_key),
+                input=conversation_history
+                + [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Continue the current transaction investigation yourself. "
+                            "Do not ask the user whether you should proceed or which internal investigation branch to take. "
+                            "Use the known chain and transaction evidence, give the next grounded finding, and only escalate to a human if a real blocker remains."
+                        ),
+                    }
+                ],
+                max_turns=4,
+                run_config=RunConfig(
+                    workflow_name=f"{request.workflow_name} / tx-investigation-followup",
+                    group_id=str(request.run_context.channel_id),
+                ),
+                context=request.run_context,
+            )
+            raw_final_reply = corrected_result.final_output or raw_final_reply
+            conversation_history = corrected_result.to_input_list()
+            completed_agent_key = _agent_to_key(corrected_result.last_agent)
         return TicketAgentFlowOutcome(
             raw_final_reply=raw_final_reply,
-            conversation_history=result.to_input_list(),
-            completed_agent_key=_agent_to_key(result.last_agent),
+            conversation_history=conversation_history,
+            completed_agent_key=completed_agent_key,
             requires_human_handoff=_reply_requests_human_handoff(raw_final_reply),
         )
