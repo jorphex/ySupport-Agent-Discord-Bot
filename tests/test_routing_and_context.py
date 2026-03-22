@@ -109,13 +109,13 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(select_starting_agent(message, context), "docs")
 
-    def test_select_starting_agent_routes_harvest_mechanics_question_to_docs(self) -> None:
+    def test_select_starting_agent_keeps_harvest_family_question_in_triage(self) -> None:
         context = BotRunContext(channel_id=24, project_context="yearn")
         message = (
             "Can I make harvests myself on this Pool v2, and where should rewards appear afterward "
             "if they do not show up immediately?"
         )
-        self.assertEqual(select_starting_agent(message, context), "docs")
+        self.assertEqual(select_starting_agent(message, context), "triage")
 
     def test_select_starting_agent_keeps_free_form_withdrawal_in_triage(self) -> None:
         context = BotRunContext(channel_id=4, project_context="yearn")

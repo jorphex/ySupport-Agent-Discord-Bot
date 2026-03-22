@@ -20,7 +20,6 @@ from router import (
     select_starting_agent,
     is_message_primarily_address,
     is_bug_report_query,
-    is_migration_issue_query,
     is_probable_wallet_address,
     is_wallet_confirmation,
     is_wallet_rejection,
@@ -448,7 +447,7 @@ class TicketBot(discord.Client):
             if contextual_hints:
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(contextual_hints)}] + [input_list[-1]]
 
-            if is_migration_issue_query(aggregated_text) or is_bug_report_query(aggregated_text):
+            if is_bug_report_query(aggregated_text):
                 last_wallet = last_wallet_by_channel.get(channel_id)
                 if last_wallet and last_wallet not in aggregated_text:
                     input_list = input_list[:-1] + [{"role": "system", "content": f"Context: User previously provided wallet address {last_wallet} for this ticket. Use it if needed; do not ask again unless they want a different address."}] + [input_list[-1]]

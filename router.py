@@ -27,19 +27,6 @@ def is_message_primarily_address(text: str) -> bool:
     return False
 
 
-def is_migration_issue_query(text: str) -> bool:
-    if not text:
-        return False
-    q = text.lower()
-    migration_issue_terms = [
-        "can't migrate", "cant migrate", "cannot migrate", "unable to migrate",
-        "not showing migrate", "missing migrate", "migration failed",
-        "migrate card", "migration card", "cta missing", "no migrate",
-        "stuck migrating", "migration error"
-    ]
-    return any(t in q for t in migration_issue_terms)
-
-
 def is_bug_report_query(text: str) -> bool:
     if not text:
         return False
@@ -146,8 +133,6 @@ def should_force_docs_route(text: str) -> bool:
     if not text:
         return False
     q = text.lower()
-    if is_migration_issue_query(q):
-        return False
     if is_bug_report_query(q):
         return False
     if is_account_specific_veyfi_query(q):
@@ -155,7 +140,6 @@ def should_force_docs_route(text: str) -> bool:
     docs_keywords = [
         "veyfi", "styfi", "dyfi", "yip", "governance", "staking",
         "yeth", "recovery vault", "reclaim", "recovery",
-        "harvest", "harvests", "compound", "reinvest",
     ]
     if any(k in q for k in docs_keywords):
         return True

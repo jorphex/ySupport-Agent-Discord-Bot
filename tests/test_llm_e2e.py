@@ -457,6 +457,23 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("steps to reproduce", lowered)
         self.assertNotIn("what token, vault, or criteria", lowered)
 
+    async def test_manual_reward_intervention_request_escalates_without_button(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "Rewards have been sitting for days. Can someone compound or reinvest them for the pool?",
+            channel_id=9023,
+        )
+
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("how harvests work", lowered)
+        self.assertNotIn("price per share", lowered)
+        self.assertNotIn("what browser", lowered)
+        self.assertNotIn("which browser", lowered)
+
     async def test_yyb_disabled_button_first_turn_routes_to_bug_without_deposit_prompt(
         self,
     ) -> None:
