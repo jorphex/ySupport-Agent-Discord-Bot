@@ -52,6 +52,11 @@ warnings.filterwarnings(
 warnings.filterwarnings(
     "ignore",
     category=ResourceWarning,
+    module=r"asyncio\.selector_events",
+)
+warnings.filterwarnings(
+    "ignore",
+    category=ResourceWarning,
     message=r"unclosed <socket\.socket.*",
 )
 
