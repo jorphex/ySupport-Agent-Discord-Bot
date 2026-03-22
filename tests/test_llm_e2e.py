@@ -170,7 +170,11 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 runtime.merge_explicit_evidence(investigation_job, item["content"])
         runtime.merge_explicit_evidence(investigation_job, message)
         input_list = history + [{"role": "user", "content": message}]
-        contextual_hints = runtime.build_contextual_hints(investigation_job, message)
+        contextual_hints = runtime.build_contextual_hints(
+            investigation_job,
+            message,
+            current_history=history,
+        )
         if contextual_hints:
             input_list = input_list[:-1] + [
                 {"role": "system", "content": " ".join(contextual_hints)}
@@ -212,7 +216,11 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 runtime.merge_explicit_evidence(investigation_job, item["content"])
         runtime.merge_explicit_evidence(investigation_job, message)
         input_list = history + [{"role": "user", "content": message}]
-        contextual_hints = runtime.build_contextual_hints(investigation_job, message)
+        contextual_hints = runtime.build_contextual_hints(
+            investigation_job,
+            message,
+            current_history=history,
+        )
         if contextual_hints:
             input_list = input_list[:-1] + [
                 {"role": "system", "content": " ".join(contextual_hints)}
@@ -261,7 +269,11 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     context.initial_button_intent = None
                 runtime.merge_explicit_evidence(investigation_job, message)
                 input_list = history + [{"role": "user", "content": message}]
-                contextual_hints = runtime.build_contextual_hints(investigation_job, message)
+                contextual_hints = runtime.build_contextual_hints(
+                    investigation_job,
+                    message,
+                    current_history=history,
+                )
                 if contextual_hints:
                     input_list = input_list[:-1] + [
                         {"role": "system", "content": " ".join(contextual_hints)}
@@ -350,6 +362,38 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("can you clarify", lowered)
         self.assertNotIn("what do you mean", lowered)
 
+    async def test_recovery_process_question_with_wallet_routes_to_docs_not_deposit_check(
+        self,
+    ) -> None:
+        tool_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            tool_calls.append(user_query)
+            return (
+                "Official sources do not document a 1:1 yETH recovery guarantee or a per-holder claim formula. "
+                "Recovered assets, if any, are redistributed to affected depositors, but the exact claim amount and "
+                "recovery-vault tradeoffs are not specified in the official materials I have."
+            )
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            outcome = await self._run_ticket_flow(
+                "Hi, I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. "
+                "Does that mean I can reclaim my lost ETH 1:1? If not, what amount can I recover, "
+                "and why would someone stay in the recovery vault instead of reclaiming?",
+                channel_id=9017,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(tool_calls), 1)
+        self.assertIn("yeth", tool_calls[0].lower())
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("official", lowered)
+        self.assertNotIn("check your deposits", lowered)
+        self.assertNotIn("check deposits", lowered)
+        self.assertNotIn("do you want me to check", lowered)
+        self.assertNotIn("wallet address now", lowered)
+
     async def test_legacy_positions_link_request_routes_to_docs_instead_of_bug_flow(
         self,
     ) -> None:
@@ -422,6 +466,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         tx_hash = "0xf328a478f4a8ac0341a4f3c470c37ab4a3e41277a7abe0f06fe88a7c48dbde10"
         tool_calls: list[dict] = []
+        repo_queries: list[str] = []
 
         async def fake_inspect_onchain(**kwargs) -> str:
             tool_calls.append(kwargs)
@@ -447,13 +492,33 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 "reason: allowance too low for the attempted approval flow"
             )
 
-        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
-            outcome = await self._run_ticket_flow(
-                "My approval failed on Ethereum. Please inspect this tx hash and tell me what happened: "
-                f"{tx_hash}",
-                initial_button_intent="bug_report",
-                channel_id=9008,
+        async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None, include_ui=None) -> str:
+            repo_queries.append(query)
+            return (
+                "Repo search results\n"
+                "- repo: yearn-vaults-v3\n"
+                "  path: contracts/VaultV3.vy\n"
+                "  artifact_ref: segment:allowance\n"
             )
+
+        async def fake_fetch_repo_artifacts(*, artifact_refs_text: str) -> str:
+            return (
+                "Repo artifact\n"
+                "repo: yearn-vaults-v3\n"
+                "path: contracts/VaultV3.vy\n"
+                "symbol: _spend_allowance\n"
+                "summary: current_allowance must be at least amount or the call reverts.\n"
+            )
+
+        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+            with patch("tools_lib.core_search_repo_context", new=fake_search_repo_context):
+                with patch("tools_lib.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts):
+                    outcome = await self._run_ticket_flow(
+                        "My approval failed on Ethereum. Please inspect this tx hash and tell me what happened: "
+                        f"{tx_hash}",
+                        initial_button_intent="bug_report",
+                        channel_id=9008,
+                    )
 
         self.assertEqual(outcome.completed_agent_key, "bug")
         self.assertGreaterEqual(len(tool_calls), 1)
@@ -888,6 +953,75 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("withdrawal", lowered)
         self.assertNotIn("transfer", lowered)
         self.assertNotIn("forward", lowered)
+
+    async def test_withdrawal_followup_reuses_single_listed_deposit_chain_and_vault(
+        self,
+    ) -> None:
+        withdrawal_calls: list[dict] = []
+        deposit_calls: list[dict] = []
+        withdrawal_tool = self._get_agent_tool(
+            yearn_data_agent,
+            "get_withdrawal_instructions_tool",
+        )
+        deposit_tool = self._get_agent_tool(yearn_data_agent, "check_all_deposits_tool")
+        katana_vault = "0x80c34BD3A3569E126e7055831036aa7b212cB159"
+
+        async def fake_withdrawal_on_invoke_tool(ctx, input: str) -> str:
+            payload = json.loads(input)
+            withdrawal_calls.append(payload)
+            return (
+                "Withdrawal Instructions\n"
+                f"Wallet: {payload['user_address_or_ens']}\n"
+                f"Vault: {payload['vault_address']}\n"
+                f"Chain: {payload['chain']}"
+            )
+
+        async def fake_deposit_on_invoke_tool(ctx, input: str) -> str:
+            payload = json.loads(input)
+            deposit_calls.append(payload)
+            return "Deposit tool should not be called for this follow-up."
+
+        with patch.object(
+            withdrawal_tool,
+            "on_invoke_tool",
+            new=fake_withdrawal_on_invoke_tool,
+        ):
+            with patch.object(
+                deposit_tool,
+                "on_invoke_tool",
+                new=fake_deposit_on_invoke_tool,
+            ):
+                outcome = await self._run_ticket_flow(
+                    "I'd like support withdrawing",
+                    channel_id=9008,
+                    last_specialty="data",
+                    current_history=[
+                        {"role": "user", "content": self.wallet_address},
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "**Katana Active Deposits:**\n"
+                                "**Vault:** [Katana Vault](https://yearn.fi/v3/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n"
+                                "  Address: `0x80c34BD3A3569E126e7055831036aa7b212cB159`\n"
+                                "  Total Position: **1.000000 yvVBUSDT**\n\n"
+                                "Which of these vaults would you like withdrawal instructions for?"
+                            ),
+                        },
+                    ],
+                )
+
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertEqual(deposit_calls, [])
+        self.assertEqual(len(withdrawal_calls), 1)
+        self.assertEqual(withdrawal_calls[0]["user_address_or_ens"], self.wallet_address)
+        self.assertEqual(withdrawal_calls[0]["vault_address"], katana_vault)
+        self.assertEqual(withdrawal_calls[0]["chain"], "katana")
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("withdrawal", lowered)
+        self.assertNotIn("which vault", lowered)
+        self.assertNotIn("re-check", lowered)
+        self.assertNotIn("ethereum", lowered)
 
     async def test_ticket_router_escalation_returns_handoff_without_specialist_text(
         self,

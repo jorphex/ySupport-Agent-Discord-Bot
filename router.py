@@ -153,7 +153,8 @@ def should_force_docs_route(text: str) -> bool:
     if is_account_specific_veyfi_query(q):
         return False
     docs_keywords = [
-        "veyfi", "styfi", "dyfi", "yip", "governance", "staking"
+        "veyfi", "styfi", "dyfi", "yip", "governance", "staking",
+        "yeth", "recovery vault", "reclaim", "recovery"
     ]
     if any(k in q for k in docs_keywords):
         return True

@@ -91,6 +91,14 @@ class RoutingTests(unittest.TestCase):
         context = BotRunContext(channel_id=3, project_context="yearn")
         self.assertEqual(select_starting_agent("Where do I see my stYFI position?", context), "docs")
 
+    def test_select_starting_agent_routes_yeth_recovery_question_to_docs(self) -> None:
+        context = BotRunContext(channel_id=23, project_context="yearn")
+        message = (
+            "I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. "
+            "Does that mean I can reclaim my lost ETH 1:1, and why would someone stay in the recovery vault?"
+        )
+        self.assertEqual(select_starting_agent(message, context), "docs")
+
     def test_select_starting_agent_keeps_free_form_withdrawal_in_triage(self) -> None:
         context = BotRunContext(channel_id=4, project_context="yearn")
         message = (
@@ -151,6 +159,38 @@ class RoutingTests(unittest.TestCase):
             self.assertIn("Do not substitute a different chain", hints[0])
             self.assertIn("0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0", hints[0])
             self.assertIn("follow-up to an existing transaction investigation", hints[1].lower())
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+    def test_build_contextual_hints_reuses_single_listed_deposit_context_for_withdrawal(self) -> None:
+        channel_id = 24
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        try:
+            investigation_job.remember_wallet("0x1111111111111111111111111111111111111111")
+            hints = TicketInvestigationRuntime.build_contextual_hints(
+                investigation_job,
+                "I'd like support withdrawing",
+                current_history=[
+                    {"role": "user", "content": "0x1111111111111111111111111111111111111111"},
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "**Katana Active Deposits:**\n"
+                            "**Vault:** [Vault Name](https://yearn.fi/v3/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n"
+                            "  Address: `0x80c34BD3A3569E126e7055831036aa7b212cB159`\n"
+                            "  Total Position: **1.000000 yvVBUSDT**"
+                        ),
+                    },
+                ],
+            )
+
+            self.assertEqual(len(hints), 1)
+            self.assertIn("already has the needed details", hints[0].lower())
+            self.assertIn("0x1111111111111111111111111111111111111111", hints[0])
+            self.assertIn("0x80c34BD3A3569E126e7055831036aa7b212cB159", hints[0])
+            self.assertIn("katana", hints[0].lower())
+            self.assertIn("do not re-check deposits", hints[0].lower())
+            self.assertIn("do not ask which vault", hints[0].lower())
         finally:
             clear_ticket_investigation_job(channel_id)
 
@@ -259,6 +299,11 @@ class TriageDecisionTests(unittest.TestCase):
         self.assertTrue(
             _reply_requests_tx_investigation_followup(
                 "If you need a deeper decode, tell me what to inspect next."
+            )
+        )
+        self.assertTrue(
+            _reply_requests_tx_investigation_followup(
+                "Next steps — which would you like? I can run a deeper onchain investigation or escalate."
             )
         )
         self.assertFalse(

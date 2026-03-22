@@ -19,6 +19,8 @@ from support_agents import (
 
 
 TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
+ADDRESS_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
+ACTIVE_DEPOSITS_HEADER_RE = re.compile(r"\*\*(?P<chain>[A-Za-z0-9 _/-]+) Active Deposits:\*\*")
 CHAIN_NAMES = ("ethereum", "base", "arbitrum", "optimism", "polygon", "sonic", "katana")
 ROUTE_ACTION_TO_AGENT_KEY = {
     "route_data": "data",
@@ -143,8 +145,10 @@ def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
     lowered = reply_text.lower()
     invitation_markers = (
         "would you like me",
+        "which would you like",
         "if you want",
         "if you need",
+        "next steps",
         "tell me what to inspect next",
         "tell me what to inspect",
         "what to inspect next",
@@ -162,11 +166,47 @@ def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
             "continue investigating",
             "continue the investigation",
             "deeper on-chain inspection",
+            "deeper onchain investigation",
             "inspect next",
             "inspect",
             "proceed",
         )
     )
+
+
+def _is_withdrawal_followup(text: str) -> bool:
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in ("withdraw", "withdrawing", "redeem", "redeeming"))
+
+
+def _extract_single_listed_deposit_context(
+    current_history: List[TResponseInputItem],
+) -> tuple[str, str] | None:
+    for item in reversed(current_history):
+        if item.get("role") != "assistant":
+            continue
+        content = item.get("content")
+        if not isinstance(content, str) or "Active Deposits:" not in content:
+            continue
+
+        listed_deposits: list[tuple[str, str]] = []
+        current_chain: str | None = None
+        for line in content.splitlines():
+            header_match = ACTIVE_DEPOSITS_HEADER_RE.search(line)
+            if header_match:
+                current_chain = header_match.group("chain").strip().lower()
+                continue
+            if "Address:" not in line:
+                continue
+            address_match = ADDRESS_RE.search(line)
+            if address_match and current_chain:
+                listed_deposits.append((current_chain, address_match.group(0)))
+
+        if len(listed_deposits) == 1:
+            return listed_deposits[0]
+        if listed_deposits:
+            return None
+    return None
 
 
 def _merge_explicit_evidence_into_job(
@@ -203,9 +243,11 @@ class TicketInvestigationRuntime:
     def build_contextual_hints(
         investigation_job: TicketInvestigationJob,
         aggregated_text: str,
+        current_history: Optional[List[TResponseInputItem]] = None,
     ) -> List[str]:
         hints: List[str] = []
         lowered_text = aggregated_text.lower()
+        known_wallet = investigation_job.evidence.wallet
         known_chain = investigation_job.evidence.chain
         known_tx_hashes = investigation_job.evidence.tx_hashes
         combined_chain_and_tx_hint_added = False
@@ -239,14 +281,31 @@ class TicketInvestigationRuntime:
                 "This is a follow-up to an existing transaction investigation. "
                 "Continue the onchain investigation yourself and do not ask the user to choose between receipt decoding, log inspection, or contract calls."
             )
-        if (
-            investigation_job.evidence.wallet
-            and investigation_job.evidence.wallet not in aggregated_text
-        ):
+        wallet_hint_added = False
+        if known_wallet and known_wallet not in aggregated_text:
             hints.append(
-                f"Known wallet for this ticket is {investigation_job.evidence.wallet}. "
+                f"Known wallet for this ticket is {known_wallet}. "
                 "Use it if needed; do not ask again unless the user corrects it."
             )
+            wallet_hint_added = True
+        if current_history and _is_withdrawal_followup(aggregated_text):
+            single_deposit_context = _extract_single_listed_deposit_context(current_history)
+            if single_deposit_context is not None:
+                deposit_chain, deposit_vault = single_deposit_context
+                if known_wallet:
+                    if wallet_hint_added:
+                        hints.pop()
+                    hints.append(
+                        f"This withdrawal follow-up already has the needed details from earlier in the ticket: wallet {known_wallet}, "
+                        f"vault {deposit_vault}, and chain {deposit_chain}. Use those exact values for withdrawal instructions unless the user explicitly corrects them. "
+                        "Do not re-check deposits, do not ask which vault they mean, and do not default to ethereum."
+                    )
+                else:
+                    hints.append(
+                        f"The most recent deposit summary in this ticket listed exactly one vault: {deposit_vault} on {deposit_chain}. "
+                        "For this withdrawal follow-up, use that vault and chain unless the user explicitly corrects them. "
+                        "Do not re-check deposits or default to ethereum if this prior summary already identified the target vault."
+                    )
         return hints
 
     async def run_turn(self, request: TicketTurnRequest) -> TicketAgentFlowOutcome:

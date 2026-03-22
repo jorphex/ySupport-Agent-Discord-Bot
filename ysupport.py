@@ -412,6 +412,7 @@ class TicketBot(discord.Client):
                 self.investigation_runtime.build_contextual_hints(
                     investigation_job,
                     aggregated_text,
+                    current_history=current_history,
                 )
             )
             if contextual_hints:
