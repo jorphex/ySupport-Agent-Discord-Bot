@@ -13,6 +13,12 @@ STANDARD_REDIRECT_MESSAGE = (
      f"No follow up inquiries or responses necessary."
 )
 
+SECURITY_VENDOR_BOUNDARY_MESSAGE = (
+    "Thanks for flagging this. This support bot does not handle vendor scans, takedown offers, or security-service trials.\n\n"
+    "If you are disclosing a concrete Yearn security issue or phishing infrastructure, use Yearn's official security process and contacts in https://github.com/yearn/yearn-security/blob/master/SECURITY.md .\n\n"
+    "We cannot engage on vendor offerings or trial coordination here."
+)
+
 JOB_INQUIRY_REDIRECT_MESSAGE = (
     "Thank you for your interest in contributing to or working with Yearn!\n\n"
     "Yearn operates with project-based grants. You can find full details about the process in the [Yearn Docs](https://docs.yearn.finance/contributing/operations/budget).\n"

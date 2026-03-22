@@ -172,6 +172,7 @@ BD_PRIORITY_GUARDRAIL_INSTRUCTIONS = (
     "- 'listing': The user is clearly asking Yearn to list their token or provide liquidity for a listing.\n"
     "- 'partnership': The user is clearly proposing a technical integration, collaboration, or joint venture. The proposal should be explicit.\n"
     "- 'marketing': The user is clearly proposing a joint marketing campaign, AMA, or promotional activity.\n"
+    "- 'vendor_security': The user is a vendor or threat-intelligence service offering scans, monitoring, takedowns, trials, or similar services tied to phishing, fake domains, impersonation, or brand protection.\n"
     "- 'job_inquiry': The user is clearly asking about working for Yearn, contributing, or applying for a grant.\n"
     "- 'other_bd': Other clear business development inquiries not covered above.\n"
     "- 'not_bd_pr': This is the default. Use this for **ALL** standard user support requests, questions about using Yearn, bug reports, follow-up replies, ambiguous messages, or anything that is not an EXPLICIT, INITIAL business proposal.\n\n"
@@ -181,6 +182,7 @@ BD_PRIORITY_GUARDRAIL_INSTRUCTIONS = (
     "- If the message is a question about how to use the protocol, it is **'not_bd_pr'**.\n"
     "- If the message mentions using, getting, staking, claiming, or accessing a supported Yearn product on an official Yearn page or URL, it is **'not_bd_pr'**. Messages like 'I would like to get yYB directly on https://yyb.yearn.fi/app/get' are support context, not listing requests.\n"
     "- Never classify as listing, partnership, or other BD just because the user says they want to 'get', 'access', or 'use' a supported Yearn product. Official Yearn app URLs and product-page references are strong evidence that this is support, not BD.\n"
+    "- If the message comes from a security vendor or threat-intelligence team and offers scans, monitoring, takedowns, free trials, broader sweeps, or similar services, classify it as **'vendor_security'** even if it includes real malicious domains.\n"
     "- Only classify as a business category if the message is a clear, unsolicited, initial proposal. If in doubt, classify as **'not_bd_pr'**."
 )
 

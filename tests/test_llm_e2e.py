@@ -8,6 +8,7 @@ import warnings
 from unittest.mock import patch
 
 from agents import RunConfig, Runner
+from agents.exceptions import InputGuardrailTripwireTriggered
 
 import config
 from router import select_starting_agent
@@ -464,6 +465,24 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("listing fees", lowered)
         self.assertNotIn("proposal is necessary", lowered)
         self.assertNotIn("what token, vault, or criteria", lowered)
+
+    async def test_vendor_security_outreach_hits_firm_boundary_message(
+        self,
+    ) -> None:
+        with self.assertRaises(InputGuardrailTripwireTriggered) as exc_info:
+            await self._run_support_turn(
+                "Hey team, urgently flagging malicious sites impersonating the Yearn brand. "
+                "Our threat intelligence analysts at PhishFort detected multiple fake domains and can support "
+                "a one week trial, broader scan, and one takedown free of charge if useful.",
+                channel_id=9022,
+            )
+
+        lowered = exc_info.exception.guardrail_result.output.output_info["message"].lower()
+        self.assertIn("yearn-security", lowered)
+        self.assertNotIn("share more details", lowered)
+        self.assertNotIn("partnership", lowered)
+        self.assertNotIn("5 sentences", lowered)
+        self.assertNotIn("tag **corn**", lowered)
 
     async def test_legacy_positions_link_request_routes_to_docs_instead_of_bug_flow(
         self,

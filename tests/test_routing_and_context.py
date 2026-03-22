@@ -7,9 +7,10 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from agents import RunContextWrapper
+from agents import RunContextWrapper, Runner
 import discord
 
+from bot_behavior import SECURITY_VENDOR_BOUNDARY_MESSAGE
 import config
 from router import select_starting_agent
 from state import (
@@ -48,6 +49,8 @@ from ticket_investigation_transport import (
 )
 from ticket_investigation_worker import TicketInvestigationWorker, TicketWorkerResult
 from support_agents import (
+    BDPriorityCheckOutput,
+    bd_priority_guardrail,
     TicketTriageDecision,
     ticket_triage_router_agent,
     triage_agent,
@@ -208,6 +211,32 @@ class RoutingTests(unittest.TestCase):
             self.assertIn("do not ask which vault", hints[0].lower())
         finally:
             clear_ticket_investigation_job(channel_id)
+
+
+class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vendor_security_boundary_uses_firm_message(self) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return BDPriorityCheckOutput(
+                    request_type="vendor_security",
+                    reasoning="security vendor outreach",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await bd_priority_guardrail.guardrail_function(
+                None,
+                None,
+                "phishing vendor outreach",
+            )
+
+        self.assertTrue(result.tripwire_triggered)
+        self.assertEqual(
+            result.output_info["message"],
+            SECURITY_VENDOR_BOUNDARY_MESSAGE,
+        )
 
 
 class InvestigationJobTests(unittest.TestCase):

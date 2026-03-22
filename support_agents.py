@@ -25,6 +25,7 @@ from agent_prompts import (
 from bot_behavior import (
     LISTING_DENIAL_MESSAGE,
     STANDARD_REDIRECT_MESSAGE,
+    SECURITY_VENDOR_BOUNDARY_MESSAGE,
     JOB_INQUIRY_REDIRECT_MESSAGE,
 )
 from state import BotRunContext
@@ -41,7 +42,7 @@ from support_tools import (
 
 
 class BDPriorityCheckOutput(BaseModel):
-    request_type: Literal["listing", "partnership", "marketing", "other_bd", "job_inquiry", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'other_bd' (other business development), 'job_inquiry' (asking to work for/contribute to Yearn, grant requests), or 'not_bd_pr' (standard support request or unrelated).")
+    request_type: Literal["listing", "partnership", "marketing", "vendor_security", "other_bd", "job_inquiry", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'vendor_security' (security or phishing vendor/service outreach), 'other_bd' (other business development), 'job_inquiry' (asking to work for/contribute to Yearn, grant requests), or 'not_bd_pr' (standard support request or unrelated).")
     reasoning: str = Field(..., description="Brief explanation for the classification.")
 
 
@@ -152,6 +153,9 @@ async def bd_priority_guardrail(
 
         if check_output.request_type == "listing":
             message_to_send = LISTING_DENIAL_MESSAGE
+            should_trigger = True
+        elif check_output.request_type == "vendor_security":
+            message_to_send = SECURITY_VENDOR_BOUNDARY_MESSAGE
             should_trigger = True
         elif check_output.request_type in ["partnership", "marketing", "other_bd"]:
             message_to_send = STANDARD_REDIRECT_MESSAGE
