@@ -154,7 +154,8 @@ def should_force_docs_route(text: str) -> bool:
         return False
     docs_keywords = [
         "veyfi", "styfi", "dyfi", "yip", "governance", "staking",
-        "yeth", "recovery vault", "reclaim", "recovery"
+        "yeth", "recovery vault", "reclaim", "recovery",
+        "harvest", "harvests", "compound", "reinvest",
     ]
     if any(k in q for k in docs_keywords):
         return True

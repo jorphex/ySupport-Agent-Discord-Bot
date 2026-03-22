@@ -394,6 +394,59 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("do you want me to check", lowered)
         self.assertNotIn("wallet address now", lowered)
 
+    async def test_harvest_rewards_question_routes_to_docs_not_vault_search(
+        self,
+    ) -> None:
+        tool_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            tool_calls.append(user_query)
+            return (
+                "Official docs for Yearn factory strategies say `harvest()` is permissionless, "
+                "but calling harvest only claims rewards. Swapping and realizing those rewards can happen later, "
+                "so not seeing rewards immediately can be normal. If you have a specific failed tx or stuck action, "
+                "send that evidence and I can investigate further."
+            )
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            outcome = await self._run_ticket_flow(
+                "hi. can I make Harvests myself?\n"
+                "This. Pool v2\n"
+                "I have a position in this pool. But the rewards are not coming",
+                channel_id=9018,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(tool_calls), 1)
+        self.assertIn("harvest", tool_calls[0].lower())
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("harvest", lowered)
+        self.assertIn("rewards", lowered)
+        self.assertNotIn("find vaults", lowered)
+        self.assertNotIn("what token, vault, or criteria", lowered)
+        self.assertNotIn("check your deposits", lowered)
+        self.assertNotIn("wallet address", lowered)
+
+    async def test_manual_reward_intervention_request_escalates_in_bug_flow(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "Hello, the Mooo transaction has difficulty to execute on the strategy "
+            "0x1111111111111111111111111111111111111111 from the MUSD/2Pool. "
+            "The CRV tokens were sent out more than 30 hours ago, but still no LP token received.",
+            initial_button_intent="bug_report",
+            channel_id=9019,
+        )
+
+        self.assertTrue(outcome.requires_human_handoff)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("browser", lowered)
+        self.assertNotIn("device", lowered)
+        self.assertNotIn("steps to reproduce", lowered)
+        self.assertNotIn("what token, vault, or criteria", lowered)
+
     async def test_legacy_positions_link_request_routes_to_docs_instead_of_bug_flow(
         self,
     ) -> None:
@@ -1172,4 +1225,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_calls[0]["user_address_or_ens"], self.wallet_address)
         self.assertEqual(tool_calls[0]["vault_address"], self.vault_address)
         self.assertEqual(tool_calls[0]["chain"], "ethereum")
-        self.assertIn("withdrawal", output.lower())
+        lowered = output.lower()
+        self.assertIn(self.wallet_address.lower(), lowered)
+        self.assertIn(self.vault_address.lower(), lowered)
+        self.assertIn("ethereum", lowered)
