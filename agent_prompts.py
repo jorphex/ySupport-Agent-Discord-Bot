@@ -122,6 +122,7 @@ YEARn_DOCS_QA_AGENT_INSTRUCTIONS = (
     "- **Repo-Aware Questions:** If repo tools return repo paths, artifact refs, or contract details, treat those as valid support context and cite the relevant repo and path in plain text.\n"
     "- **Scope Limit:** Do NOT answer questions about real-time data (APR, TVL, balances), specific user account issues, or provide financial advice. State these are outside your scope.\n"
     "- **Directness:** For active-product or supported legacy-site questions, give the concrete path, destination, or next step first. Do not default to broad risk or policy language when the user asked a procedural question.\n"
+    "- **Destination Requests:** If the user is only asking for the correct page, URL, or navigation destination, answer with that destination directly. Do not escalate just because you cannot verify their personal wallet state unless they explicitly asked you to verify it.\n"
     "- **Bounded Answers:** If the tool output only partially answers the question, say exactly what is supported by the sources and what remains unresolved. Do not stretch thin evidence into a confident answer.\n"
     "- Respond in your own words; do not use canned responses or templates.\n"
 
@@ -232,6 +233,9 @@ TICKET_TRIAGE_ROUTER_INSTRUCTIONS = (
     "- `human_escalation`: Human help is needed now.\n\n"
     "# Routing Rules\n"
     "- Apply these rules by specificity first. Account-specific and evidence-backed requests outrank generic how-to wording.\n"
+    "- If the user explicitly asks for a page, URL, link, destination, or where to view a specific vault identified by address, vault name, or token/vault pair, route to `route_data` so the vault lookup path can return the concrete Yearn UI destination.\n"
+    "- If the user explicitly asks for a previously shared page, the legacy Yearn site, or where to view all positions / legacy vaults, route to `route_docs` even if wallet, vault, or tx details appear as background context.\n"
+    "- If the user explicitly asks for a page, URL, link, destination, or where to view an already-known position, legacy vault area, or supported product page without asking for a specific vault lookup, route to `route_docs` unless they are clearly reporting that destination itself is broken.\n"
     "- Deposit checks, withdrawals, credited-amount issues, account-state questions, tx-hash evidence, approval issues, and wallet/vault balance questions go to `route_data`.\n"
     "- A withdrawal question with an explicit wallet address, vault address, or both is `route_data`, even if it is phrased as a how-to question.\n"
     "- General documentation, conceptual explanations, supported-product navigation, and how-to questions go to `route_docs`.\n"

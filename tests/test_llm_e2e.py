@@ -350,6 +350,73 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("can you clarify", lowered)
         self.assertNotIn("what do you mean", lowered)
 
+    async def test_legacy_positions_link_request_routes_to_docs_instead_of_bug_flow(
+        self,
+    ) -> None:
+        tool_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            tool_calls.append(user_query)
+            return (
+                "Use https://legacy.yearn.fi/ to view legacy Yearn positions that may not appear in the newer UI."
+            )
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            outcome = await self._run_ticket_flow(
+                "I opened a ticket before and lost the URL to see all my positions. "
+                "My wallet is 0x23d402C2058052f0B9c24Fb4E17DE8cC1E3a0cb0. "
+                "I have one USDC.e vault but another one is not being shown in the UI. "
+                "You sent me before a link to see the legacy vaults and I could see it from there. "
+                "Can you send that URL again?",
+                channel_id=9015,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(tool_calls), 1)
+        self.assertIn("url", tool_calls[0].lower())
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("legacy.yearn.fi", lowered)
+        self.assertNotIn("describe the bug", lowered)
+        self.assertNotIn("browser", lowered)
+        self.assertNotIn("device", lowered)
+        self.assertNotIn("support bot stopped", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+
+    async def test_specific_vault_url_request_routes_to_data_lookup(
+        self,
+    ) -> None:
+        vault_address = "0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B"
+        tool_calls: list[dict] = []
+        tool = self._get_agent_tool(yearn_data_agent, "search_vaults_tool")
+
+        async def fake_on_invoke_tool(ctx, input: str) -> str:
+            payload = json.loads(input)
+            tool_calls.append(payload)
+            return (
+                "Vault: USDC.e-2\n"
+                f"Address: {vault_address}\n"
+                "Yearn UI Link: https://legacy.yearn.fi/v3/42161/"
+                f"{vault_address}\n"
+            )
+
+        with patch.object(tool, "on_invoke_tool", new=fake_on_invoke_tool):
+            outcome = await self._run_ticket_flow(
+                "I cannot find vault 0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B in the UI. "
+                "Can you send me the Yearn URL for that vault?",
+                channel_id=9016,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["query"], vault_address)
+        self.assertIn("legacy.yearn.fi", outcome.raw_final_reply.lower())
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertNotIn("describe the bug", lowered)
+        self.assertNotIn("browser", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+
     async def test_tx_hash_bug_report_uses_onchain_inspection_without_wallet_prompt(
         self,
     ) -> None:
