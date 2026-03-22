@@ -44,6 +44,17 @@ Useful rollout env vars:
 - `TICKET_EXECUTION_RUN_DIR_ROOT`
   - export per-run scratch-directory copies without forcing full artifact capture
 
+RPC env vars:
+
+- `ETHEREUM_RPC_URL`
+- `BASE_RPC_URL`
+- `ARBITRUM_RPC_URL`
+- `OPTIMISM_RPC_URL`
+- `POLYGON_RPC_URL`
+- `SONIC_RPC_URL`
+- `KATANA_RPC_URL`
+- if a per-chain RPC URL is unset, the code currently falls back to the shared `ALCHEMY_KEY` template where available, except Katana which falls back to its default public RPC
+
 Suggested rollout order:
 
 1. `local`

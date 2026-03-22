@@ -35,6 +35,10 @@ def _env_csv(name: str) -> list[str]:
     return [part.strip() for part in raw_value.split(",") if part.strip()]
 
 
+def _env_str(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
 def _env_int(name: str, default: int | None = None) -> int | None:
     raw_value = os.getenv(name)
     if raw_value is None or not raw_value.strip():
@@ -235,15 +239,30 @@ REPO_CONTEXT_MAX_SEARCH_CALLS_PER_RUN = int(os.getenv("REPO_CONTEXT_MAX_SEARCH_C
 REPO_CONTEXT_MAX_SEARCHES_WITHOUT_FETCH = int(os.getenv("REPO_CONTEXT_MAX_SEARCHES_WITHOUT_FETCH", "4"))
 
 # --- Web3 & Chains ---
-RPC_URLS = {
-    "ethereum": f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "base": f"https://base-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "polygon": f"https://polygon-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "arbitrum": f"https://arb-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "optimism": f"https://opt-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "sonic": f"https://sonic-mainnet.g.alchemy.com/v2/{ALCHEMY_KEY}",
-    "katana": "https://rpc.katana.network",
-}
+def _alchemy_rpc_url(network_slug: str) -> str:
+    if not ALCHEMY_KEY:
+        return ""
+    return f"https://{network_slug}.g.alchemy.com/v2/{ALCHEMY_KEY}"
+
+
+def build_rpc_urls(env: dict[str, str] | None = None) -> dict[str, str]:
+    env_map = env if env is not None else os.environ
+
+    def _read(name: str, fallback: str = "") -> str:
+        return env_map.get(name, fallback).strip()
+
+    return {
+        "ethereum": _read("ETHEREUM_RPC_URL", _alchemy_rpc_url("eth-mainnet")),
+        "base": _read("BASE_RPC_URL", _alchemy_rpc_url("base-mainnet")),
+        "polygon": _read("POLYGON_RPC_URL", _alchemy_rpc_url("polygon-mainnet")),
+        "arbitrum": _read("ARBITRUM_RPC_URL", _alchemy_rpc_url("arb-mainnet")),
+        "optimism": _read("OPTIMISM_RPC_URL", _alchemy_rpc_url("opt-mainnet")),
+        "sonic": _read("SONIC_RPC_URL", _alchemy_rpc_url("sonic-mainnet")),
+        "katana": _read("KATANA_RPC_URL", "https://rpc.katana.network"),
+    }
+
+
+RPC_URLS = build_rpc_urls()
 
 CHAIN_NAME_TO_ID = {
     "ethereum": 1, "base": 8453, "polygon": 137,

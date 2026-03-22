@@ -34,6 +34,61 @@ from unittest.mock import patch
 
 
 class ConfigSummaryTests(unittest.TestCase):
+    def test_build_rpc_urls_prefers_explicit_per_chain_env(self) -> None:
+        rpc_urls = config.build_rpc_urls(
+            {
+                "ETHEREUM_RPC_URL": "https://ethereum.example",
+                "BASE_RPC_URL": "https://base.example",
+                "ARBITRUM_RPC_URL": "https://arbitrum.example",
+                "OPTIMISM_RPC_URL": "https://optimism.example",
+                "POLYGON_RPC_URL": "https://polygon.example",
+                "SONIC_RPC_URL": "https://sonic.example",
+                "KATANA_RPC_URL": "https://katana.example",
+            }
+        )
+
+        self.assertEqual(rpc_urls["ethereum"], "https://ethereum.example")
+        self.assertEqual(rpc_urls["base"], "https://base.example")
+        self.assertEqual(rpc_urls["arbitrum"], "https://arbitrum.example")
+        self.assertEqual(rpc_urls["optimism"], "https://optimism.example")
+        self.assertEqual(rpc_urls["polygon"], "https://polygon.example")
+        self.assertEqual(rpc_urls["sonic"], "https://sonic.example")
+        self.assertEqual(rpc_urls["katana"], "https://katana.example")
+
+    def test_build_rpc_urls_falls_back_to_alchemy_and_default_katana(self) -> None:
+        original_alchemy_key = config.ALCHEMY_KEY
+        try:
+            config.ALCHEMY_KEY = "alchemy-test-key"
+            rpc_urls = config.build_rpc_urls({})
+        finally:
+            config.ALCHEMY_KEY = original_alchemy_key
+
+        self.assertEqual(
+            rpc_urls["ethereum"],
+            "https://eth-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
+        self.assertEqual(
+            rpc_urls["base"],
+            "https://base-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
+        self.assertEqual(
+            rpc_urls["arbitrum"],
+            "https://arb-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
+        self.assertEqual(
+            rpc_urls["optimism"],
+            "https://opt-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
+        self.assertEqual(
+            rpc_urls["polygon"],
+            "https://polygon-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
+        self.assertEqual(
+            rpc_urls["sonic"],
+            "https://sonic-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
+        self.assertEqual(rpc_urls["katana"], "https://rpc.katana.network")
+
     def test_ticket_execution_runtime_summary_includes_fallback_and_codex_details(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
