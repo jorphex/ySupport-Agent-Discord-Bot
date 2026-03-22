@@ -447,6 +447,24 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("steps to reproduce", lowered)
         self.assertNotIn("what token, vault, or criteria", lowered)
 
+    async def test_yyb_disabled_button_first_turn_routes_to_bug_without_deposit_prompt(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "I cant add my yYB",
+            channel_id=9020,
+        )
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertNotIn("check your deposits", lowered)
+        self.assertNotIn("withdrawals if needed", lowered)
+        self.assertNotIn("provide your wallet address", lowered)
+        self.assertNotIn("vault address", lowered)
+        self.assertNotIn("listable on exchanges", lowered)
+        self.assertNotIn("listing fees", lowered)
+        self.assertNotIn("proposal is necessary", lowered)
+        self.assertNotIn("what token, vault, or criteria", lowered)
+
     async def test_legacy_positions_link_request_routes_to_docs_instead_of_bug_flow(
         self,
     ) -> None:
