@@ -154,6 +154,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         initial_button_intent: str | None = None,
         channel_id: int = 9200,
         current_history=None,
+        last_specialty: str | None = None,
     ):
         context = BotRunContext(
             channel_id=channel_id,
@@ -161,9 +162,19 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
             initial_button_intent=initial_button_intent,
         )
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = last_specialty
         history = current_history or []
-        input_list = history + [{"role": "user", "content": message}]
         runtime = TicketInvestigationRuntime(Runner)
+        for item in history:
+            if item.get("role") == "user" and isinstance(item.get("content"), str):
+                runtime.merge_explicit_evidence(investigation_job, item["content"])
+        runtime.merge_explicit_evidence(investigation_job, message)
+        input_list = history + [{"role": "user", "content": message}]
+        contextual_hints = runtime.build_contextual_hints(investigation_job, message)
+        if contextual_hints:
+            input_list = input_list[:-1] + [
+                {"role": "system", "content": " ".join(contextual_hints)}
+            ] + [input_list[-1]]
         try:
             return await runtime.run_turn(
                 TicketTurnRequest(
@@ -185,6 +196,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         initial_button_intent: str | None = None,
         channel_id: int = 9300,
         current_history=None,
+        last_specialty: str | None = None,
     ):
         context = BotRunContext(
             channel_id=channel_id,
@@ -192,9 +204,19 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
             initial_button_intent=initial_button_intent,
         )
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = last_specialty
         history = current_history or []
-        input_list = history + [{"role": "user", "content": message}]
         runtime = TicketInvestigationRuntime(Runner)
+        for item in history:
+            if item.get("role") == "user" and isinstance(item.get("content"), str):
+                runtime.merge_explicit_evidence(investigation_job, item["content"])
+        runtime.merge_explicit_evidence(investigation_job, message)
+        input_list = history + [{"role": "user", "content": message}]
+        contextual_hints = runtime.build_contextual_hints(investigation_job, message)
+        if contextual_hints:
+            input_list = input_list[:-1] + [
+                {"role": "system", "content": " ".join(contextual_hints)}
+            ] + [input_list[-1]]
         worker = TicketInvestigationWorker(runtime)
         local_executor = LocalTicketInvestigationExecutor(worker)
         endpoint = build_ticket_execution_json_endpoint(local_executor)
@@ -213,6 +235,53 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             clear_ticket_investigation_job(channel_id)
+
+    async def _run_ticket_transcript(
+        self,
+        user_messages: list[str],
+        *,
+        initial_button_intent: str | None = None,
+        channel_id: int = 9400,
+        last_specialty: str | None = None,
+    ) -> list:
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent=initial_button_intent,
+        )
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = last_specialty
+        runtime = TicketInvestigationRuntime(Runner)
+        worker = TicketInvestigationWorker(runtime)
+        history = []
+        outcomes = []
+        try:
+            for index, message in enumerate(user_messages):
+                if index > 0:
+                    context.initial_button_intent = None
+                runtime.merge_explicit_evidence(investigation_job, message)
+                input_list = history + [{"role": "user", "content": message}]
+                contextual_hints = runtime.build_contextual_hints(investigation_job, message)
+                if contextual_hints:
+                    input_list = input_list[:-1] + [
+                        {"role": "system", "content": " ".join(contextual_hints)}
+                    ] + [input_list[-1]]
+                worker_result = await worker.execute_turn(
+                    TicketTurnRequest(
+                        aggregated_text=message,
+                        input_list=input_list,
+                        current_history=history,
+                        run_context=context,
+                        investigation_job=investigation_job,
+                        workflow_name="tests.ticket_transcript",
+                    )
+                )
+                outcomes.append(worker_result.flow_outcome)
+                history = worker_result.flow_outcome.conversation_history
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        return outcomes
 
     @staticmethod
     def _get_agent_tool(agent, tool_name: str):
@@ -290,79 +359,333 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         async def fake_inspect_onchain(**kwargs) -> str:
             tool_calls.append(kwargs)
             return (
-                "Onchain inspection summary\n"
+                "Transaction investigation\n"
                 f"tx_hash: {tx_hash}\n"
                 "chain: ethereum\n"
                 "status: reverted\n"
-                "decoded_logs: []\n"
+                "user_transfers_out: none\n"
+                "user_transfers_in: none\n"
+                "approvals:\n"
+                "- token: USDC\n"
+                "  owner: 0x1111111111111111111111111111111111111111\n"
+                "  spender: 0x2222222222222222222222222222222222222222\n"
+                "  value_formatted: 0\n"
+                "contracts_profiled:\n"
+                "- address: 0x1111111111111111111111111111111111111111\n"
+                "  kind: erc20_like\n"
+                "  symbol: USDC\n"
+                "notable_findings:\n"
+                "- No allowance existed for the attempted approval flow.\n"
+                "- No funds moved in the reverted transaction.\n"
                 "reason: allowance too low for the attempted approval flow"
             )
 
         with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
-            context = BotRunContext(
-                channel_id=9008,
-                project_context="yearn",
-                initial_button_intent="bug_report",
-            )
-            output, _, starting_agent_key = await self._run_agent_turn(
-                "bug",
+            outcome = await self._run_ticket_flow(
                 "My approval failed on Ethereum. Please inspect this tx hash and tell me what happened: "
                 f"{tx_hash}",
-                context=context,
+                initial_button_intent="bug_report",
+                channel_id=9008,
             )
 
-        self.assertEqual(starting_agent_key, "bug")
+        self.assertEqual(outcome.completed_agent_key, "bug")
         self.assertGreaterEqual(len(tool_calls), 1)
         matching_calls = [
             call for call in tool_calls
             if call.get("chain") == "ethereum"
-            and call.get("mode") == "receipt"
+            and call.get("mode") == "tx_investigate"
             and call.get("tx_hash") == tx_hash
         ]
         self.assertTrue(matching_calls)
 
-        lowered = output.lower()
+        lowered = outcome.raw_final_reply.lower()
         self.assertIn("approval", lowered)
         self.assertIn("reverted", lowered)
         self.assertNotIn("what browser", lowered)
 
-    async def test_data_agent_tx_hash_followup_investigates_instead_of_claiming_forward(
+    async def test_ticket_flow_tx_hash_followup_investigates_without_branching_question(
         self,
     ) -> None:
         tx_hash = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
-        context = BotRunContext(
-            channel_id=9010,
-            project_context="yearn",
-        )
-        output, _, starting_agent_key = await self._run_agent_turn(
-            "data",
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "I deposited 1990.3798 frxusd into the usdt vault on katana "
-                        "but was only credited with 650.9147 yvvbusdt."
-                    ),
-                },
-                {
-                    "role": "assistant",
-                    "content": "Please send the transaction hash and I will check it.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Katana tx hash: {tx_hash}",
-                },
-            ],
-            context=context,
+        tool_calls: list[dict] = []
+
+        async def fake_inspect_onchain(**kwargs) -> str:
+            tool_calls.append(kwargs)
+            if kwargs.get("mode") != "tx_investigate" or sum(
+                1 for call in tool_calls if call.get("mode") == "tx_investigate"
+            ) > 1:
+                return (
+                    "Detailed transaction investigation\n"
+                    f"tx_hash: {tx_hash}\n"
+                    "chain: katana\n"
+                    "input_token: frxUSD\n"
+                    "input_amount: 1990.379783\n"
+                    "output_token: yvWBUSDT\n"
+                    "output_amount: 650.9147\n"
+                    "explanation: the transaction minted 650.9147 yvWBUSDT shares after routing the frxUSD deposit."
+                )
+            return (
+                "Transaction summary\n"
+                f"tx_hash: {tx_hash}\n"
+                "chain: katana\n"
+                "status: success\n"
+                "contracts_profiled:\n"
+                "- address: 0xC10eE9031F2a0B84766A86B55a8D90F357910fb4\n"
+                "  kind: erc4626_like\n"
+                "  symbol: yvWBUSDT\n"
+                "events:\n"
+                "- event: Transfer\n"
+                "  value_formatted: 650.9147"
+            )
+
+        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+            outcome = await self._run_ticket_flow(
+                "Katana tx hash: " + tx_hash,
+                channel_id=9010,
+                last_specialty="data",
+                current_history=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "I deposited 1990.3798 frxusd into the usdt vault on katana "
+                            "but was only credited with 650.9147 yvvbusdt."
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Please send the transaction hash and I will check it.",
+                    },
+                ],
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertTrue(
+            any(
+                call.get("chain") == "katana"
+                and call.get("mode") == "tx_investigate"
+                and call.get("tx_hash") == tx_hash
+                for call in tool_calls
+            )
         )
 
-        self.assertEqual(starting_agent_key, "data")
-
-        lowered = output.lower()
+        lowered = outcome.raw_final_reply.lower()
         self.assertNotIn("forwarded", lowered)
         self.assertNotIn("transferred to", lowered)
+        self.assertNotIn("would you like me to", lowered)
+        self.assertNotIn("if you need a deeper decode", lowered)
+        self.assertNotIn("tell me what to inspect next", lowered)
+        self.assertNotIn("which would you like", lowered)
+        self.assertNotIn("decode the logs", lowered)
+        self.assertNotIn("inspect a specific vault", lowered)
         self.assertTrue("transaction" in lowered or tx_hash.lower() in lowered)
         self.assertTrue("chain" in lowered or "katana" in lowered)
+
+    async def test_ticket_flow_follow_up_look_into_it_reuses_known_tx_context(self) -> None:
+        tx_hash = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        tool_calls: list[dict] = []
+
+        async def fake_inspect_onchain(**kwargs) -> str:
+            tool_calls.append(kwargs)
+            if kwargs.get("mode") != "tx_investigate" or sum(
+                1 for call in tool_calls if call.get("mode") == "tx_investigate"
+            ) > 1:
+                return (
+                    "Detailed transaction investigation\n"
+                    f"tx_hash: {kwargs.get('tx_hash')}\n"
+                    f"chain: {kwargs.get('chain')}\n"
+                    "input_token: frxUSD\n"
+                    "input_amount: 1990.379783\n"
+                    "output_token: yvWBUSDT\n"
+                    "output_amount: 650.9147\n"
+                    "explanation: the transaction minted 650.9147 yvWBUSDT shares after routing the frxUSD deposit."
+                )
+            return (
+                "Transaction summary\n"
+                f"tx_hash: {kwargs.get('tx_hash')}\n"
+                f"chain: {kwargs.get('chain')}\n"
+                "status: success\n"
+                "contracts_profiled:\n"
+                "- address: 0xC10eE9031F2a0B84766A86B55a8D90F357910fb4\n"
+                "  kind: erc4626_like\n"
+                "  symbol: yvWBUSDT\n"
+                "events:\n"
+                "- event: Transfer\n"
+                "  value_formatted: 650.9147"
+            )
+
+        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+            outcome = await self._run_ticket_flow(
+                "i dunno man. look into it",
+                channel_id=9012,
+                last_specialty="data",
+                current_history=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "I deposited 1990.3798 frxusd into the usdt vault on katana "
+                            "but was only credited with 650.9147 yvvbusdt."
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Please send the transaction hash and I will check it.",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Katana tx hash: {tx_hash}",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Transaction summary\nchain: katana\nstatus: success",
+                    },
+                ],
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertTrue(
+            any(
+                call.get("chain") == "katana"
+                and call.get("mode") == "tx_investigate"
+                and call.get("tx_hash") == tx_hash
+                for call in tool_calls
+            )
+        )
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertNotIn("which chain", lowered)
+        self.assertNotIn("please provide the tx hash", lowered)
+        self.assertNotIn("would you like me to", lowered)
+        self.assertNotIn("which would you like", lowered)
+
+    async def test_katana_discrepancy_transcript_keeps_investigating_without_user_branch_selection(
+        self,
+    ) -> None:
+        tx_hash = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        tool_calls: list[dict] = []
+
+        async def fake_inspect_onchain(**kwargs) -> str:
+            tool_calls.append(kwargs)
+            if kwargs.get("mode") != "tx_investigate" or sum(
+                1 for call in tool_calls if call.get("mode") == "tx_investigate"
+            ) > 1:
+                return (
+                    "Detailed transaction investigation\n"
+                    f"tx_hash: {tx_hash}\n"
+                    "chain: katana\n"
+                    "input_token: frxUSD\n"
+                    "input_amount: 1990.379783\n"
+                    "deposit_event: yvvbUSDT deposit with 650.914712 shares\n"
+                    "output_token: yvvbUSDT\n"
+                    "output_amount: 650.914712\n"
+                    "explanation: the tx deposited vbUSDT and minted yvvbUSDT shares for the user."
+                )
+            return (
+                "Transaction investigation\n"
+                f"tx_hash: {tx_hash}\n"
+                "chain: katana\n"
+                "status: success\n"
+                "investigation:\n"
+                "- user_transfers_out: frxUSD 1990.379783\n"
+                "- deposits: yvvbUSDT shares 650.914712\n"
+                "- user_transfers_in: yvvbUSDT 650.914712\n"
+                "- notable_findings: explicit deposit event decoded\n"
+            )
+
+        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+            outcomes = await self._run_ticket_transcript(
+                [
+                    "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt",
+                    tx_hash,
+                    "i dunno man. look into it",
+                ],
+                channel_id=9013,
+            )
+
+        self.assertEqual(len(outcomes), 3)
+        self.assertTrue(
+            "transaction" in outcomes[0].raw_final_reply.lower()
+            or "wallet" in outcomes[0].raw_final_reply.lower()
+        )
+        self.assertTrue(
+            any(
+                call.get("chain") == "katana"
+                and call.get("mode") == "tx_investigate"
+                and call.get("tx_hash") == tx_hash
+                for call in tool_calls
+            )
+        )
+
+        second_reply = outcomes[1].raw_final_reply.lower()
+        third_reply = outcomes[2].raw_final_reply.lower()
+        self.assertNotIn("pick one", second_reply)
+        self.assertNotIn("would you like me to", second_reply)
+        self.assertNotIn("tell me what to inspect next", second_reply)
+        self.assertNotIn("which would you like", second_reply)
+        self.assertNotIn("pick one", third_reply)
+        self.assertNotIn("would you like me to", third_reply)
+        self.assertNotIn("tell me what to inspect next", third_reply)
+        self.assertNotIn("which would you like", third_reply)
+        self.assertNotIn("please provide the tx hash", third_reply)
+        self.assertNotIn("which chain", third_reply)
+        self.assertTrue(
+            "yvvbusdt" in third_reply
+            or config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower() in third_reply
+        )
+
+    async def test_katana_discrepancy_transcript_investigates_comparison_tx_without_resetting(
+        self,
+    ) -> None:
+        first_tx = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        second_tx = "0x53db23a0e15f250dd30978bd2a3499289e73bcec25590e1f49063b78e3bbd3f9"
+        tool_calls: list[dict] = []
+
+        async def fake_inspect_onchain(**kwargs) -> str:
+            tool_calls.append(kwargs)
+            tx_hash = kwargs.get("tx_hash")
+            if tx_hash == first_tx:
+                return (
+                    "Transaction investigation\n"
+                    f"tx_hash: {first_tx}\n"
+                    "chain: katana\n"
+                    "output_token: yvvbUSDT\n"
+                    "output_amount: 650.914712\n"
+                )
+            return (
+                "Transaction investigation\n"
+                f"tx_hash: {second_tx}\n"
+                "chain: katana\n"
+                "output_token: yvvbUSDT\n"
+                "output_amount: 1872.000000\n"
+            )
+
+        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+            outcomes = await self._run_ticket_transcript(
+                [
+                    "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt",
+                    first_tx,
+                    f"This is the similar transaction from minutes earlier. {second_tx}",
+                ],
+                channel_id=9014,
+            )
+
+        self.assertEqual(len(outcomes), 3)
+        self.assertTrue(
+            any(
+                call.get("tx_hash") == first_tx and call.get("mode") == "tx_investigate"
+                for call in tool_calls
+            )
+        )
+        self.assertTrue(
+            any(
+                call.get("tx_hash") == second_tx and call.get("mode") == "tx_investigate"
+                for call in tool_calls
+            )
+        )
+
+        lowered = outcomes[2].raw_final_reply.lower()
+        self.assertNotIn("forwarded", lowered)
+        self.assertNotIn("transferred to specialists", lowered)
+        self.assertNotIn("please provide the tx hash", lowered)
 
     async def test_deposit_button_intent_calls_check_all_deposits_tool(self) -> None:
         tool_calls: list[dict] = []

@@ -55,6 +55,7 @@ from ticket_investigation_runtime import (
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
+    _reply_requests_tx_investigation_followup,
     _select_ticket_starting_agent,
     TicketInvestigationRuntime,
     TicketTurnRequest,
@@ -128,6 +129,28 @@ class RoutingTests(unittest.TestCase):
                 investigation_job.evidence.tx_hashes,
                 ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
             )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+    def test_build_contextual_hints_reuses_known_chain_and_tx_hash(self) -> None:
+        channel_id = 23
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        try:
+            investigation_job.remember_chain("katana")
+            investigation_job.remember_tx_hash(
+                "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+            )
+
+            hints = TicketInvestigationRuntime.build_contextual_hints(
+                investigation_job,
+                "i dunno man. look into it",
+            )
+
+            self.assertEqual(len(hints), 2)
+            self.assertIn("use chain 'katana'", hints[0].lower())
+            self.assertIn("Do not substitute a different chain", hints[0])
+            self.assertIn("0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0", hints[0])
+            self.assertIn("follow-up to an existing transaction investigation", hints[1].lower())
         finally:
             clear_ticket_investigation_job(channel_id)
 
@@ -226,6 +249,23 @@ class TriageDecisionTests(unittest.TestCase):
             )
         )
         self.assertFalse(_reply_requests_human_handoff("This is a direct answer."))
+
+    def test_reply_requests_tx_investigation_followup_detects_internal_branch_question(self) -> None:
+        self.assertTrue(
+            _reply_requests_tx_investigation_followup(
+                "I can continue investigating. Would you like me to decode the logs or inspect the receipt?"
+            )
+        )
+        self.assertTrue(
+            _reply_requests_tx_investigation_followup(
+                "If you need a deeper decode, tell me what to inspect next."
+            )
+        )
+        self.assertFalse(
+            _reply_requests_tx_investigation_followup(
+                "The tx failed because allowance was too low."
+            )
+        )
 
 
 @dataclass
@@ -403,6 +443,78 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake_runner.calls), 1)
         self.assertEqual(outcome.completed_agent_key, "bug")
         self.assertTrue(outcome.requires_human_handoff)
+
+    async def test_ticket_agent_flow_retries_tx_investigation_branch_question_once(self) -> None:
+        channel_id = 34
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = "data"
+        investigation_job.remember_chain("katana")
+        investigation_job.remember_tx_hash(
+            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        )
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=(
+                        "I can continue investigating. Would you like me to decode the logs or inspect the receipt?"
+                    ),
+                    last_agent=yearn_data_agent,
+                    _history=[
+                        {
+                            "role": "user",
+                            "content": "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "I can continue investigating. "
+                                "Would you like me to decode the logs or inspect the receipt?"
+                            ),
+                        },
+                    ],
+                ),
+                _FakeResult(
+                    final_output="The tx succeeded on Katana and minted 650.9147 yvWBUSDT shares.",
+                    last_agent=yearn_data_agent,
+                    _history=[
+                        {
+                            "role": "user",
+                            "content": "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "The tx succeeded on Katana and minted 650.9147 yvWBUSDT shares.",
+                        },
+                    ],
+                ),
+            ]
+        )
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="i dunno man. look into it",
+                    input_list=[{"role": "user", "content": "i dunno man. look into it"}],
+                    current_history=[{"role": "user", "content": "Earlier tx context"}],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertNotIn("would you like me", outcome.raw_final_reply.lower())
+        self.assertIn("650.9147", outcome.raw_final_reply)
+        corrected_input = fake_runner.calls[1]["input"]
+        self.assertEqual(corrected_input[-1]["role"], "system")
+        self.assertIn(
+            "Do not ask the user whether you should proceed",
+            corrected_input[-1]["content"],
+        )
 
 
 @dataclass
