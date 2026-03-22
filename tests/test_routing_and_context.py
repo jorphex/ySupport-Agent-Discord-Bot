@@ -8,6 +8,7 @@ import tempfile
 from unittest.mock import patch
 
 from agents import RunContextWrapper
+import discord
 
 import config
 from router import select_starting_agent
@@ -15,7 +16,12 @@ from state import (
     BotRunContext,
     TicketInvestigationJob,
     clear_ticket_investigation_job,
+    conversation_threads,
     get_or_create_ticket_investigation_job,
+    last_bot_reply_ts_by_channel,
+    last_wallet_by_channel,
+    pending_messages,
+    pending_wallet_confirmation_by_channel,
 )
 from ticket_investigation_json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
@@ -60,6 +66,7 @@ from ticket_investigation_runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
 )
+from ysupport import TicketBot, _canonicalize_current_user_message
 
 
 class RoutingTests(unittest.TestCase):
@@ -311,6 +318,138 @@ class TriageDecisionTests(unittest.TestCase):
                 "The tx failed because allowance was too low."
             )
         )
+
+
+class WalletCanonicalizationTests(unittest.TestCase):
+    def test_canonicalize_current_user_message_uses_resolved_wallet_for_data_turn(self) -> None:
+        context = BotRunContext(
+            channel_id=61,
+            project_context="yearn",
+            initial_button_intent="data_deposit_check",
+        )
+
+        self.assertEqual(
+            _canonicalize_current_user_message(
+                "0xabcDEFabcDEFabcDEFabcDEFabcDEFabcDEFabcd",
+                context,
+                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
+            ),
+            "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
+        )
+
+    def test_canonicalize_current_user_message_uses_resolved_wallet_for_wallet_labeled_followup(self) -> None:
+        context = BotRunContext(channel_id=62, project_context="yearn")
+
+        self.assertEqual(
+            _canonicalize_current_user_message(
+                "wallet 0xabcDEFabcDEFabcDEFabcDEFabcDEFabcDEFabcd",
+                context,
+                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
+            ),
+            "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
+        )
+
+    def test_canonicalize_current_user_message_preserves_non_address_text(self) -> None:
+        context = BotRunContext(channel_id=63, project_context="yearn")
+
+        self.assertEqual(
+            _canonicalize_current_user_message(
+                "How do I withdraw from this vault?",
+                context,
+                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
+            ),
+            "How do I withdraw from this vault?",
+        )
+
+
+class _FakeTypingContext:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeDiscordChannel:
+    def __init__(self, channel_id: int):
+        self.id = channel_id
+        self.sent_messages: list[str] = []
+
+    async def send(self, message: str, *args, **kwargs):
+        self.sent_messages.append(message)
+
+    def typing(self):
+        return _FakeTypingContext()
+
+
+class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_process_ticket_message_uses_same_resolved_wallet_for_ack_and_turn_input(self) -> None:
+        channel_id = 64
+        fake_channel = _FakeDiscordChannel(channel_id)
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _FakeExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                request.investigation_job.complete_specialist_turn("data")
+                request.investigation_job.mark_waiting_for_user()
+                return type(
+                    "_FakeWorkerResult",
+                    (),
+                    {
+                        "flow_outcome": TicketAgentFlowOutcome(
+                            raw_final_reply="No deposits found.",
+                            conversation_history=[],
+                            completed_agent_key="data",
+                            requires_human_handoff=False,
+                        ),
+                        "updated_job": request.investigation_job,
+                    },
+                )()
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FakeExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="data_deposit_check",
+        )
+
+        pending_messages[channel_id] = "0xabcDEFabcDEFabcDEFabcDEFabcDEFabcDEFabcd"
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        last_wallet_by_channel.pop(channel_id, None)
+        pending_wallet_confirmation_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        resolved_wallet = "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
+        try:
+            with patch("ysupport.tools_lib.resolve_ens", return_value=resolved_wallet):
+                with patch("ysupport.send_long_message", new=fake_channel.send):
+                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                        await bot.process_ticket_message(channel_id, run_context)
+            observed_last_wallet = last_wallet_by_channel.get(channel_id)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_wallet_by_channel.pop(channel_id, None)
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(captured_requests), 1)
+        self.assertEqual(fake_channel.sent_messages[0], f"Thank you. I've received the address `{resolved_wallet}` and am looking up the information now. This may take a moment...")
+        self.assertEqual(captured_requests[0].input_list[-1]["content"], resolved_wallet)
+        self.assertTrue(
+            any(
+                item.get("role") == "system"
+                and resolved_wallet in item.get("content", "")
+                for item in captured_requests[0].input_list
+            )
+        )
+        self.assertEqual(observed_last_wallet, resolved_wallet)
 
 
 @dataclass

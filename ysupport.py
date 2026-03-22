@@ -73,6 +73,25 @@ def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int
     return config.COOLDOWN_SECONDS
 
 
+def _canonicalize_current_user_message(
+    aggregated_text: str,
+    run_context: BotRunContext,
+    resolved_wallet: str | None,
+) -> str:
+    if not resolved_wallet:
+        return aggregated_text
+    if run_context.initial_button_intent in {
+        "data_deposit_check",
+        "data_withdrawal_flow_start",
+        "data_vault_search",
+        "data_deposits_withdrawals_start",
+    }:
+        return resolved_wallet
+    if is_message_primarily_address(aggregated_text) and is_probable_wallet_address(aggregated_text):
+        return resolved_wallet
+    return aggregated_text
+
+
 # Discord Bot Implementation
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
@@ -351,6 +370,7 @@ class TicketBot(discord.Client):
 
             intent = run_context.initial_button_intent
             is_data_intent = intent in ['data_deposit_check', 'data_withdrawal_flow_start', 'data_vault_search', 'data_deposits_withdrawals_start']
+            current_user_content = aggregated_text
             system_hints: List[str] = []
 
             if is_data_intent:
@@ -379,6 +399,11 @@ class TicketBot(discord.Client):
                     if is_data_intent:
                         last_wallet_by_channel[channel_id] = parsed_address
                         investigation_job.remember_wallet(parsed_address)
+                        current_user_content = _canonicalize_current_user_message(
+                            aggregated_text,
+                            run_context,
+                            parsed_address,
+                        )
                         system_hints.append(
                             f"Resolved wallet address for this turn: {parsed_address}. Use this exact address for any wallet-based tool call."
                         )
@@ -391,6 +416,11 @@ class TicketBot(discord.Client):
                     else:
                         last_wallet_by_channel[channel_id] = parsed_address
                         investigation_job.remember_wallet(parsed_address)
+                        current_user_content = _canonicalize_current_user_message(
+                            aggregated_text,
+                            run_context,
+                            parsed_address,
+                        )
 
                     if is_data_intent:
                         ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
@@ -402,7 +432,7 @@ class TicketBot(discord.Client):
                             logging.warning(f"Failed to send pre-run acknowledgement message: {e}")
 
             current_history = conversation_threads.get(channel_id, [])
-            input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": aggregated_text}]
+            input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": current_user_content}]
 
             if system_hints:
                 input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
