@@ -111,6 +111,12 @@ Phase-2 behavior:
 - dedupes reports within a run and optionally across runs via a persisted signature file
 - can bound the number of reports posted in one run so a future scheduled job cannot spam the private channel
 
+Phase-3 behavior:
+
+- groups matching report signatures within a run into one private report
+- keeps multiple affected ticket references in the same formatted message
+- counts grouped themes against `--max-posts`, not raw ticket count
+
 Intentional boundaries:
 
 - same Discord bot token as `ysupport`

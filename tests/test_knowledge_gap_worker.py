@@ -341,7 +341,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["skipped_reason"], "open_ticket")
         self.assertFalse(result["report_posted"])
 
-    async def test_process_tickets_dedupes_matching_reports_within_run(self) -> None:
+    async def test_process_tickets_groups_matching_reports_within_run(self) -> None:
         report = KnowledgeGapReport(
             should_post=True,
             category="faq_candidate",
@@ -382,7 +382,10 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(results[0]["report_posted"])
-        self.assertEqual(results[1]["skipped_reason"], "duplicate_report")
+        self.assertTrue(results[1]["report_posted"])
+        self.assertEqual(results[0]["group_size"], 2)
+        self.assertEqual(results[1]["group_size"], 2)
+        self.assertIn("<#1> (1), <#2> (2)", results[0]["formatted_report"])
         mock_post.assert_called_once()
 
     async def test_process_tickets_uses_state_file_for_dedupe(self) -> None:
@@ -493,19 +496,21 @@ class KnowledgeGapWorkerCliTests(unittest.IsolatedAsyncioTestCase):
         stdout = io.StringIO()
         with (
             patch(
-                "knowledge_gap_worker.process_ticket",
-                return_value={
-                    "channel_id": "1484802638158626887",
-                    "message_count": 1,
-                    "report_posted": False,
-                    "report": None,
-                },
-            ) as mock_process_ticket,
+                "knowledge_gap_worker.process_tickets",
+                return_value=[
+                    {
+                        "channel_id": "1484802638158626887",
+                        "message_count": 1,
+                        "report_posted": False,
+                        "report": None,
+                    }
+                ],
+            ) as mock_process_tickets,
             redirect_stdout(stdout),
         ):
             exit_code = await _main_async(["1484802638158626887", "--dry-run"])
 
         self.assertEqual(exit_code, 0)
-        mock_process_ticket.assert_called_once()
+        mock_process_tickets.assert_called_once()
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["results"][0]["channel_id"], "1484802638158626887")

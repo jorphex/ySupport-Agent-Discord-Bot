@@ -154,6 +154,13 @@ class PreparedTicketTranscript:
     transcript_text: str
 
 
+@dataclass
+class PendingReportGroup:
+    report: KnowledgeGapReport
+    transcripts: list[PreparedTicketTranscript]
+    result_indexes: list[int]
+
+
 @lru_cache(maxsize=1)
 def _supported_chain_id_map() -> dict[int, str]:
     chain_ids: dict[int, str] = {}
@@ -461,30 +468,95 @@ async def process_tickets(
     max_posts: Optional[int],
 ) -> list[dict[str, object]]:
     known_signatures = _load_reported_signatures(state_path)
-    run_signatures = set(known_signatures)
     results: list[dict[str, object]] = []
-    posted_count = 0
+    pending_groups: dict[str, PendingReportGroup] = {}
 
     for channel in channels:
-        result = await process_ticket(
-            channel,
-            limit=limit,
-            report_channel_id=report_channel_id,
-            dry_run=dry_run,
-            closed_only=closed_only,
-            known_signatures=run_signatures,
-            max_posts=max_posts,
-            posted_count=posted_count,
+        prepared = await asyncio.to_thread(prepare_ticket_transcript, channel, limit)
+        if closed_only and not _is_closed_ticket(prepared):
+            results.append(
+                {
+                    "channel_id": prepared.channel_id,
+                    "channel_name": prepared.channel_name,
+                    "message_count": prepared.message_count,
+                    "report_posted": False,
+                    "report": None,
+                    "skipped_reason": "open_ticket",
+                }
+            )
+            continue
+
+        report = await analyze_transcript_for_knowledge_gap(prepared)
+        if report is None:
+            results.append(
+                {
+                    "channel_id": prepared.channel_id,
+                    "channel_name": prepared.channel_name,
+                    "message_count": prepared.message_count,
+                    "report_posted": False,
+                    "report": None,
+                }
+            )
+            continue
+
+        report_signature = _build_report_signature(report)
+        if report_signature in known_signatures:
+            results.append(
+                {
+                    "channel_id": prepared.channel_id,
+                    "channel_name": prepared.channel_name,
+                    "message_count": prepared.message_count,
+                    "report_posted": False,
+                    "report": report.model_dump(),
+                    "report_signature": report_signature,
+                    "skipped_reason": "duplicate_report",
+                }
+            )
+            continue
+
+        result_index = len(results)
+        results.append(
+            {
+                "channel_id": prepared.channel_id,
+                "channel_name": prepared.channel_name,
+                "message_count": prepared.message_count,
+                "report_posted": False,
+                "report": report.model_dump(),
+                "report_signature": report_signature,
+            }
         )
-        results.append(result)
-        report_signature = result.get("report_signature")
-        if isinstance(report_signature, str) and report_signature:
-            run_signatures.add(report_signature)
-        if result.get("report_posted"):
-            posted_count += 1
+        if report_signature not in pending_groups:
+            pending_groups[report_signature] = PendingReportGroup(
+                report=report,
+                transcripts=[prepared],
+                result_indexes=[result_index],
+            )
+        else:
+            pending_groups[report_signature].transcripts.append(prepared)
+            pending_groups[report_signature].result_indexes.append(result_index)
+
+    posted_group_count = 0
+    for report_signature, group in pending_groups.items():
+        formatted = format_knowledge_gap_report(group.report, affected_channels=group.transcripts)
+        within_post_budget = max_posts is None or posted_group_count < max_posts
+        if within_post_budget and not dry_run:
+            await asyncio.to_thread(post_report_message, report_channel_id, formatted)
+            known_signatures.add(report_signature)
+            posted_group_count += 1
+        elif within_post_budget:
+            posted_group_count += 1
+
+        for result_index in group.result_indexes:
+            results[result_index]["formatted_report"] = formatted
+            results[result_index]["group_size"] = len(group.transcripts)
+            results[result_index]["group_channel_ids"] = [ticket.channel_id for ticket in group.transcripts]
+            if within_post_budget:
+                results[result_index]["report_posted"] = not dry_run
+            else:
+                results[result_index]["skipped_reason"] = "max_posts_reached"
 
     if not dry_run:
-        _save_reported_signatures(state_path, run_signatures)
+        _save_reported_signatures(state_path, known_signatures)
     return results
 
 
