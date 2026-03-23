@@ -177,6 +177,32 @@ class RoutingTests(unittest.TestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
+    def test_follow_up_routing_switches_data_turn_to_docs_for_veyfi_migration(self) -> None:
+        channel_id = 27
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = "data"
+        try:
+            agent_key = _select_ticket_starting_agent(
+                "I have 1.0893 veYFI. They are unlocked now since yesterday, but I am unable to migrate.",
+                context,
+                current_history=[
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "**Active Deposits:**\n"
+                            "**Vault:** [Ethereum Vault](https://yearn.fi/v3/1/0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e) (Symbol: yvUSDC-1)\n"
+                            "  Address: `0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e`\n"
+                            "  Total Position: **1.000000 yvUSDC-1**"
+                        ),
+                    }
+                ],
+                investigation_job=investigation_job,
+            )
+            self.assertEqual(agent_key, "docs")
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
     def test_merge_explicit_evidence_into_job_tracks_chain_and_tx_hash(self) -> None:
         channel_id = 22
         investigation_job = get_or_create_ticket_investigation_job(channel_id)

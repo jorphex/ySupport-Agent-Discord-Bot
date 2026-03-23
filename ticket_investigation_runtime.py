@@ -80,6 +80,18 @@ def _select_ticket_starting_agent(
         run_context.initial_button_intent is None
         and current_history
         and prior_specialist == "data"
+        and _is_documented_governance_migration_followup(aggregated_text)
+    ):
+        logging.info(
+            "Switching follow-up from prior specialist '%s' to docs for documented governance migration in channel %s",
+            prior_specialist,
+            investigation_job.channel_id,
+        )
+        return "docs"
+    if (
+        run_context.initial_button_intent is None
+        and current_history
+        and prior_specialist == "data"
         and (
             investigation_job.evidence.tx_hashes
             or (
@@ -221,6 +233,28 @@ def _contains_report_artifact_evidence(text: str) -> bool:
 def _is_withdrawal_followup(text: str) -> bool:
     lowered = text.lower()
     return any(keyword in lowered for keyword in ("withdraw", "withdrawing", "redeem", "redeeming"))
+
+
+def _is_documented_governance_migration_followup(text: str) -> bool:
+    lowered = text.lower()
+    governance_markers = ("veyfi", "ve yfi", "styfi", "st yfi")
+    destination_markers = ("migrate", "migration", "unlocked", "expired", "legacy", "manage")
+    concrete_failure_markers = (
+        "broken",
+        "404",
+        "button",
+        "error code",
+        "not loading",
+        "doesn't load",
+        "doesnt load",
+        "page error",
+        "transaction failed",
+    )
+    return (
+        any(marker in lowered for marker in governance_markers)
+        and any(marker in lowered for marker in destination_markers)
+        and not any(marker in lowered for marker in concrete_failure_markers)
+    )
 
 
 def _extract_single_listed_deposit_context(

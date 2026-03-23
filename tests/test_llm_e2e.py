@@ -413,7 +413,11 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 channel_id=9237,
             )
 
-        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertEqual(
+            outcome.completed_agent_key,
+            "docs",
+            f"reply={outcome.raw_final_reply!r}",
+        )
         self.assertFalse(outcome.requires_human_handoff, outcome.raw_final_reply)
         lowered = outcome.raw_final_reply.lower()
         self.assertIn("styfi.yearn.fi", lowered)
@@ -1502,6 +1506,36 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("which vault", lowered)
         self.assertNotIn("re-check", lowered)
         self.assertNotIn("ethereum", lowered)
+
+    async def test_veyfi_migration_followup_after_data_turn_points_directly_to_legacy_manage(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "i have 1.0893 veYFI . they are unlocked now since yesterday. "
+            "but i am unable to migrate and cant find out why.",
+            channel_id=9040,
+            last_specialty="data",
+            current_history=[
+                {"role": "user", "content": self.wallet_address},
+                {
+                    "role": "assistant",
+                    "content": (
+                        "**Active Deposits:**\n"
+                        "**Vault:** [Ethereum Vault](https://yearn.fi/v3/1/0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e) (Symbol: yvUSDC-1)\n"
+                        "  Address: `0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e`\n"
+                        "  Total Position: **1.000000 yvUSDC-1**"
+                    ),
+                },
+            ],
+        )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("legacy-veyfi.yearn.fi/manage", lowered)
+        self.assertIn("styfi.yearn.fi", lowered)
+        self.assertNotIn("browser", lowered)
+        self.assertNotIn("screenshot", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
 
     async def test_ticket_router_escalation_returns_handoff_without_specialist_text(
         self,
