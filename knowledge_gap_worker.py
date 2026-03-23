@@ -213,33 +213,34 @@ def format_knowledge_gap_report(
     *,
     affected_channels: list[str],
 ) -> str:
-    lines = [
-        "Knowledge-gap report",
-        f"Title: {report.title}",
-        f"Category: {report.category}",
-        f"Topic: {report.topic}",
-    ]
-    if report.product:
-        lines.append(f"Product: {report.product}")
-    if report.chain:
-        lines.append(f"Chain: {report.chain}")
+    lines = ["**Knowledge-Gap Report**", ""]
     lines.extend(
         [
-            f"Affected tickets: {', '.join(affected_channels)}",
+            f"**Title:** {report.title}",
+            f"**Category:** {report.category}",
+            f"**Topic:** {report.topic}",
+        ]
+    )
+    if report.product:
+        lines.append(f"**Product:** {report.product}")
+    if report.chain:
+        lines.append(f"**Chain:** {report.chain}")
+    lines.extend(
+        [
+            f"**Affected tickets:** {', '.join(affected_channels)}",
+            f"**Confidence:** {report.confidence}",
             "",
-            "Evidence",
+            "**Evidence**",
             report.evidence_summary,
             "",
-            "Current official grounding",
+            "**Current official grounding**",
             report.current_official_grounding,
             "",
-            "Assessment",
+            "**Assessment**",
             report.assessment,
             "",
-            "Suggested action",
+            "**Suggested action**",
             report.suggested_action,
-            "",
-            f"Confidence: {report.confidence}",
         ]
     )
     return "\n".join(lines).strip()

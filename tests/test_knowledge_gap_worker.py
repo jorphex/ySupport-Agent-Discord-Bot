@@ -131,9 +131,10 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         formatted = format_knowledge_gap_report(report, affected_channels=["123", "456"])
 
-        self.assertIn("Knowledge-gap report", formatted)
-        self.assertIn("Affected tickets: 123, 456", formatted)
-        self.assertIn("Suggested action", formatted)
+        self.assertIn("**Knowledge-Gap Report**", formatted)
+        self.assertIn("**Affected tickets:** 123, 456", formatted)
+        self.assertIn("**Suggested action**", formatted)
+        self.assertIn("**Confidence:** medium", formatted)
 
     def test_post_report_message_sends_all_chunks(self) -> None:
         sent_payloads = []
