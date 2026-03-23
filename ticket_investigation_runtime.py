@@ -201,6 +201,18 @@ def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
     return any(marker in lowered for marker in option_menu_markers) and " or " in lowered
 
 
+def _contains_public_report_artifact_url(text: str) -> bool:
+    return bool(
+        re.search(
+            r"https://(?:gist\.github\.com/[^/\s]+/[0-9a-fA-F]+|"
+            r"gist\.githubusercontent\.com/[^/\s]+/[0-9a-fA-F]+/[^)\]\s]+|"
+            r"raw\.githubusercontent\.com/[^)\]\s]+|"
+            r"github\.com/[^/\s]+/[^/\s]+/(?:blob|raw)/[^)\]\s]+)",
+            text or "",
+        )
+    )
+
+
 def _is_withdrawal_followup(text: str) -> bool:
     lowered = text.lower()
     return any(keyword in lowered for keyword in ("withdraw", "withdrawing", "redeem", "redeeming"))
@@ -424,6 +436,35 @@ class TicketInvestigationRuntime:
                 max_turns=4,
                 run_config=RunConfig(
                     workflow_name=f"{request.workflow_name} / tx-investigation-followup",
+                    group_id=str(request.run_context.channel_id),
+                ),
+                context=request.run_context,
+            )
+            raw_final_reply = corrected_result.final_output or raw_final_reply
+            conversation_history = corrected_result.to_input_list()
+            completed_agent_key = _agent_to_key(corrected_result.last_agent)
+        if (
+            _contains_public_report_artifact_url(request.aggregated_text)
+            and _reply_requests_human_handoff(raw_final_reply)
+        ):
+            corrected_result = await self.runner.run(
+                starting_agent=_resolve_agent(agent_key),
+                input=conversation_history
+                + [
+                    {
+                        "role": "system",
+                        "content": (
+                            "This turn includes a submitted public report artifact. "
+                            "Do one bounded repo/docs pre-triage pass before escalating. "
+                            "If repo/docs clearly explain or contradict the claim, answer directly and do not escalate. "
+                            "If the artifact lacks a concrete Yearn-specific claim, ask one focused follow-up for the exact Yearn contract/path, concrete claim, and observed impact. "
+                            "Only escalate if a plausible unresolved security issue remains after that pre-triage."
+                        ),
+                    }
+                ],
+                max_turns=4,
+                run_config=RunConfig(
+                    workflow_name=f"{request.workflow_name} / report-artifact-pretriage",
                     group_id=str(request.run_context.channel_id),
                 ),
                 context=request.run_context,

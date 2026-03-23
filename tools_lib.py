@@ -92,6 +92,105 @@ def _json_loads_or_default(raw_value: Optional[str], default: Any) -> Any:
     return json.loads(raw_value)
 
 
+def _github_api_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "ysupport-report-artifact-fetcher",
+    }
+    if config.GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {config.GITHUB_TOKEN}"
+    return headers
+
+
+def _parse_gist_id(report_url: str) -> Optional[str]:
+    match = re.match(r"^https://gist\.github\.com/[^/]+/([0-9a-fA-F]+)", report_url)
+    if match:
+        return match.group(1)
+    match = re.match(r"^https://gist\.githubusercontent\.com/[^/]+/([0-9a-fA-F]+)/", report_url)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _normalize_supported_report_url(report_url: str) -> tuple[str, str]:
+    stripped = (report_url or "").strip()
+    gist_id = _parse_gist_id(stripped)
+    if gist_id:
+        return "gist", gist_id
+
+    if stripped.startswith("https://raw.githubusercontent.com/"):
+        return "raw", stripped
+
+    blob_match = re.match(r"^https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$", stripped)
+    if blob_match:
+        owner, repo, ref, path = blob_match.groups()
+        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+        return "raw", raw_url
+
+    if stripped.startswith("https://github.com/") and "/raw/" in stripped:
+        return "raw", stripped.replace("https://github.com/", "https://raw.githubusercontent.com/").replace("/raw/", "/", 1)
+
+    raise ValueError(
+        "Unsupported report URL. Supported public artifact URLs are gist.github.com, "
+        "gist.githubusercontent.com, raw.githubusercontent.com, and github.com/.../blob/... links."
+    )
+
+
+async def _fetch_gist_content(gist_id: str, *, max_chars: int) -> str:
+    api_url = f"https://api.github.com/gists/{gist_id}"
+
+    def _do_request() -> dict[str, Any]:
+        response = requests.get(api_url, headers=_github_api_headers(), timeout=20)
+        response.raise_for_status()
+        return response.json()
+
+    gist_payload = await asyncio.to_thread(_do_request)
+    files = gist_payload.get("files") or {}
+    if not files:
+        return "The gist is public but contains no files or readable content."
+
+    blocks: list[str] = []
+    remaining_chars = max_chars
+    truncated = False
+
+    for filename, file_meta in files.items():
+        content = file_meta.get("content") or ""
+        if not content:
+            raw_url = file_meta.get("raw_url")
+            if raw_url:
+                try:
+                    content = await _fetch_raw_report_content(raw_url, max_chars=max(remaining_chars, 1000))
+                except Exception:
+                    content = ""
+        header = f"File: {filename}"
+        block = f"{header}\n{content}".strip()
+        if len(block) > remaining_chars:
+            block = block[:remaining_chars].rstrip()
+            truncated = True
+        blocks.append(block)
+        remaining_chars -= len(block) + 2
+        if remaining_chars <= 0:
+            truncated = True
+            break
+
+    body = "\n\n".join(blocks)
+    if truncated:
+        body += "\n\n[artifact truncated]"
+    return body
+
+
+async def _fetch_raw_report_content(raw_url: str, *, max_chars: int) -> str:
+    def _do_request() -> str:
+        response = requests.get(raw_url, headers=_github_api_headers(), timeout=20)
+        response.raise_for_status()
+        return response.text
+
+    raw_text = await asyncio.to_thread(_do_request)
+    if len(raw_text) > max_chars:
+        return raw_text[:max_chars].rstrip() + "\n\n[artifact truncated]"
+    return raw_text
+
+
 def _normalize_chain(chain: str) -> str:
     return (chain or "").strip().lower()
 
@@ -873,6 +972,32 @@ async def core_fetch_repo_artifacts(artifact_refs_text: str) -> str:
     except Exception as exc:
         logging.error(f"[CoreTool:fetch_repo_artifacts] Error: {exc}", exc_info=True)
         return f"Error fetching repo artifacts: {exc}"
+
+
+async def core_fetch_report_artifact(report_url: str, max_chars: int = 12000) -> str:
+    logging.info("[CoreTool:fetch_report_artifact] report_url='%s' max_chars=%s", report_url, max_chars)
+    try:
+        artifact_kind, normalized_value = _normalize_supported_report_url(report_url)
+        if artifact_kind == "gist":
+            artifact_text = await _fetch_gist_content(normalized_value, max_chars=max_chars)
+            source_label = f"https://gist.github.com/.../{normalized_value}"
+        else:
+            artifact_text = await _fetch_raw_report_content(normalized_value, max_chars=max_chars)
+            source_label = normalized_value
+        return f"Fetched public report artifact from: {source_label}\n\n{artifact_text}"
+    except ValueError as exc:
+        return str(exc)
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else "unknown"
+        logging.warning(
+            "[CoreTool:fetch_report_artifact] HTTP error for '%s': status=%s",
+            report_url,
+            status_code,
+        )
+        return f"Could not fetch the public report artifact (HTTP {status_code})."
+    except Exception as exc:
+        logging.error(f"[CoreTool:fetch_report_artifact] Error: {exc}", exc_info=True)
+        return f"Error fetching the public report artifact: {exc}"
 
 
 async def core_repo_context_status() -> str:

@@ -200,3 +200,13 @@ async def repo_context_status_tool() -> str:
     Use this when repo results appear unavailable or stale.
     """
     return await tools_lib.core_repo_context_status()
+
+
+@function_tool
+async def fetch_report_artifact_tool(report_url: str, max_chars: int = 12000) -> str:
+    """
+    Fetches a public report artifact from supported GitHub/Gist URLs for bounded pre-triage.
+    Supported URLs include public gist links, gist raw URLs, github blob links, and raw.githubusercontent.com URLs.
+    Use this when a user submits a report link or gist instead of pasting the claim directly.
+    """
+    return await tools_lib.core_fetch_report_artifact(report_url, max_chars=max_chars)

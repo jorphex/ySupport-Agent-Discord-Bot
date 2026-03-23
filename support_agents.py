@@ -37,6 +37,7 @@ from support_tools import (
     answer_from_docs_tool,
     search_repo_context_tool,
     fetch_repo_artifacts_tool,
+    fetch_report_artifact_tool,
     repo_context_status_tool,
 )
 
@@ -223,6 +224,7 @@ yearn_bug_triage_agent = Agent[BotRunContext](
     tools=[
         search_repo_context_tool,
         fetch_repo_artifacts_tool,
+        fetch_report_artifact_tool,
         inspect_onchain_tool,
         answer_from_docs_tool,
         repo_context_status_tool,
