@@ -101,6 +101,13 @@ class RoutingTests(unittest.TestCase):
         context = BotRunContext(channel_id=3, project_context="yearn")
         self.assertEqual(select_starting_agent("Where do I see my stYFI position?", context), "docs")
 
+    def test_select_starting_agent_routes_styfi_contract_address_question_to_docs(self) -> None:
+        context = BotRunContext(channel_id=25, project_context="yearn")
+        self.assertEqual(
+            select_starting_agent("what's the contract address for styfi? it just launched today", context),
+            "docs",
+        )
+
     def test_select_starting_agent_routes_yeth_recovery_question_to_docs(self) -> None:
         context = BotRunContext(channel_id=23, project_context="yearn")
         message = (

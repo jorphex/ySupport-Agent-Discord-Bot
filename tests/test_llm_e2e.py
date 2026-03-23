@@ -408,6 +408,35 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("do you want me to check", lowered)
         self.assertNotIn("wallet address now", lowered)
 
+    async def test_styfi_contract_address_question_routes_to_docs_and_answers_directly(
+        self,
+    ) -> None:
+        tool_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            tool_calls.append(user_query)
+            return (
+                "Official docs list the Ethereum mainnet stYFI contract as "
+                "0x42b25284E8ae427D79da78b65DFFC232aAECc016. "
+                "Source: Yearn docs, stYFI contract addresses."
+            )
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            outcome = await self._run_ticket_flow(
+                "whats the contract address for styfi? it just launched today",
+                channel_id=9024,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(tool_calls), 1)
+        self.assertIn("contract address", tool_calls[0].lower())
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("0x42b25284e8ae427d79da78b65dffc232aaecc016", lowered)
+        self.assertIn("official", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("check your deposits", lowered)
+
     async def test_harvest_rewards_question_routes_to_docs_not_vault_search(
         self,
     ) -> None:
