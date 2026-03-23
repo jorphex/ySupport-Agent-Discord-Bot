@@ -1,7 +1,9 @@
 import argparse
 import asyncio
 import json
+import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -150,6 +152,82 @@ class PreparedTicketTranscript:
     transcript_text: str
 
 
+@lru_cache(maxsize=1)
+def _supported_chain_id_map() -> dict[int, str]:
+    chain_ids: dict[int, str] = {}
+    for chain_name, web3_instance in tools_lib.WEB3_INSTANCES.items():
+        try:
+            chain_ids[int(web3_instance.eth.chain_id)] = chain_name
+        except Exception:
+            continue
+    return chain_ids
+
+
+def _supported_chain_names() -> set[str]:
+    return set(config.RPC_URLS)
+
+
+def _extract_transcript_chain_hint(prepared_transcript: PreparedTicketTranscript) -> Optional[str]:
+    transcript_text = prepared_transcript.transcript_text.lower()
+    chain_id_matches = {
+        int(match.group(1))
+        for match in re.finditer(r"\bchain(?:id)?\s*[:=]?\s*(\d+)\b", transcript_text)
+    }
+    supported_chain_ids = _supported_chain_id_map()
+    matched_supported_names = {
+        supported_chain_ids[chain_id]
+        for chain_id in chain_id_matches
+        if chain_id in supported_chain_ids
+    }
+    if len(matched_supported_names) == 1:
+        return next(iter(matched_supported_names))
+    if len(matched_supported_names) > 1:
+        return None
+
+    explicit_name_matches = {
+        chain_name
+        for chain_name in _supported_chain_names()
+        if re.search(rf"\b{re.escape(chain_name)}\b", transcript_text)
+    }
+    if len(explicit_name_matches) == 1:
+        return next(iter(explicit_name_matches))
+    return None
+
+
+def _normalize_report_chain(chain_value: Optional[str], *, transcript_chain_hint: Optional[str]) -> Optional[str]:
+    if transcript_chain_hint:
+        return transcript_chain_hint
+    if not chain_value:
+        return None
+
+    normalized_value = chain_value.strip().lower()
+    if not normalized_value:
+        return None
+
+    for chain_name in _supported_chain_names():
+        if re.search(rf"\b{re.escape(chain_name)}\b", normalized_value):
+            return chain_name
+
+    for chain_id, chain_name in _supported_chain_id_map().items():
+        if re.search(rf"\b{chain_id}\b", normalized_value):
+            return chain_name
+
+    return None
+
+
+def finalize_knowledge_gap_report(
+    report: KnowledgeGapReport,
+    prepared_transcript: PreparedTicketTranscript,
+) -> KnowledgeGapReport:
+    transcript_chain_hint = _extract_transcript_chain_hint(prepared_transcript)
+    normalized_payload = report.model_dump()
+    normalized_payload["chain"] = _normalize_report_chain(
+        report.chain,
+        transcript_chain_hint=transcript_chain_hint,
+    )
+    return KnowledgeGapReport(**normalized_payload)
+
+
 def prepare_ticket_transcript(channel_or_link: str, limit: int = 80) -> PreparedTicketTranscript:
     channel_id = extract_channel_id(channel_or_link)
     channel_metadata = fetch_channel_metadata(channel_id)
@@ -209,7 +287,7 @@ async def analyze_transcript_for_knowledge_gap(
     )
     if not report.should_post or report.category == "no_action":
         return None
-    return report
+    return finalize_knowledge_gap_report(report, prepared_transcript)
 
 
 def format_knowledge_gap_report(
@@ -218,7 +296,7 @@ def format_knowledge_gap_report(
     affected_channels: list[PreparedTicketTranscript],
 ) -> str:
     affected_ticket_refs = ", ".join(
-        f"<#{ticket.channel_id}> ({ticket.channel_name})" for ticket in affected_channels
+        f"<#{ticket.channel_id}> ({ticket.channel_id})" for ticket in affected_channels
     )
     lines = ["**Knowledge-Gap Report**", ""]
     lines.extend(

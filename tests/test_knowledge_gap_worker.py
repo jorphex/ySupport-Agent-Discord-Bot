@@ -11,6 +11,7 @@ from knowledge_gap_worker import (
     PreparedTicketTranscript,
     _main_async,
     analyze_transcript_for_knowledge_gap,
+    finalize_knowledge_gap_report,
     format_knowledge_gap_report,
     post_report_message,
     prepare_ticket_transcript,
@@ -147,9 +148,61 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("**Knowledge-Gap Report**", formatted)
-        self.assertIn("**Affected tickets:** <#123> (ticket-alpha), <#456> (ticket-beta)", formatted)
+        self.assertIn("**Affected tickets:** <#123> (123), <#456> (456)", formatted)
         self.assertIn("**Suggested action**", formatted)
         self.assertIn("**Confidence:** medium", formatted)
+
+    def test_finalize_knowledge_gap_report_uses_supported_chain_hint_from_transcript(self) -> None:
+        report = KnowledgeGapReport(
+            should_post=True,
+            category="product_confusion",
+            title="Legacy vault visibility",
+            topic="Legacy vault discovery",
+            product="Yearn UI",
+            chain="Avalanche",
+            evidence_summary="User cited chain 42161 while reporting a missing legacy vault position.",
+            current_official_grounding="Docs mention yPort Bot but not a legacy UI path.",
+            assessment="The chain label should come from transcript evidence, not model guesswork.",
+            suggested_action="Document supported legacy discovery paths.",
+            confidence="high",
+        )
+        transcript = PreparedTicketTranscript(
+            channel_id="1484632286216454295",
+            channel_name="ticket-1450",
+            message_count=3,
+            transcript_text="User says the position is on chain 42161 and only visible in the legacy UI.",
+        )
+
+        with patch("knowledge_gap_worker._supported_chain_id_map", return_value={42161: "arbitrum"}):
+            finalized = finalize_knowledge_gap_report(report, transcript)
+
+        self.assertEqual(finalized.chain, "arbitrum")
+
+    def test_finalize_knowledge_gap_report_drops_unsupported_chain_without_hint(self) -> None:
+        report = KnowledgeGapReport(
+            should_post=True,
+            category="docs_gap",
+            title="Unsupported chain label",
+            topic="Bad chain label",
+            product="Yearn UI",
+            chain="Avalanche",
+            evidence_summary="No transcript chain evidence.",
+            current_official_grounding="No official chain grounding provided.",
+            assessment="Unsupported chain names should not survive finalization.",
+            suggested_action="Drop unverified chain labels.",
+            confidence="medium",
+        )
+        transcript = PreparedTicketTranscript(
+            channel_id="1",
+            channel_name="ticket-one",
+            message_count=1,
+            transcript_text="User says they cannot find a legacy vault.",
+        )
+
+        with patch("knowledge_gap_worker._supported_chain_id_map", return_value={42161: "arbitrum"}):
+            finalized = finalize_knowledge_gap_report(report, transcript)
+
+        self.assertIsNone(finalized.chain)
 
     def test_post_report_message_sends_all_chunks(self) -> None:
         sent_payloads = []
