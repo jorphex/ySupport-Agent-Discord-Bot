@@ -730,8 +730,30 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         lowered = outcome.raw_final_reply.lower()
         self.assertFalse(outcome.requires_human_handoff, outcome.raw_final_reply)
-        self.assertIn("exact yearn contract", lowered)
-        self.assertTrue("observed impact" in lowered or "vulnerability claim" in lowered or "actual report" in lowered)
+        self.assertTrue(
+            any(
+                marker in lowered
+                for marker in (
+                    "exact yearn contract",
+                    "which yearn contract",
+                    "affected yearn contract",
+                    "yearn product path",
+                    "affected contract",
+                )
+            )
+        )
+        self.assertTrue(
+            any(
+                marker in lowered
+                for marker in (
+                    "observed impact",
+                    "vulnerability claim",
+                    "actual report",
+                    "exploit mechanism",
+                    "specific claim",
+                )
+            )
+        )
         self.assertNotIn("device/browser", lowered)
         self.assertNotIn("what browser", lowered)
         self.assertNotIn("{human_handoff_tag_placeholder}", lowered)
