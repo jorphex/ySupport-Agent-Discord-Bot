@@ -375,11 +375,20 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def test_styfi_migration_balance_view_question_uses_official_dashboard_paths(
         self,
     ) -> None:
-        outcome = await self._run_ticket_flow(
-            "after migrations from veyfi to styfi but where can i check my styfi? "
-            "I went to styfi.yearn.fi and there can't find my styfi balance.",
-            channel_id=9237,
-        )
+        async def fake_answer_from_docs(user_query: str) -> str:
+            self.assertIn("styfi", user_query.lower())
+            return (
+                "Check https://styfi.yearn.fi for current stYFI. "
+                "Use https://veyfi.yearn.fi for the migration and liquid-locker dashboard. "
+                "Use https://legacy-veyfi.yearn.fi for legacy veYFI lock management."
+            )
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            outcome = await self._run_ticket_flow(
+                "after migrations from veyfi to styfi but where can i check my styfi? "
+                "I went to styfi.yearn.fi and there can't find my styfi balance.",
+                channel_id=9237,
+            )
 
         self.assertEqual(outcome.completed_agent_key, "docs")
         self.assertFalse(outcome.requires_human_handoff)
@@ -683,6 +692,22 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("jump on a call", lowered)
         self.assertNotIn("share more details", lowered)
         self.assertIn("cannot engage", lowered)
+
+    async def test_security_report_gist_submission_escalates_to_security_process_without_browser_triage(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
+            channel_id=9031,
+            initial_button_intent="bug_report",
+        )
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertTrue(outcome.requires_human_handoff)
+        self.assertIn("docs.yearn.fi/developers/security", lowered)
+        self.assertNotIn("device/browser", lowered)
+        self.assertNotIn("steps to reproduce", lowered)
+        self.assertNotIn("what browser", lowered)
 
     async def test_sdyfi_unstake_behavior_question_gives_grounded_repo_answer_with_clear_limit(
         self,
