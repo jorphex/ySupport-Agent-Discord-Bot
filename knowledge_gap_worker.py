@@ -13,6 +13,7 @@ import tools_lib
 from discord_api import DISCORD_API_BASE, discord_post_json
 from ticket_transcript_fetch import (
     extract_channel_id,
+    fetch_channel_metadata,
     fetch_channel_messages,
     normalize_message,
     render_transcript,
@@ -144,16 +145,19 @@ knowledge_gap_report_agent = Agent(
 @dataclass(frozen=True)
 class PreparedTicketTranscript:
     channel_id: str
+    channel_name: str
     message_count: int
     transcript_text: str
 
 
 def prepare_ticket_transcript(channel_or_link: str, limit: int = 80) -> PreparedTicketTranscript:
     channel_id = extract_channel_id(channel_or_link)
+    channel_metadata = fetch_channel_metadata(channel_id)
     raw_messages = fetch_channel_messages(channel_id, limit=limit)
     normalized_messages = [normalize_message(message) for message in raw_messages]
     return PreparedTicketTranscript(
         channel_id=channel_id,
+        channel_name=channel_metadata.name,
         message_count=len(normalized_messages),
         transcript_text=render_transcript(normalized_messages),
     )
@@ -211,8 +215,11 @@ async def analyze_transcript_for_knowledge_gap(
 def format_knowledge_gap_report(
     report: KnowledgeGapReport,
     *,
-    affected_channels: list[str],
+    affected_channels: list[PreparedTicketTranscript],
 ) -> str:
+    affected_ticket_refs = ", ".join(
+        f"<#{ticket.channel_id}> ({ticket.channel_name})" for ticket in affected_channels
+    )
     lines = ["**Knowledge-Gap Report**", ""]
     lines.extend(
         [
@@ -227,7 +234,7 @@ def format_knowledge_gap_report(
         lines.append(f"**Chain:** {report.chain}")
     lines.extend(
         [
-            f"**Affected tickets:** {', '.join(affected_channels)}",
+            f"**Affected tickets:** {affected_ticket_refs}",
             f"**Confidence:** {report.confidence}",
             "",
             "**Evidence**",
@@ -250,7 +257,7 @@ def post_report_message(channel_id: int, content: str) -> None:
     for chunk in split_long_message(content):
         discord_post_json(
             f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
-            {"content": chunk},
+            {"content": chunk, "flags": 4},
         )
 
 
@@ -266,16 +273,18 @@ async def process_ticket(
     if report is None:
         return {
             "channel_id": prepared.channel_id,
+            "channel_name": prepared.channel_name,
             "message_count": prepared.message_count,
             "report_posted": False,
             "report": None,
         }
 
-    formatted = format_knowledge_gap_report(report, affected_channels=[prepared.channel_id])
+    formatted = format_knowledge_gap_report(report, affected_channels=[prepared])
     if not dry_run:
         await asyncio.to_thread(post_report_message, report_channel_id, formatted)
     return {
         "channel_id": prepared.channel_id,
+        "channel_name": prepared.channel_name,
         "message_count": prepared.message_count,
         "report_posted": not dry_run,
         "report": report.model_dump(),

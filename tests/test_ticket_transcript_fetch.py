@@ -71,17 +71,23 @@ class TicketTranscriptFetchTests(unittest.TestCase):
 
     def test_main_emits_json_with_normalized_messages(self) -> None:
         stdout = io.StringIO()
-        with patch(
-            "ticket_transcript_fetch.fetch_channel_messages",
-            return_value=[
-                {
-                    "id": "1",
-                    "timestamp": "2026-03-22T11:08:00.000000+00:00",
-                    "content": "hello",
-                    "author": {"username": "User", "bot": False},
-                    "attachments": [],
-                }
-            ],
+        with (
+            patch(
+                "ticket_transcript_fetch.fetch_channel_metadata",
+                return_value=type("ChannelMetadata", (), {"id": "1484802638158626887", "name": "ticket-json"})(),
+            ),
+            patch(
+                "ticket_transcript_fetch.fetch_channel_messages",
+                return_value=[
+                    {
+                        "id": "1",
+                        "timestamp": "2026-03-22T11:08:00.000000+00:00",
+                        "content": "hello",
+                        "author": {"username": "User", "bot": False},
+                        "attachments": [],
+                    }
+                ],
+            ),
         ):
             with redirect_stdout(stdout):
                 exit_code = main(["1484802638158626887", "--json"])
@@ -89,6 +95,7 @@ class TicketTranscriptFetchTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["channel_id"], "1484802638158626887")
+        self.assertEqual(payload["channel_name"], "ticket-json")
         self.assertEqual(payload["message_count"], 1)
         self.assertEqual(payload["messages"][0]["author_name"], "User")
 

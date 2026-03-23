@@ -20,27 +20,35 @@ from knowledge_gap_worker import (
 
 class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
     def test_prepare_ticket_transcript_fetches_and_renders_messages(self) -> None:
-        with patch(
-            "knowledge_gap_worker.fetch_channel_messages",
-            return_value=[
-                {
-                    "id": "1",
-                    "timestamp": "2026-03-23T12:00:00.000000+00:00",
-                    "content": "Where do I see migrated stYFI?",
-                    "author": {"username": "User", "bot": False},
-                    "attachments": [],
-                }
-            ],
+        with (
+            patch(
+                "knowledge_gap_worker.fetch_channel_metadata",
+                return_value=type("ChannelMetadata", (), {"id": "1484802638158626887", "name": "ticket-styfi"})(),
+            ),
+            patch(
+                "knowledge_gap_worker.fetch_channel_messages",
+                return_value=[
+                    {
+                        "id": "1",
+                        "timestamp": "2026-03-23T12:00:00.000000+00:00",
+                        "content": "Where do I see migrated stYFI?",
+                        "author": {"username": "User", "bot": False},
+                        "attachments": [],
+                    }
+                ],
+            ),
         ):
             prepared = prepare_ticket_transcript("1484802638158626887", limit=10)
 
         self.assertEqual(prepared.channel_id, "1484802638158626887")
+        self.assertEqual(prepared.channel_name, "ticket-styfi")
         self.assertEqual(prepared.message_count, 1)
         self.assertIn("Where do I see migrated stYFI?", prepared.transcript_text)
 
     async def test_analyze_transcript_returns_none_when_candidate_is_not_reportable(self) -> None:
         prepared = PreparedTicketTranscript(
             channel_id="1484802638158626887",
+            channel_name="ticket-thanks",
             message_count=1,
             transcript_text="[2026-03-23T12:00:00+00:00] User: thanks",
         )
@@ -60,6 +68,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_analyze_transcript_builds_grounded_report(self) -> None:
         prepared = PreparedTicketTranscript(
             channel_id="1484802638158626887",
+            channel_name="ticket-styfi",
             message_count=4,
             transcript_text="[2026-03-23T12:00:00+00:00] User: where do i see migrated styfi?",
         )
@@ -129,10 +138,16 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             confidence="medium",
         )
 
-        formatted = format_knowledge_gap_report(report, affected_channels=["123", "456"])
+        formatted = format_knowledge_gap_report(
+            report,
+            affected_channels=[
+                PreparedTicketTranscript(channel_id="123", channel_name="ticket-alpha", message_count=1, transcript_text=""),
+                PreparedTicketTranscript(channel_id="456", channel_name="ticket-beta", message_count=1, transcript_text=""),
+            ],
+        )
 
         self.assertIn("**Knowledge-Gap Report**", formatted)
-        self.assertIn("**Affected tickets:** 123, 456", formatted)
+        self.assertIn("**Affected tickets:** <#123> (ticket-alpha), <#456> (ticket-beta)", formatted)
         self.assertIn("**Suggested action**", formatted)
         self.assertIn("**Confidence:** medium", formatted)
 
@@ -150,8 +165,8 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(sent_payloads), 3)
         self.assertTrue(
             all(
-                url.endswith("/channels/TEST_REPORT_CHANNEL_ID/messages")
-                for url, _payload in sent_payloads
+                url.endswith("/channels/TEST_REPORT_CHANNEL_ID/messages") and payload.get("flags") == 4
+                for url, payload in sent_payloads
             )
         )
 
@@ -175,6 +190,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
                 "knowledge_gap_worker.prepare_ticket_transcript",
                 return_value=PreparedTicketTranscript(
                     channel_id="1484632286216454295",
+                    channel_name="ticket-legacy-link",
                     message_count=5,
                     transcript_text="...",
                 ),

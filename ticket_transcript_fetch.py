@@ -18,6 +18,12 @@ class TranscriptMessage:
     attachments: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ChannelMetadata:
+    id: str
+    name: str
+
+
 def extract_channel_id(channel_or_link: str) -> str:
     candidate = channel_or_link.strip()
     if candidate.isdigit():
@@ -50,6 +56,12 @@ def fetch_channel_messages(channel_id: str, limit: int = 100) -> list[dict[str, 
         if len(batch) < batch_size:
             break
     return list(reversed(messages))
+
+
+def fetch_channel_metadata(channel_id: str) -> ChannelMetadata:
+    raw_channel = discord_get_json(f"{DISCORD_API_BASE}/channels/{channel_id}")
+    channel_name = str(raw_channel.get("name") or channel_id)
+    return ChannelMetadata(id=channel_id, name=channel_name)
 
 
 def normalize_message(raw_message: dict[str, Any]) -> TranscriptMessage:
@@ -110,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         channel_id = extract_channel_id(args.channel)
+        channel_metadata = fetch_channel_metadata(channel_id)
         raw_messages = fetch_channel_messages(channel_id, limit=args.limit)
         normalized_messages = [normalize_message(message) for message in raw_messages]
     except Exception as exc:
@@ -119,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.as_json:
         payload = {
             "channel_id": channel_id,
+            "channel_name": channel_metadata.name,
             "message_count": len(normalized_messages),
             "messages": [
                 {
