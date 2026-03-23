@@ -415,7 +415,9 @@ class TicketInvestigationRuntime:
                         "content": (
                             "Continue the current transaction investigation yourself. "
                             "Do not ask the user whether you should proceed or which internal investigation branch to take. "
-                            "Use the known chain and transaction evidence, give the next grounded finding, and only escalate to a human if a real blocker remains."
+                            "Do not say 'I can', 'would you like', 'which would you like', or present an option menu. "
+                            "Choose the single next investigation step yourself, run it, and give the next grounded finding. "
+                            "Only escalate to a human if a real blocker remains after that step."
                         ),
                     }
                 ],
