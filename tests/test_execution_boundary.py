@@ -175,6 +175,36 @@ class ConfigSummaryTests(unittest.TestCase):
         self.assertIn("DISCORD_BOT_TOKEN is required", str(exc.exception))
 
 
+class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_report_artifact_reads_public_gist_via_github_api(self) -> None:
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "files": {
+                        "report.md": {
+                            "content": "Issue: unstake resets stream time via block.timestamp",
+                        }
+                    }
+                }
+
+        with patch("tools_lib.requests.get", return_value=FakeResponse()) as mock_get:
+            result = await tools_lib.core_fetch_report_artifact(
+                "https://gist.github.com/example/abcdef1234567890"
+            )
+
+        self.assertIn("Fetched public report artifact", result)
+        self.assertIn("unstake resets stream time", result)
+        self.assertIn("abcdef1234567890", result)
+        mock_get.assert_called_once()
+
+    async def test_fetch_report_artifact_rejects_unsupported_hosts(self) -> None:
+        result = await tools_lib.core_fetch_report_artifact("https://example.com/report.txt")
+        self.assertIn("Unsupported report URL", result)
+
+
 class TicketExecutionStatusTests(unittest.TestCase):
     def test_build_ticket_execution_status_reports_repo_context_and_valid_config(self) -> None:
         with patch(

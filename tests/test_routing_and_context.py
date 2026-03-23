@@ -61,6 +61,7 @@ from support_agents import (
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
     TicketAgentFlowOutcome,
+    _contains_public_report_artifact_url,
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
@@ -394,6 +395,19 @@ class TriageDecisionTests(unittest.TestCase):
                 "The tx failed because allowance was too low."
             )
         )
+
+    def test_contains_public_report_artifact_url_detects_supported_hosts(self) -> None:
+        self.assertTrue(
+            _contains_public_report_artifact_url(
+                "Report: https://gist.github.com/example/abcdef1234567890"
+            )
+        )
+        self.assertTrue(
+            _contains_public_report_artifact_url(
+                "See https://raw.githubusercontent.com/yearn/yearn-security/master/SECURITY.md"
+            )
+        )
+        self.assertFalse(_contains_public_report_artifact_url("No artifact URL here."))
 
 
 class WalletCanonicalizationTests(unittest.TestCase):
@@ -775,6 +789,84 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             "Do not ask the user whether you should proceed",
             corrected_input[-1]["content"],
         )
+
+    async def test_ticket_agent_flow_retries_public_report_artifact_handoff_once(self) -> None:
+        channel_id = 341
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=(
+                        "This needs human review. "
+                        f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                    ),
+                    last_agent=yearn_bug_triage_agent,
+                    _history=[
+                        {
+                            "role": "user",
+                            "content": "Report: https://gist.github.com/example/abcdef1234567890",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "This needs human review. "
+                                f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                            ),
+                        },
+                    ],
+                ),
+                _FakeResult(
+                    final_output=(
+                        "I checked the report, but it still needs the exact Yearn contract/path and a concrete claim."
+                    ),
+                    last_agent=yearn_bug_triage_agent,
+                    _history=[
+                        {
+                            "role": "user",
+                            "content": "Report: https://gist.github.com/example/abcdef1234567890",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "I checked the report, but it still needs the exact Yearn contract/path and a concrete claim."
+                            ),
+                        },
+                    ],
+                ),
+            ]
+        )
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="bug_report",
+        )
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="Report: https://gist.github.com/example/abcdef1234567890",
+                    input_list=[
+                        {
+                            "role": "user",
+                            "content": "Report: https://gist.github.com/example/abcdef1234567890",
+                        }
+                    ],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertEqual(outcome.completed_agent_key, "bug")
+        self.assertFalse(outcome.requires_human_handoff)
+        self.assertIn("exact yearn contract", outcome.raw_final_reply.lower())
+        corrected_input = fake_runner.calls[1]["input"]
+        self.assertEqual(corrected_input[-1]["role"], "system")
+        self.assertIn("Do one bounded repo/docs pre-triage pass", corrected_input[-1]["content"])
 
     async def test_ticket_agent_flow_switches_from_data_followup_to_bug_for_repro_issue(self) -> None:
         channel_id = 35

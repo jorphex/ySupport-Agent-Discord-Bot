@@ -391,7 +391,7 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(outcome.completed_agent_key, "docs")
-        self.assertFalse(outcome.requires_human_handoff)
+        self.assertFalse(outcome.requires_human_handoff, outcome.raw_final_reply)
         lowered = outcome.raw_final_reply.lower()
         self.assertIn("styfi.yearn.fi", lowered)
         self.assertIn("veyfi.yearn.fi", lowered)
@@ -693,21 +693,57 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("share more details", lowered)
         self.assertIn("cannot engage", lowered)
 
-    async def test_security_report_gist_submission_escalates_to_security_process_without_browser_triage(
+    async def test_security_report_gist_submission_with_no_concrete_claim_requests_specifics_before_handoff(
         self,
     ) -> None:
-        outcome = await self._run_ticket_flow(
-            "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
-            channel_id=9031,
-            initial_button_intent="bug_report",
-        )
+        async def fake_fetch_report_artifact(report_url: str, max_chars: int = 12000) -> str:
+            self.assertIn("gist.github.com", report_url)
+            return (
+                "Fetched public report artifact from: https://gist.github.com/.../dc2c924b6d84727f244babc09360e16f\n\n"
+                "File: report.md\n"
+                "Critical vulnerability found. This may cause loss of funds."
+            )
+
+        with patch("tools_lib.core_fetch_report_artifact", new=fake_fetch_report_artifact):
+            outcome = await self._run_ticket_flow(
+                "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
+                channel_id=9031,
+                initial_button_intent="bug_report",
+            )
 
         lowered = outcome.raw_final_reply.lower()
-        self.assertTrue(outcome.requires_human_handoff)
-        self.assertIn("docs.yearn.fi/developers/security", lowered)
+        self.assertFalse(outcome.requires_human_handoff, outcome.raw_final_reply)
+        self.assertIn("exact yearn contract", lowered)
+        self.assertTrue("observed impact" in lowered or "vulnerability claim" in lowered or "actual report" in lowered)
         self.assertNotIn("device/browser", lowered)
-        self.assertNotIn("steps to reproduce", lowered)
         self.assertNotIn("what browser", lowered)
+        self.assertNotIn("{human_handoff_tag_placeholder}", lowered)
+
+    async def test_security_report_gist_submission_uses_repo_pretriage_before_answering(
+        self,
+    ) -> None:
+        async def fake_fetch_report_artifact(report_url: str, max_chars: int = 12000) -> str:
+            self.assertIn("gist.github.com", report_url)
+            return (
+                "Fetched public report artifact from: https://gist.github.com/.../dc2c924b6d84727f244babc09360e16f\n\n"
+                "File: report.md\n"
+                "Claim: In stYFI LiquidLockerDepositor.vy, calling unstake when the caller already has a partially vested stream "
+                "resets the stream start time to block.timestamp and re-locks previously vested but unredeemed funds for 14 days."
+            )
+
+        with patch("tools_lib.core_fetch_report_artifact", new=fake_fetch_report_artifact):
+            outcome = await self._run_ticket_flow(
+                "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
+                channel_id=9032,
+                initial_button_intent="bug_report",
+            )
+
+        lowered = outcome.raw_final_reply.lower()
+        self.assertTrue(outcome.requires_human_handoff, outcome.raw_final_reply)
+        self.assertIn("liquidlockerdepositor.vy", lowered)
+        self.assertIn("block.timestamp", lowered)
+        self.assertNotIn("what browser", lowered)
+        self.assertIn("docs.yearn.fi/developers/security", lowered)
 
     async def test_sdyfi_unstake_behavior_question_gives_grounded_repo_answer_with_clear_limit(
         self,
