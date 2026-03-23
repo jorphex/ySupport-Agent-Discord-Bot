@@ -90,6 +90,7 @@ For offline support-quality review, the repo now includes a Discord-only knowled
 
 - run `python -m knowledge_gap_worker <channel_id_or_discord_link> --dry-run`
 - add more ticket channels to analyze multiple tickets in one run
+- use `--recent-closed N` to discover the N most recent `closed-*` ticket channels automatically
 - add `--limit N` to control transcript size
 - use `--report-channel-id <channel_id>` to override the private report sink
 - use `--closed-only` to skip any ticket channel whose name does not start with `closed-`

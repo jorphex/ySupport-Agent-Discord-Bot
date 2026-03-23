@@ -14,7 +14,7 @@ from agents.model_settings import Reasoning
 
 import config
 import tools_lib
-from discord_api import DISCORD_API_BASE, discord_post_json
+from discord_api import DISCORD_API_BASE, discord_get_json, discord_post_json
 from ticket_transcript_fetch import (
     extract_channel_id,
     fetch_channel_metadata,
@@ -289,6 +289,54 @@ def _save_reported_signatures(state_path: str | None, signatures: set[str]) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"reported_signatures": sorted(signatures)}
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _snowflake_sort_key(snowflake: str | None) -> int:
+    if not snowflake or not str(snowflake).isdigit():
+        return 0
+    return int(snowflake)
+
+
+def discover_recent_closed_ticket_channels(limit: int) -> list[str]:
+    if config.YEARN_TICKET_CATEGORY_ID is None:
+        raise ValueError("YEARN_TICKET_CATEGORY_ID is required for recent closed-ticket discovery.")
+
+    category_payload = discord_get_json(
+        f"{DISCORD_API_BASE}/channels/{config.YEARN_TICKET_CATEGORY_ID}"
+    )
+    guild_id = category_payload.get("guild_id")
+    if not guild_id:
+        raise ValueError("Could not determine guild_id from YEARN_TICKET_CATEGORY_ID.")
+
+    guild_channels = discord_get_json(f"{DISCORD_API_BASE}/guilds/{guild_id}/channels")
+    if not isinstance(guild_channels, list):
+        raise ValueError("Unexpected Discord response while listing guild channels.")
+
+    closed_channels: list[dict] = []
+    same_parent_closed_channels: list[dict] = []
+    for raw_channel in guild_channels:
+        if raw_channel.get("type") != 0:
+            continue
+        channel_name = str(raw_channel.get("name") or "")
+        if not channel_name.startswith("closed-"):
+            continue
+        closed_channels.append(raw_channel)
+        if str(raw_channel.get("parent_id") or "") == str(config.YEARN_TICKET_CATEGORY_ID):
+            same_parent_closed_channels.append(raw_channel)
+
+    preferred_channels = same_parent_closed_channels or closed_channels
+    ranked_channels = sorted(
+        preferred_channels,
+        key=lambda raw_channel: _snowflake_sort_key(
+            str(raw_channel.get("last_message_id") or raw_channel.get("id") or "")
+        ),
+        reverse=True,
+    )
+    return [
+        str(raw_channel["id"])
+        for raw_channel in ranked_channels[: max(limit, 0)]
+        if raw_channel.get("id")
+    ]
 
 
 async def _run_structured_agent(agent: Agent, input_text: str, output_type: type[BaseModel], workflow_name: str):
@@ -569,8 +617,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "channels",
-        nargs="+",
+        nargs="*",
         help="Discord ticket channel ids or discord.com/channels/... links.",
+    )
+    parser.add_argument(
+        "--recent-closed",
+        type=int,
+        default=0,
+        help="Discover and analyze the N most recent closed-* ticket channels from the Yearn ticket guild.",
     )
     parser.add_argument(
         "--limit",
@@ -611,8 +665,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
 async def _main_async(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    channels = list(args.channels)
+    if args.recent_closed > 0:
+        discovered_channels = await asyncio.to_thread(
+            discover_recent_closed_ticket_channels,
+            args.recent_closed,
+        )
+        channels.extend(
+            channel_id
+            for channel_id in discovered_channels
+            if channel_id not in channels
+        )
+    if not channels:
+        parser.error("Provide at least one channel or use --recent-closed N.")
+
     results = await process_tickets(
-        args.channels,
+        channels,
         limit=args.limit,
         report_channel_id=args.report_channel_id,
         dry_run=args.dry_run,

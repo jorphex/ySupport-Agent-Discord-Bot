@@ -8,6 +8,8 @@ from knowledge_gap_worker import (
     KnowledgeGapReport,
     PreparedTicketTranscript,
     _build_report_signature,
+    _snowflake_sort_key,
+    discover_recent_closed_ticket_channels,
     _is_closed_ticket,
     _main_async,
     analyze_transcript_for_knowledge_gap,
@@ -278,6 +280,56 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_build_report_signature(report_a), _build_report_signature(report_b))
 
+    def test_snowflake_sort_key_handles_missing_or_invalid_values(self) -> None:
+        self.assertEqual(_snowflake_sort_key(None), 0)
+        self.assertEqual(_snowflake_sort_key("not-a-snowflake"), 0)
+        self.assertEqual(_snowflake_sort_key("123"), 123)
+
+    def test_discover_recent_closed_ticket_channels_prefers_same_parent_and_sorts_recent_first(
+        self,
+    ) -> None:
+        guild_channels = [
+            {
+                "id": "10",
+                "name": "closed-old",
+                "type": 0,
+                "parent_id": "999",
+                "last_message_id": "100",
+            },
+            {
+                "id": "20",
+                "name": "closed-newer",
+                "type": 0,
+                "parent_id": "123",
+                "last_message_id": "300",
+            },
+            {
+                "id": "30",
+                "name": "closed-newest",
+                "type": 0,
+                "parent_id": "123",
+                "last_message_id": "400",
+            },
+            {
+                "id": "40",
+                "name": "ticket-open",
+                "type": 0,
+                "parent_id": "123",
+                "last_message_id": "999",
+            },
+        ]
+
+        with (
+            patch("knowledge_gap_worker.config.YEARN_TICKET_CATEGORY_ID", 123),
+            patch(
+                "knowledge_gap_worker.discord_get_json",
+                side_effect=[{"guild_id": "guild-1"}, guild_channels],
+            ),
+        ):
+            channels = discover_recent_closed_ticket_channels(2)
+
+        self.assertEqual(channels, ["30", "20"])
+
     async def test_process_ticket_dry_run_returns_formatted_report_without_posting(self) -> None:
         report = KnowledgeGapReport(
             should_post=True,
@@ -514,3 +566,23 @@ class KnowledgeGapWorkerCliTests(unittest.IsolatedAsyncioTestCase):
         mock_process_tickets.assert_called_once()
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["results"][0]["channel_id"], "1484802638158626887")
+
+    async def test_main_accepts_recent_closed_discovery_without_explicit_channels(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch(
+                "knowledge_gap_worker.discover_recent_closed_ticket_channels",
+                return_value=["111", "222"],
+            ) as mock_discover,
+            patch(
+                "knowledge_gap_worker.process_tickets",
+                return_value=[],
+            ) as mock_process_tickets,
+            redirect_stdout(stdout),
+        ):
+            exit_code = await _main_async(["--recent-closed", "2", "--dry-run"])
+
+        self.assertEqual(exit_code, 0)
+        mock_discover.assert_called_once_with(2)
+        mock_process_tickets.assert_called_once()
+        self.assertEqual(json.loads(stdout.getvalue())["results"], [])
