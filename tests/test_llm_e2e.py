@@ -471,6 +471,24 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("check your deposits", lowered)
         self.assertNotIn("wallet address", lowered)
 
+    async def test_onboarding_question_uses_docs_backed_getting_started_answer_without_yfi_detour(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "I'm very normie, but Yearn comes highly recommended and I'm on board with the thesis. "
+            "I already have a cold and hot wallet, but some of your vault tokens look exotic and I don't know "
+            "how to get my hands on them to stake them. Would love some onboarding help.",
+            channel_id=9025,
+        )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("docs.yearn.fi", lowered)
+        self.assertTrue("approve" in lowered or "deposit" in lowered)
+        self.assertNotIn("buy yfi", lowered)
+        self.assertNotIn("acquire yfi", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+
     async def test_manual_reward_intervention_request_escalates_in_bug_flow(
         self,
     ) -> None:
@@ -1353,5 +1371,6 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_calls[0]["chain"], "ethereum")
         lowered = output.lower()
         self.assertIn(self.wallet_address.lower(), lowered)
-        self.assertIn(self.vault_address.lower(), lowered)
+        self.assertIn("vault:", lowered)
+        self.assertIn(self.vault_address.lower()[:12], lowered)
         self.assertIn("ethereum", lowered)

@@ -773,8 +773,10 @@ async def _synthesize_docs_answer(
         "5. If the context only partially answers the question, say exactly what is supported and what remains unresolved.\n"
         "6. For procedural or product-navigation questions, give the concrete next step or destination first.\n"
         "7. Do not inflate thin evidence into a broad or authoritative answer.\n"
-        "8. Respond in your own words; do not use canned responses or templates.\n"
-        "9. NO META-COMMENTARY.\n"
+        "8. For onboarding or getting-started questions, do not imply the user must first buy YFI or another 'Yearn token' unless the context explicitly says that. Prefer the docs-backed explanation that users deposit the token accepted by the chosen vault, and describe asset/network examples only as examples if that is all the docs provide.\n"
+        "9. If the context does not recommend a specific asset, network, or onboarding path, say the docs do not specify a single best choice instead of improvising one.\n"
+        "10. Respond in your own words; do not use canned responses or templates.\n"
+        "11. NO META-COMMENTARY.\n"
     )
 
     try:
