@@ -547,6 +547,37 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("acquiring yearn tokens", lowered)
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
 
+    async def test_charity_vault_builder_question_uses_official_setup_guide_and_steps(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "I'm part of a small community supporting charity. Is there a way to set up a vault so people can deposit "
+            "funds and all the yield is sent to a charity address?",
+            channel_id=9035,
+        )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("docs.yearn.fi/developers/", lowered)
+        self.assertTrue(
+            any(
+                marker in lowered
+                for marker in (
+                    "deployment",
+                    "vaultv3",
+                    "vault management",
+                    "overview",
+                    "donate yield to an ngo",
+                    "deploy",
+                )
+            )
+        )
+        self.assertTrue(
+            "do not provide" in lowered
+            or "do not specify" in lowered
+            or "implementation details" in lowered
+        )
+
     async def test_greeting_only_message_does_not_assume_vault_search_intent(self) -> None:
         output, _, starting_agent_key = await self._run_support_turn(
             "Hello",

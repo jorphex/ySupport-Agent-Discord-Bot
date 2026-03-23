@@ -930,8 +930,10 @@ async def _synthesize_docs_answer(
         "9. If the context does not recommend a specific asset, network, or onboarding path, say the docs do not specify a single best choice instead of improvising one.\n"
         "10. If the context says a system is legacy or deprecated and replaced by a newer supported path, say that directly. For questions about new deposits or whether the user should still use the old system, point to the current supported path first and only mention the legacy path for managing existing positions or exits if the context supports that distinction.\n"
         "11. If the context already resolves a current-vs-legacy or destination question, stop after the grounded answer. Do not append option menus like 'if you want, I can also...' unless the context still leaves a real unresolved branch.\n"
-        "12. Respond in your own words; do not use canned responses or templates.\n"
-        "13. NO META-COMMENTARY.\n"
+        "12. For builder or setup questions, if the context includes an official deployment or management guide, include that guide link and the concrete documented setup steps before broader explanation.\n"
+        "13. If the context only supports a high-level setup path, say that clearly and separate it from any missing implementation detail the docs do not specify.\n"
+        "14. Respond in your own words; do not use canned responses or templates.\n"
+        "15. NO META-COMMENTARY.\n"
     )
 
     try:
