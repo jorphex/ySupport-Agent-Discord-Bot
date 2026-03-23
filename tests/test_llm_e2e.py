@@ -368,6 +368,25 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("can you clarify", lowered)
         self.assertNotIn("what do you mean", lowered)
 
+    async def test_styfi_migration_balance_view_question_uses_official_dashboard_paths(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "after migrations from veyfi to styfi but where can i check my styfi? "
+            "I went to styfi.yearn.fi and there can't find my styfi balance.",
+            channel_id=9237,
+        )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertFalse(outcome.requires_human_handoff)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("styfi.yearn.fi", lowered)
+        self.assertIn("veyfi.yearn.fi", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("what browser", lowered)
+        self.assertNotIn("which browser", lowered)
+        self.assertNotIn("support bot stopped", lowered)
+
     async def test_recovery_process_question_with_wallet_routes_to_docs_not_deposit_check(
         self,
     ) -> None:
