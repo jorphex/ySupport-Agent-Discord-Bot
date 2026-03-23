@@ -538,6 +538,25 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("what browser", lowered)
         self.assertNotIn("which browser", lowered)
 
+    async def test_mis_sent_treasury_funds_with_tx_hash_escalates_without_vague_clarification(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "Hey guys! I got a small issue, i just accidentally sent my funds "
+            '(from binance exchange) into your "treasure wallet"\n\n'
+            "https://etherscan.io/tx/0x2ad12015313462f5a39513e5df53f5a76f081ff140735da637040b19fc896ea6",
+            channel_id=9027,
+        )
+
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("what do you mean", lowered)
+        self.assertNotIn("yearn vault address", lowered)
+        self.assertNotIn("wallet address you control", lowered)
+        self.assertNotIn("support bot stopped", lowered)
+
     async def test_yyb_disabled_button_first_turn_routes_to_bug_without_deposit_prompt(
         self,
     ) -> None:
