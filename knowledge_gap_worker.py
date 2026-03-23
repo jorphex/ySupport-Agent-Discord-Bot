@@ -1,0 +1,339 @@
+import argparse
+import asyncio
+import json
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
+from agents import Agent, Runner, RunConfig, ModelSettings
+from agents.model_settings import Reasoning
+
+import config
+import tools_lib
+from discord_api import DISCORD_API_BASE, discord_post_json
+from ticket_transcript_fetch import (
+    extract_channel_id,
+    fetch_channel_messages,
+    normalize_message,
+    render_transcript,
+)
+from utils import split_long_message
+
+
+class KnowledgeGapCandidate(BaseModel):
+    reportable: bool = Field(..., description="Whether this ticket is worth private internal reporting.")
+    category: Literal[
+        "docs_gap",
+        "faq_candidate",
+        "bot_behavior_gap",
+        "product_confusion",
+        "issue_draft_candidate",
+        "no_action",
+    ] = Field(..., description="Best-fit internal report category.")
+    title: str = Field(..., description="Short internal title.")
+    topic: str = Field(..., description="Main topic or user confusion area.")
+    product: Optional[str] = Field(default=None, description="Relevant product or system if clear.")
+    chain: Optional[str] = Field(default=None, description="Relevant chain if clear.")
+    grounding_query: str = Field(
+        ...,
+        description="A concise query for official docs/repo grounding, based on the real issue in the transcript.",
+    )
+    evidence_summary: str = Field(..., description="Short neutral summary of what happened in the ticket.")
+    suggested_action: str = Field(..., description="Best next internal action.")
+    needs_repo_context: bool = Field(
+        ...,
+        description="Whether repo context is likely needed in addition to docs to assess the issue properly.",
+    )
+
+
+class KnowledgeGapReport(BaseModel):
+    should_post: bool = Field(..., description="Whether the final grounded result should be posted to the private channel.")
+    category: Literal[
+        "docs_gap",
+        "faq_candidate",
+        "bot_behavior_gap",
+        "product_confusion",
+        "issue_draft_candidate",
+        "no_action",
+    ] = Field(..., description="Best-fit internal report category.")
+    title: str = Field(..., description="Short report title.")
+    topic: str = Field(..., description="Main topic or problem area.")
+    product: Optional[str] = Field(default=None, description="Relevant product if clear.")
+    chain: Optional[str] = Field(default=None, description="Relevant chain if clear.")
+    evidence_summary: str = Field(..., description="Short evidence-backed summary of the ticket issue.")
+    current_official_grounding: str = Field(
+        ...,
+        description="What official docs/repo context currently supports, or that it appears missing.",
+    )
+    assessment: str = Field(..., description="Why this should or should not become an internal report.")
+    suggested_action: str = Field(..., description="Recommended internal action.")
+    confidence: Literal["low", "medium", "high"] = Field(..., description="Confidence in the assessment.")
+
+
+def _knowledge_gap_model_settings() -> ModelSettings:
+    return ModelSettings(
+        reasoning=Reasoning(effort=config.LLM_KNOWLEDGE_GAP_REASONING_EFFORT),
+        verbosity=config.LLM_KNOWLEDGE_GAP_VERBOSITY,
+    )
+
+
+KNOWLEDGE_GAP_CANDIDATE_INSTRUCTIONS = """
+You are an internal Yearn support-quality analyst.
+
+Your job is to decide whether a Discord support ticket should become a private internal
+knowledge-gap report.
+
+Report only if the transcript reveals one of these:
+- missing official docs or missing official source coverage
+- repeated or likely recurring confusion that suggests an FAQ
+- a bot behavior gap where the official source likely exists but was not surfaced well
+- product/UI confusion that should be surfaced internally
+- a likely engineering/product issue that may deserve an internal issue draft
+
+Do NOT report:
+- one-off resolved account-specific questions with no broader lesson
+- normal successful support turns
+- cases where the transcript is too thin to justify any internal follow-up
+
+Prefer a narrow, durable framing over ticket-specific details.
+The grounding_query must be the real question that official docs or repo sources should answer.
+If no report is warranted, set category to `no_action`, reportable to false, and keep the rest concise.
+"""
+
+
+KNOWLEDGE_GAP_REPORT_INSTRUCTIONS = """
+You are finalizing a private internal Yearn support-quality report.
+
+You will receive:
+- the ticket transcript
+- an initial candidate assessment
+- official docs grounding
+- optional repo grounding
+
+Your job:
+- decide whether the issue should actually be posted to the private internal channel
+- stay grounded in the provided official source context
+- if official grounding is missing, say that plainly instead of inventing support
+- if official grounding exists but the bot or ticket flow failed to surface it, classify that as bot_behavior_gap or faq_candidate
+- if the issue is mostly product/UI confusion rather than missing docs, say that directly
+- if it is not worth surfacing, set should_post to false and category to no_action
+
+Keep the output concise and internal-facing.
+Do not write as if you are replying to the end user.
+"""
+
+
+knowledge_gap_candidate_agent = Agent(
+    name="Knowledge Gap Candidate Agent",
+    instructions=KNOWLEDGE_GAP_CANDIDATE_INSTRUCTIONS,
+    output_type=KnowledgeGapCandidate,
+    model=config.LLM_KNOWLEDGE_GAP_MODEL,
+    model_settings=_knowledge_gap_model_settings(),
+)
+
+
+knowledge_gap_report_agent = Agent(
+    name="Knowledge Gap Report Agent",
+    instructions=KNOWLEDGE_GAP_REPORT_INSTRUCTIONS,
+    output_type=KnowledgeGapReport,
+    model=config.LLM_KNOWLEDGE_GAP_MODEL,
+    model_settings=_knowledge_gap_model_settings(),
+)
+
+
+@dataclass(frozen=True)
+class PreparedTicketTranscript:
+    channel_id: str
+    message_count: int
+    transcript_text: str
+
+
+def prepare_ticket_transcript(channel_or_link: str, limit: int = 80) -> PreparedTicketTranscript:
+    channel_id = extract_channel_id(channel_or_link)
+    raw_messages = fetch_channel_messages(channel_id, limit=limit)
+    normalized_messages = [normalize_message(message) for message in raw_messages]
+    return PreparedTicketTranscript(
+        channel_id=channel_id,
+        message_count=len(normalized_messages),
+        transcript_text=render_transcript(normalized_messages),
+    )
+
+
+async def _run_structured_agent(agent: Agent, input_text: str, output_type: type[BaseModel], workflow_name: str):
+    runner = Runner()
+    result = await runner.run(
+        starting_agent=agent,
+        input=input_text,
+        run_config=RunConfig(workflow_name=workflow_name, tracing_disabled=True),
+    )
+    return result.final_output_as(output_type)
+
+
+async def analyze_transcript_for_knowledge_gap(
+    prepared_transcript: PreparedTicketTranscript,
+) -> Optional[KnowledgeGapReport]:
+    candidate = await _run_structured_agent(
+        knowledge_gap_candidate_agent,
+        prepared_transcript.transcript_text,
+        KnowledgeGapCandidate,
+        "Knowledge Gap Candidate Analysis",
+    )
+    if not candidate.reportable or candidate.category == "no_action":
+        return None
+
+    docs_grounding = await tools_lib.core_answer_from_docs(candidate.grounding_query)
+    repo_grounding = ""
+    if candidate.needs_repo_context:
+        repo_grounding = await tools_lib.core_pretriage_repo_claim(
+            candidate.grounding_query,
+            include_docs=False,
+        )
+
+    report_input = (
+        f"Channel ID: {prepared_transcript.channel_id}\n"
+        f"Message count: {prepared_transcript.message_count}\n\n"
+        f"Transcript:\n{prepared_transcript.transcript_text}\n\n"
+        f"Candidate:\n{candidate.model_dump_json(indent=2)}\n\n"
+        f"Docs grounding:\n{docs_grounding}\n\n"
+        f"Repo grounding:\n{repo_grounding or 'none'}"
+    )
+    report = await _run_structured_agent(
+        knowledge_gap_report_agent,
+        report_input,
+        KnowledgeGapReport,
+        "Knowledge Gap Final Report",
+    )
+    if not report.should_post or report.category == "no_action":
+        return None
+    return report
+
+
+def format_knowledge_gap_report(
+    report: KnowledgeGapReport,
+    *,
+    affected_channels: list[str],
+) -> str:
+    lines = [
+        "Knowledge-gap report",
+        f"Title: {report.title}",
+        f"Category: {report.category}",
+        f"Topic: {report.topic}",
+    ]
+    if report.product:
+        lines.append(f"Product: {report.product}")
+    if report.chain:
+        lines.append(f"Chain: {report.chain}")
+    lines.extend(
+        [
+            f"Affected tickets: {', '.join(affected_channels)}",
+            "",
+            "Evidence",
+            report.evidence_summary,
+            "",
+            "Current official grounding",
+            report.current_official_grounding,
+            "",
+            "Assessment",
+            report.assessment,
+            "",
+            "Suggested action",
+            report.suggested_action,
+            "",
+            f"Confidence: {report.confidence}",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def post_report_message(channel_id: int, content: str) -> None:
+    for chunk in split_long_message(content):
+        discord_post_json(
+            f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+            {"content": chunk},
+        )
+
+
+async def process_ticket(
+    channel_or_link: str,
+    *,
+    limit: int,
+    report_channel_id: int,
+    dry_run: bool,
+) -> dict[str, object]:
+    prepared = await asyncio.to_thread(prepare_ticket_transcript, channel_or_link, limit)
+    report = await analyze_transcript_for_knowledge_gap(prepared)
+    if report is None:
+        return {
+            "channel_id": prepared.channel_id,
+            "message_count": prepared.message_count,
+            "report_posted": False,
+            "report": None,
+        }
+
+    formatted = format_knowledge_gap_report(report, affected_channels=[prepared.channel_id])
+    if not dry_run:
+        await asyncio.to_thread(post_report_message, report_channel_id, formatted)
+    return {
+        "channel_id": prepared.channel_id,
+        "message_count": prepared.message_count,
+        "report_posted": not dry_run,
+        "report": report.model_dump(),
+        "formatted_report": formatted,
+    }
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Analyze Discord support tickets offline for docs gaps, FAQ candidates, "
+            "and other private internal knowledge-gap reports."
+        ),
+    )
+    parser.add_argument(
+        "channels",
+        nargs="+",
+        help="Discord ticket channel ids or discord.com/channels/... links.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=80,
+        help="Maximum number of recent messages to fetch per ticket.",
+    )
+    parser.add_argument(
+        "--report-channel-id",
+        type=int,
+        default=config.KNOWLEDGE_GAP_REPORT_CHANNEL_ID,
+        help="Private Discord channel id that receives formatted reports.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Analyze and print JSON results without posting to Discord.",
+    )
+    return parser
+
+
+async def _main_async(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    results = []
+    for channel in args.channels:
+        results.append(
+            await process_ticket(
+                channel,
+                limit=args.limit,
+                report_channel_id=args.report_channel_id,
+                dry_run=args.dry_run,
+            )
+        )
+    print(json.dumps({"results": results}, indent=2))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(_main_async(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

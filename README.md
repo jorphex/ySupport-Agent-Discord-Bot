@@ -83,3 +83,28 @@ For regression capture and ticket review, you can fetch a read-only normalized t
 - add `--limit N` to control how many recent messages to fetch
 - add `--json` to emit normalized JSON instead of plain text
 - the helper uses the configured `DISCORD_BOT_TOKEN` and only reads message history for channels the bot can already access
+
+## Knowledge-Gap Worker
+
+For offline support-quality review, the repo now includes a Discord-only knowledge-gap worker that reuses the same `DISCORD_BOT_TOKEN` as `ysupport`.
+
+- run `python -m knowledge_gap_worker <channel_id_or_discord_link> --dry-run`
+- add more ticket channels to analyze multiple tickets in one run
+- add `--limit N` to control transcript size
+- use `--report-channel-id <channel_id>` to override the private report sink
+
+Phase-1 behavior:
+
+- reads Discord ticket history only
+- grounds the ticket against existing Yearn docs and repo tools
+- classifies whether the ticket should become a private internal report
+- emits docs-gap / FAQ / bot-behavior / product-confusion / issue-draft style reports
+- posts to `KNOWLEDGE_GAP_REPORT_CHANNEL_ID`; set it explicitly in the environment for the private destination channel
+
+Intentional boundaries:
+
+- same Discord bot token as `ysupport`
+- separate offline workflow from the live support bot
+- separate workflow from `ysupportreporter`
+- no Telegram/internal-chat ingestion in phase 1
+- no automatic public GitHub posting

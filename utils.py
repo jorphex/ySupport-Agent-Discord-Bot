@@ -7,21 +7,10 @@ import discord
 import config
 
 
-async def send_long_message(
-    target: Union[discord.TextChannel, discord.Message],
-    text: str,
-    view: discord.ui.View = None
-):
-    """Sends a potentially long message, splitting it into chunks if necessary."""
+def split_long_message(text: str) -> list[str]:
+    """Split text into Discord-sized chunks."""
     if len(text) <= config.MAX_DISCORD_MESSAGE_LENGTH:
-        try:
-            if isinstance(target, discord.Message):
-                await target.reply(text, view=view)
-            else:
-                await target.send(text, view=view)
-        except discord.HTTPException as e:
-            logging.error(f"Discord API error sending message: {e}")
-        return
+        return [text]
 
     chunks = []
     current_chunk = ""
@@ -46,10 +35,30 @@ async def send_long_message(
 
     if len(chunks) == 1 and len(chunks[0]) > config.MAX_DISCORD_MESSAGE_LENGTH:
         logging.warning("Message splitting resulted in a single chunk still exceeding limit. Truncating.")
-        chunks = [chunks[0][:config.MAX_DISCORD_MESSAGE_LENGTH - 3] + "..."]
-    elif len(chunks) == 0:
+        return [chunks[0][:config.MAX_DISCORD_MESSAGE_LENGTH - 3] + "..."]
+    if not chunks:
         logging.warning("Message splitting resulted in zero chunks for long message.")
-        chunks.append(text[:config.MAX_DISCORD_MESSAGE_LENGTH - 3] + "...")
+        return [text[:config.MAX_DISCORD_MESSAGE_LENGTH - 3] + "..."]
+    return chunks
+
+
+async def send_long_message(
+    target: Union[discord.TextChannel, discord.Message],
+    text: str,
+    view: discord.ui.View = None
+):
+    """Sends a potentially long message, splitting it into chunks if necessary."""
+    if len(text) <= config.MAX_DISCORD_MESSAGE_LENGTH:
+        try:
+            if isinstance(target, discord.Message):
+                await target.reply(text, view=view)
+            else:
+                await target.send(text, view=view)
+        except discord.HTTPException as e:
+            logging.error(f"Discord API error sending message: {e}")
+        return
+
+    chunks = split_long_message(text)
 
     first_message = True
 

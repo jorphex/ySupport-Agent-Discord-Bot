@@ -4,12 +4,8 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
-from urllib import parse, request
-
-import config
-
-
-DISCORD_API_BASE = "https://discord.com/api/v10"
+from urllib import parse
+from discord_api import DISCORD_API_BASE, discord_get_json
 
 
 @dataclass(frozen=True)
@@ -35,20 +31,6 @@ def extract_channel_id(channel_or_link: str) -> str:
     raise ValueError("Expected a Discord channel id or discord.com/channels/... link.")
 
 
-def _discord_get_json(url: str) -> Any:
-    if not config.DISCORD_BOT_TOKEN:
-        raise ValueError("DISCORD_BOT_TOKEN is required to fetch ticket transcripts.")
-    req = request.Request(
-        url,
-        headers={
-            "Authorization": f"Bot {config.DISCORD_BOT_TOKEN}",
-            "User-Agent": "ysupport-ticket-transcript-fetcher",
-        },
-    )
-    with request.urlopen(req, timeout=30) as response:
-        return json.load(response)
-
-
 def fetch_channel_messages(channel_id: str, limit: int = 100) -> list[dict[str, Any]]:
     remaining = max(limit, 0)
     before_message_id: str | None = None
@@ -59,7 +41,7 @@ def fetch_channel_messages(channel_id: str, limit: int = 100) -> list[dict[str, 
         if before_message_id:
             query["before"] = before_message_id
         url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages?{parse.urlencode(query)}"
-        batch = _discord_get_json(url)
+        batch = discord_get_json(url)
         if not isinstance(batch, list) or not batch:
             break
         messages.extend(batch)
