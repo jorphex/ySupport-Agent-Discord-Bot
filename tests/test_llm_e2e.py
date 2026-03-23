@@ -351,6 +351,23 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("connect your wallet", lowered)
         self.assertNotIn("please provide your wallet", lowered)
 
+    async def test_discord_general_access_request_escalates_without_github_or_general_redirect(
+        self,
+    ) -> None:
+        output, _, starting_agent_key = await self._run_support_turn(
+            "i want to report an issue and i can’t view the general channel on discord and i will "
+            "like to report my issues there to know if anyone who has the same issue can help me out in public please"
+        )
+
+        self.assertEqual(starting_agent_key, "triage")
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, output)
+
+        lowered = output.lower()
+        self.assertIn("human", lowered)
+        self.assertNotIn("github", lowered)
+        self.assertNotIn("#general", lowered)
+        self.assertNotIn("discord.gg", lowered)
+
     async def test_product_navigation_question_routes_to_docs_and_answers_directly(
         self,
     ) -> None:
@@ -737,6 +754,8 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     "exact yearn contract",
                     "which yearn contract",
                     "affected yearn contract",
+                    "contract/product/path",
+                    "product/path affected",
                     "yearn product path",
                     "affected contract",
                 )
