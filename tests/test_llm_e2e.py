@@ -526,6 +526,34 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("proposal is necessary", lowered)
         self.assertNotIn("what token, vault, or criteria", lowered)
 
+    async def test_withdrawal_followup_switches_to_bug_for_reproducible_rabby_issue(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "Rabby says 'transaction not ready' for every address when I try to withdraw. "
+            "I mentioned a screenshot too.",
+            channel_id=9024,
+            last_specialty="data",
+            current_history=[
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Okay, I can help with withdrawal instructions. "
+                        "Please provide your wallet address (0x...). I can then check your deposits "
+                        "and you can tell me which one you want to withdraw from."
+                    ),
+                }
+            ],
+        )
+
+        self.assertEqual(outcome.completed_agent_key, "bug")
+        lowered = outcome.raw_final_reply.lower()
+        self.assertNotIn("check your deposits", lowered)
+        self.assertNotIn("which vault", lowered)
+        self.assertNotIn("provide your wallet address", lowered)
+        self.assertNotIn("please provide your wallet address", lowered)
+        self.assertNotIn("support bot stopped", lowered)
+
     async def test_vendor_security_outreach_hits_firm_boundary_message(
         self,
     ) -> None:

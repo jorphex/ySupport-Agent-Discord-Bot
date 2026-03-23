@@ -133,19 +133,46 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(select_starting_agent(message, context), "triage")
 
-    def test_follow_up_routing_reuses_last_specialist(self) -> None:
+    def test_follow_up_routing_reuses_last_specialist_for_structured_tx_followup(self) -> None:
         channel_id = 9
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
         investigation_job.last_specialty = "data"
+        investigation_job.remember_tx_hash(
+            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        )
         try:
             agent_key = _select_ticket_starting_agent(
-                "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+                "look into it",
                 context,
                 current_history=[{"role": "user", "content": "Previous issue context"}],
                 investigation_job=investigation_job,
             )
             self.assertEqual(agent_key, "data")
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+    def test_follow_up_routing_does_not_force_data_reuse_for_ui_issue(self) -> None:
+        channel_id = 26
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = "data"
+        try:
+            agent_key = _select_ticket_starting_agent(
+                "Rabby says 'transaction not ready' for every address when I try to withdraw.",
+                context,
+                current_history=[
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Okay, I can help with withdrawal instructions. "
+                            "Please provide your wallet address (0x...)."
+                        ),
+                    }
+                ],
+                investigation_job=investigation_job,
+            )
+            self.assertEqual(agent_key, "triage")
         finally:
             clear_ticket_investigation_job(channel_id)
 
@@ -748,6 +775,86 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             "Do not ask the user whether you should proceed",
             corrected_input[-1]["content"],
         )
+
+    async def test_ticket_agent_flow_switches_from_data_followup_to_bug_for_repro_issue(self) -> None:
+        channel_id = 35
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = "data"
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=None,
+                    last_agent=None,
+                    _history=[],
+                    _decision=TicketTriageDecision(
+                        action="route_bug",
+                        message=None,
+                        reasoning="reproducible wallet/product issue",
+                    ),
+                ),
+                _FakeResult(
+                    final_output=(
+                        "What exact page, wallet, and error state are you seeing when Rabby says "
+                        "'transaction not ready'?"
+                    ),
+                    last_agent=yearn_bug_triage_agent,
+                    _history=[
+                        {
+                            "role": "user",
+                            "content": "Rabby says transaction not ready for every address when I try to withdraw.",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "What exact page, wallet, and error state are you seeing when Rabby says "
+                                "'transaction not ready'?"
+                            ),
+                        },
+                    ],
+                ),
+            ]
+        )
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="Rabby says transaction not ready for every address when I try to withdraw.",
+                    input_list=[
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "Okay, I can help with withdrawal instructions. "
+                                "Please provide your wallet address (0x...)."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": "Rabby says transaction not ready for every address when I try to withdraw.",
+                        },
+                    ],
+                    current_history=[
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "Okay, I can help with withdrawal instructions. "
+                                "Please provide your wallet address (0x...)."
+                            ),
+                        }
+                    ],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertIs(fake_runner.calls[0]["starting_agent"], ticket_triage_router_agent)
+        self.assertIs(fake_runner.calls[1]["starting_agent"], yearn_bug_triage_agent)
+        self.assertEqual(outcome.completed_agent_key, "bug")
+        self.assertNotIn("wallet address", outcome.raw_final_reply.lower())
 
 
 @dataclass

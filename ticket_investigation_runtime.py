@@ -64,14 +64,32 @@ def _select_ticket_starting_agent(
     current_history: List[TResponseInputItem],
     investigation_job: TicketInvestigationJob,
 ) -> str:
-    prior_specialist = investigation_job.last_specialty
+    prior_specialist = investigation_job.current_specialty or investigation_job.last_specialty
     if (
         run_context.initial_button_intent is None
         and current_history
-        and prior_specialist in {"data", "docs", "bug"}
+        and prior_specialist == "bug"
     ):
         logging.info(
             "Reusing prior specialist '%s' for follow-up in channel %s",
+            prior_specialist,
+            investigation_job.channel_id,
+        )
+        return prior_specialist
+    if (
+        run_context.initial_button_intent is None
+        and current_history
+        and prior_specialist == "data"
+        and (
+            investigation_job.evidence.tx_hashes
+            or (
+                _is_withdrawal_followup(aggregated_text)
+                and _extract_single_listed_deposit_context(current_history) is not None
+            )
+        )
+    ):
+        logging.info(
+            "Reusing prior specialist '%s' for structured data follow-up in channel %s",
             prior_specialist,
             investigation_job.channel_id,
         )
