@@ -775,8 +775,10 @@ async def _synthesize_docs_answer(
         "7. Do not inflate thin evidence into a broad or authoritative answer.\n"
         "8. For onboarding or getting-started questions, do not imply the user must first buy YFI or another 'Yearn token' unless the context explicitly says that. Prefer the docs-backed explanation that users deposit the token accepted by the chosen vault, and describe asset/network examples only as examples if that is all the docs provide.\n"
         "9. If the context does not recommend a specific asset, network, or onboarding path, say the docs do not specify a single best choice instead of improvising one.\n"
-        "10. Respond in your own words; do not use canned responses or templates.\n"
-        "11. NO META-COMMENTARY.\n"
+        "10. If the context says a system is legacy or deprecated and replaced by a newer supported path, say that directly. For questions about new deposits or whether the user should still use the old system, point to the current supported path first and only mention the legacy path for managing existing positions or exits if the context supports that distinction.\n"
+        "11. If the context already resolves a current-vs-legacy or destination question, stop after the grounded answer. Do not append option menus like 'if you want, I can also...' unless the context still leaves a real unresolved branch.\n"
+        "12. Respond in your own words; do not use canned responses or templates.\n"
+        "13. NO META-COMMENTARY.\n"
     )
 
     try:

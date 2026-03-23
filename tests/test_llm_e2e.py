@@ -59,6 +59,10 @@ warnings.filterwarnings(
     category=ResourceWarning,
     message=r"unclosed <socket\.socket.*",
 )
+warnings.filterwarnings(
+    "ignore",
+    category=ResourceWarning,
+)
 
 
 class _RepoContextNoiseFilter(logging.Filter):
@@ -455,6 +459,25 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("official", lowered)
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
         self.assertNotIn("check your deposits", lowered)
+
+    async def test_veyfi_deposit_question_points_to_current_supported_styfi_path(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "can i still deposit in veyfi?",
+            channel_id=9030,
+        )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        lowered = outcome.raw_final_reply.lower()
+        self.assertTrue("legacy" in lowered or "deprecated" in lowered)
+        self.assertTrue(
+            "styfi.yearn.fi" in lowered
+            or "docs.yearn.fi/contributing/governance/styfi" in lowered
+        )
+        self.assertNotIn("yes, you can still deposit", lowered)
+        self.assertNotIn("if you want, i can also", lowered)
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
 
     async def test_harvest_rewards_question_routes_to_docs_not_vault_search(
         self,
@@ -1313,7 +1336,9 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(withdrawal_calls[0]["chain"], "katana")
 
         lowered = outcome.raw_final_reply.lower()
-        self.assertIn("withdrawal", lowered)
+        self.assertIn(self.wallet_address.lower(), lowered)
+        self.assertIn(katana_vault.lower(), lowered)
+        self.assertIn("chain: katana", lowered)
         self.assertNotIn("which vault", lowered)
         self.assertNotIn("re-check", lowered)
         self.assertNotIn("ethereum", lowered)
