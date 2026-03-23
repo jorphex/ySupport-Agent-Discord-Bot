@@ -99,6 +99,18 @@ def _truncate_rerank_document(text: str, max_chars: int = 3000) -> str:
     return normalized[:max_chars].rstrip()
 
 
+def _extract_repo_artifact_refs(text: str) -> list[str]:
+    refs = re.findall(r"(?:segment|fact):\d+", text or "")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        ordered.append(ref)
+    return ordered
+
+
 def _get_openai_async_client() -> AsyncOpenAI:
     global openai_async_client
     if openai_async_client is None:
@@ -1014,6 +1026,44 @@ async def core_fetch_repo_artifacts(artifact_refs_text: str) -> str:
     except Exception as exc:
         logging.error(f"[CoreTool:fetch_repo_artifacts] Error: {exc}", exc_info=True)
         return f"Error fetching repo artifacts: {exc}"
+
+
+async def core_pretriage_repo_claim(
+    claim_text: str,
+    *,
+    include_docs: bool = True,
+    limit: Optional[int] = None,
+    include_legacy: bool = False,
+    include_ui: bool = False,
+) -> str:
+    logging.info(
+        "[CoreTool:pretriage_repo_claim] claim='%s' include_docs=%s limit=%s include_legacy=%s include_ui=%s",
+        claim_text,
+        include_docs,
+        limit,
+        include_legacy,
+        include_ui,
+    )
+    sections: list[str] = []
+
+    repo_search = await core_search_repo_context(
+        claim_text,
+        limit=limit,
+        include_legacy=include_legacy,
+        include_ui=include_ui,
+    )
+    sections.append(f"Repo search:\n{repo_search}")
+
+    artifact_refs = _extract_repo_artifact_refs(repo_search)[:2]
+    if artifact_refs:
+        artifact_text = await core_fetch_repo_artifacts(", ".join(artifact_refs))
+        sections.append(f"Fetched repo artifacts:\n{artifact_text}")
+
+    if include_docs:
+        docs_answer = await core_answer_from_docs(claim_text)
+        sections.append(f"Docs context:\n{docs_answer}")
+
+    return "\n\n".join(section for section in sections if section.strip())
 
 
 async def core_fetch_report_artifact(report_url: str, max_chars: int = 12000) -> str:

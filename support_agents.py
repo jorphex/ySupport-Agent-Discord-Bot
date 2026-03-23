@@ -35,6 +35,7 @@ from support_tools import (
     get_withdrawal_instructions_tool,
     inspect_onchain_tool,
     answer_from_docs_tool,
+    pretriage_repo_claim_tool,
     search_repo_context_tool,
     fetch_repo_artifacts_tool,
     fetch_report_artifact_tool,
@@ -207,6 +208,7 @@ yearn_docs_qa_agent = Agent[BotRunContext](
     instructions=_with_runtime_context(YEARn_DOCS_QA_AGENT_INSTRUCTIONS),
     tools=[
         answer_from_docs_tool,
+        pretriage_repo_claim_tool,
         search_repo_context_tool,
         fetch_repo_artifacts_tool,
         repo_context_status_tool,
@@ -222,6 +224,7 @@ yearn_bug_triage_agent = Agent[BotRunContext](
     name="Yearn Bug Triage Specialist",
     instructions=_with_runtime_context(YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS),
     tools=[
+        pretriage_repo_claim_tool,
         search_repo_context_tool,
         fetch_repo_artifacts_tool,
         fetch_report_artifact_tool,

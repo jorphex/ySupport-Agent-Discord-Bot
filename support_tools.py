@@ -194,6 +194,35 @@ async def fetch_repo_artifacts_tool(
 
 
 @function_tool
+async def pretriage_repo_claim_tool(
+    wrapper: RunContextWrapper[BotRunContext],
+    claim_text: str,
+    include_docs: bool = True,
+    limit: Optional[int] = None,
+    include_legacy: bool = False,
+    include_ui: bool = False,
+) -> str:
+    """
+    Runs one bounded repo/docs pre-triage pass for a Yearn contract or protocol claim.
+    It performs a repo-context search, fetches the top exact repo artifacts when available,
+    and optionally adds docs context in a single tool call.
+    Use this to assess concrete contract/security/mechanics claims without looping over
+    multiple repo searches by hand.
+    """
+    run_context = wrapper.context
+    run_context.repo_search_calls += 1
+    run_context.repo_fetch_calls += 1
+    run_context.repo_searches_without_fetch = 0
+    return await tools_lib.core_pretriage_repo_claim(
+        claim_text,
+        include_docs=include_docs,
+        limit=limit,
+        include_legacy=include_legacy,
+        include_ui=include_ui,
+    )
+
+
+@function_tool
 async def repo_context_status_tool() -> str:
     """
     Returns repo-context runtime status, including readiness and freshness.

@@ -204,6 +204,38 @@ class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
         result = await tools_lib.core_fetch_report_artifact("https://example.com/report.txt")
         self.assertIn("Unsupported report URL", result)
 
+    async def test_pretriage_repo_claim_combines_repo_search_artifacts_and_docs(self) -> None:
+        async def fake_search_repo_context(
+            query: str,
+            limit=None,
+            include_legacy: bool = False,
+            include_ui: bool = False,
+        ) -> str:
+            self.assertIn("unstake", query)
+            return "Top repo hits:\n- segment:11518\n- segment:11540"
+
+        async def fake_fetch_repo_artifacts(artifact_refs_text: str) -> str:
+            self.assertEqual(artifact_refs_text, "segment:11518, segment:11540")
+            return "Fetched repo artifacts:\nLiquidLockerDepositor.vy excerpts"
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            self.assertIn("unstake", user_query)
+            return "Official docs say unstaking starts a 14-day linear cooldown."
+
+        with (
+            patch("tools_lib.core_search_repo_context", new=fake_search_repo_context),
+            patch("tools_lib.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts),
+            patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs),
+        ):
+            result = await tools_lib.core_pretriage_repo_claim(
+                "unstake resets the stream start time to block.timestamp"
+            )
+
+        self.assertIn("Repo search:", result)
+        self.assertIn("segment:11518", result)
+        self.assertIn("LiquidLockerDepositor.vy", result)
+        self.assertIn("Docs context:", result)
+
 
 class TicketExecutionStatusTests(unittest.TestCase):
     def test_build_ticket_execution_status_reports_repo_context_and_valid_config(self) -> None:
