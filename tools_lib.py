@@ -23,8 +23,8 @@ from repo_context import (
 )
 
 # Init Clients
-openai_async_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
-openai_sync_client = OpenAI(api_key=config.OPENAI_API_KEY)
+openai_async_client: AsyncOpenAI | None = None
+openai_sync_client: OpenAI | None = None
 pc = Pinecone(api_key=config.PINECONE_API_KEY)
 pinecone_index = pc.Index(config.PINECONE_INDEX_NAME)
 
@@ -90,6 +90,45 @@ def _json_loads_or_default(raw_value: Optional[str], default: Any) -> Any:
     if raw_value in (None, ""):
         return default
     return json.loads(raw_value)
+
+
+def _truncate_rerank_document(text: str, max_chars: int = 3000) -> str:
+    normalized = (text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip()
+
+
+def _get_openai_async_client() -> AsyncOpenAI:
+    global openai_async_client
+    if openai_async_client is None:
+        openai_async_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+    return openai_async_client
+
+
+def _get_openai_sync_client() -> OpenAI:
+    global openai_sync_client
+    if openai_sync_client is None:
+        openai_sync_client = OpenAI(api_key=config.OPENAI_API_KEY)
+    return openai_sync_client
+
+
+async def close_shared_openai_clients() -> None:
+    global openai_async_client, openai_sync_client
+
+    if openai_async_client is not None:
+        try:
+            await openai_async_client.close()
+        except Exception:
+            pass
+        openai_async_client = None
+
+    if openai_sync_client is not None:
+        try:
+            openai_sync_client.close()
+        except Exception:
+            pass
+        openai_sync_client = None
 
 
 def _github_api_headers() -> dict[str, str]:
@@ -650,7 +689,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
             f"You are a Yearn documentation expert. A user has asked: '{user_query}'.\n"
             "Generate a concise, hypothetical answer..."
         )
-        hyde_response = await openai_async_client.chat.completions.create(
+        hyde_response = await _get_openai_async_client().chat.completions.create(
             model=config.LLM_DOCS_HYDE_MODEL,
             messages=[{"role": "system", "content": hyde_prompt}],
             reasoning_effort=config.LLM_DOCS_HYDE_REASONING_EFFORT,
@@ -664,7 +703,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
 
     try:
         response = await asyncio.to_thread(
-            openai_sync_client.embeddings.create,
+            _get_openai_sync_client().embeddings.create,
             model="text-embedding-3-large",
             input=[embedding_text],
             encoding_format="float"
@@ -685,7 +724,10 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
         except Exception:
             available_namespaces = ["yearn-docs"]
 
-        meta_like = any(k in query_lower for k in ["veyfi", "styfi", "dyfi", "yip", "governance", "staking", "migration"])
+        meta_like = any(
+            k in query_lower
+            for k in ["veyfi", "styfi", "dyfi", "yip", "governance", "delegat", "migration"]
+        )
         if meta_like:
             meta_k, docs_k = 6, 9
         else:
@@ -765,7 +807,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
             docs_to_rerank = []
             for match in unique_matches:
                 metadata = match.get("metadata", {}) if isinstance(match, dict) else getattr(match, "metadata", {}) or {}
-                text_chunk = metadata.get("text") or ""
+                text_chunk = _truncate_rerank_document(metadata.get("text") or "")
                 source_type = metadata.get("source_type", "unknown")
                 docs_to_rerank.append(f"[source_type={source_type}]\n{text_chunk}")
 
@@ -881,7 +923,7 @@ async def _synthesize_docs_answer(
     )
 
     try:
-        response = await openai_async_client.chat.completions.create(
+        response = await _get_openai_async_client().chat.completions.create(
             model=config.LLM_DOCS_SYNTH_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},

@@ -61,7 +61,7 @@ from support_agents import (
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
     TicketAgentFlowOutcome,
-    _contains_public_report_artifact_url,
+    _contains_report_artifact_evidence,
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
@@ -396,18 +396,23 @@ class TriageDecisionTests(unittest.TestCase):
             )
         )
 
-    def test_contains_public_report_artifact_url_detects_supported_hosts(self) -> None:
+    def test_contains_report_artifact_evidence_detects_supported_hosts_and_code_blocks(self) -> None:
         self.assertTrue(
-            _contains_public_report_artifact_url(
+            _contains_report_artifact_evidence(
                 "Report: https://gist.github.com/example/abcdef1234567890"
             )
         )
         self.assertTrue(
-            _contains_public_report_artifact_url(
+            _contains_report_artifact_evidence(
                 "See https://raw.githubusercontent.com/yearn/yearn-security/master/SECURITY.md"
             )
         )
-        self.assertFalse(_contains_public_report_artifact_url("No artifact URL here."))
+        self.assertTrue(
+            _contains_report_artifact_evidence(
+                "```solidity\nfunction test_case() external {}\n```"
+            )
+        )
+        self.assertFalse(_contains_report_artifact_evidence("No artifact URL here."))
 
 
 class WalletCanonicalizationTests(unittest.TestCase):

@@ -201,8 +201,8 @@ def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
     return any(marker in lowered for marker in option_menu_markers) and " or " in lowered
 
 
-def _contains_public_report_artifact_url(text: str) -> bool:
-    return bool(
+def _contains_report_artifact_evidence(text: str) -> bool:
+    if bool(
         re.search(
             r"https://(?:gist\.github\.com/[^/\s]+/[0-9a-fA-F]+|"
             r"gist\.githubusercontent\.com/[^/\s]+/[0-9a-fA-F]+/[^)\]\s]+|"
@@ -210,7 +210,12 @@ def _contains_public_report_artifact_url(text: str) -> bool:
             r"github\.com/[^/\s]+/[^/\s]+/(?:blob|raw)/[^)\]\s]+)",
             text or "",
         )
-    )
+    ):
+        return True
+
+    # A pasted code fence is also a review artifact and deserves one bounded
+    # repo/docs pre-triage pass before we allow an immediate handoff.
+    return (text or "").count("```") >= 2
 
 
 def _is_withdrawal_followup(text: str) -> bool:
@@ -444,7 +449,7 @@ class TicketInvestigationRuntime:
             conversation_history = corrected_result.to_input_list()
             completed_agent_key = _agent_to_key(corrected_result.last_agent)
         if (
-            _contains_public_report_artifact_url(request.aggregated_text)
+            _contains_report_artifact_evidence(request.aggregated_text)
             and _reply_requests_human_handoff(raw_final_reply)
         ):
             corrected_result = await self.runner.run(
@@ -454,7 +459,7 @@ class TicketInvestigationRuntime:
                     {
                         "role": "system",
                         "content": (
-                            "This turn includes a submitted public report artifact. "
+                            "This turn includes a submitted report artifact or pasted PoC code. "
                             "Do one bounded repo/docs pre-triage pass before escalating. "
                             "If repo/docs clearly explain or contradict the claim, answer directly and do not escalate. "
                             "If the artifact lacks a concrete Yearn-specific claim, ask one focused follow-up for the exact Yearn contract/path, concrete claim, and observed impact. "
