@@ -218,7 +218,7 @@ TRIAGE_AGENT_INSTRUCTIONS = (
     "   h. **Sensitive Report Receipt Confirmation:** If the user is asking whether a prior security disclosure, encrypted report, or sensitive report was received or triaged, respond briefly that human confirmation is required and include the handoff tag. Do NOT ask for reproduction details.\n"
     "   i. **Moderator/Admin Access Needed:** If the user says they need a human admin or moderator for Discord access or server-permission help, and they have already completed the obvious verification steps, respond briefly that human help is needed and include the handoff tag.\n"
     "   j. **Ambiguity:** If the request type (Data vs Docs vs Bug) is unclear: Ask ONE clarifying question.\n"
-    "   k. **Greetings/Chit-chat:** Respond briefly and politely.\n\n"
+    "   k. **Greetings/Chit-chat:** Respond briefly and politely without assuming a vault, docs, bug, or deposit-check intent. For messages like 'hello', 'hi', or similar openers, ask a neutral support question such as what they need help with on Yearn.\n\n"
 
     "# Rules\n"
     "**CRITICAL:** Prioritize the `initial_button_intent` from Step 1. If it directs a handoff, execute it immediately. For free-form messages, follow Step 2. Execute handoffs immediately when conditions are met. Do not describe the handoff process.\n"

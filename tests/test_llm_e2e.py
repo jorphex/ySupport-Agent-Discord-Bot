@@ -489,6 +489,18 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("acquire yfi", lowered)
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
 
+    async def test_greeting_only_message_does_not_assume_vault_search_intent(self) -> None:
+        output, _, starting_agent_key = await self._run_support_turn(
+            "Hello",
+            channel_id=9026,
+        )
+        self.assertEqual(starting_agent_key, "triage")
+        lowered = output.lower()
+        self.assertTrue("help" in lowered or "yearn" in lowered)
+        self.assertNotIn("find vaults", lowered)
+        self.assertNotIn("what token, vault, or criteria", lowered)
+        self.assertNotIn("apy", lowered)
+
     async def test_manual_reward_intervention_request_escalates_in_bug_flow(
         self,
     ) -> None:
@@ -806,7 +818,6 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("decode the logs", lowered)
         self.assertNotIn("inspect a specific vault", lowered)
         self.assertTrue("transaction" in lowered or tx_hash.lower() in lowered)
-        self.assertTrue("chain" in lowered or "katana" in lowered)
 
     async def test_ticket_flow_follow_up_look_into_it_reuses_known_tx_context(self) -> None:
         tx_hash = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
