@@ -339,6 +339,20 @@ def discover_recent_closed_ticket_channels(limit: int) -> list[str]:
     ]
 
 
+def preview_recent_closed_ticket_channels(limit: int) -> list[dict[str, str]]:
+    channel_ids = discover_recent_closed_ticket_channels(limit)
+    previews: list[dict[str, str]] = []
+    for channel_id in channel_ids:
+        metadata = fetch_channel_metadata(channel_id)
+        previews.append(
+            {
+                "channel_id": metadata.id,
+                "channel_name": metadata.name,
+            }
+        )
+    return previews
+
+
 async def _run_structured_agent(agent: Agent, input_text: str, output_type: type[BaseModel], workflow_name: str):
     runner = Runner()
     result = await runner.run(
@@ -659,6 +673,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional maximum number of reports to post in a single run after dedupe/filtering.",
     )
+    parser.add_argument(
+        "--preview-discovery",
+        action="store_true",
+        help="Print the recent closed-ticket discovery result and exit before analysis/posting.",
+    )
     return parser
 
 
@@ -676,6 +695,24 @@ async def _main_async(argv: list[str] | None = None) -> int:
             for channel_id in discovered_channels
             if channel_id not in channels
         )
+    if args.preview_discovery:
+        discovered_preview = []
+        if args.recent_closed > 0:
+            discovered_preview = await asyncio.to_thread(
+                preview_recent_closed_ticket_channels,
+                args.recent_closed,
+            )
+        print(
+            json.dumps(
+                {
+                    "preview_only": True,
+                    "selected_channels": channels,
+                    "recent_closed_preview": discovered_preview,
+                },
+                indent=2,
+            )
+        )
+        return 0
     if not channels:
         parser.error("Provide at least one channel or use --recent-closed N.")
 

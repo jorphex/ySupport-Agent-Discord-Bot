@@ -10,6 +10,7 @@ from knowledge_gap_worker import (
     _build_report_signature,
     _snowflake_sort_key,
     discover_recent_closed_ticket_channels,
+    preview_recent_closed_ticket_channels,
     _is_closed_ticket,
     _main_async,
     analyze_transcript_for_knowledge_gap,
@@ -330,6 +331,27 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(channels, ["30", "20"])
 
+    def test_preview_recent_closed_ticket_channels_resolves_channel_names(self) -> None:
+        with patch(
+            "knowledge_gap_worker.discover_recent_closed_ticket_channels",
+            return_value=["30", "20"],
+        ), patch(
+            "knowledge_gap_worker.fetch_channel_metadata",
+            side_effect=[
+                type("ChannelMetadata", (), {"id": "30", "name": "closed-30"})(),
+                type("ChannelMetadata", (), {"id": "20", "name": "closed-20"})(),
+            ],
+        ):
+            preview = preview_recent_closed_ticket_channels(2)
+
+        self.assertEqual(
+            preview,
+            [
+                {"channel_id": "30", "channel_name": "closed-30"},
+                {"channel_id": "20", "channel_name": "closed-20"},
+            ],
+        )
+
     async def test_process_ticket_dry_run_returns_formatted_report_without_posting(self) -> None:
         report = KnowledgeGapReport(
             should_post=True,
@@ -586,3 +608,31 @@ class KnowledgeGapWorkerCliTests(unittest.IsolatedAsyncioTestCase):
         mock_discover.assert_called_once_with(2)
         mock_process_tickets.assert_called_once()
         self.assertEqual(json.loads(stdout.getvalue())["results"], [])
+
+    async def test_main_preview_discovery_exits_before_processing(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch(
+                "knowledge_gap_worker.discover_recent_closed_ticket_channels",
+                return_value=["111", "222"],
+            ),
+            patch(
+                "knowledge_gap_worker.preview_recent_closed_ticket_channels",
+                return_value=[
+                    {"channel_id": "111", "channel_name": "closed-111"},
+                    {"channel_id": "222", "channel_name": "closed-222"},
+                ],
+            ) as mock_preview,
+            patch("knowledge_gap_worker.process_tickets") as mock_process_tickets,
+            redirect_stdout(stdout),
+        ):
+            exit_code = await _main_async(
+                ["--recent-closed", "2", "--preview-discovery", "--dry-run"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        mock_preview.assert_called_once_with(2)
+        mock_process_tickets.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["preview_only"])
+        self.assertEqual(payload["selected_channels"], ["111", "222"])
