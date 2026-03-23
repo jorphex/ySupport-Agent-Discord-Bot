@@ -1,5 +1,3 @@
-TEST_REPORT_CHANNEL_ID = 999999999999999999
-
 import io
 import json
 import unittest
@@ -9,6 +7,8 @@ from unittest.mock import patch
 from knowledge_gap_worker import (
     KnowledgeGapReport,
     PreparedTicketTranscript,
+    _build_report_signature,
+    _is_closed_ticket,
     _main_async,
     analyze_transcript_for_knowledge_gap,
     finalize_knowledge_gap_report,
@@ -16,7 +16,10 @@ from knowledge_gap_worker import (
     post_report_message,
     prepare_ticket_transcript,
     process_ticket,
+    process_tickets,
 )
+
+TEST_REPORT_CHANNEL_ID = 999999999999999999
 
 
 class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +48,28 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prepared.channel_name, "ticket-styfi")
         self.assertEqual(prepared.message_count, 1)
         self.assertIn("Where do I see migrated stYFI?", prepared.transcript_text)
+
+    def test_is_closed_ticket_uses_closed_channel_prefix(self) -> None:
+        self.assertTrue(
+            _is_closed_ticket(
+                PreparedTicketTranscript(
+                    channel_id="1",
+                    channel_name="closed-1450",
+                    message_count=0,
+                    transcript_text="",
+                )
+            )
+        )
+        self.assertFalse(
+            _is_closed_ticket(
+                PreparedTicketTranscript(
+                    channel_id="2",
+                    channel_name="ticket-1451",
+                    message_count=0,
+                    transcript_text="",
+                )
+            )
+        )
 
     async def test_analyze_transcript_returns_none_when_candidate_is_not_reportable(self) -> None:
         prepared = PreparedTicketTranscript(
@@ -223,6 +248,36 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_build_report_signature_is_stable_for_equivalent_content(self) -> None:
+        report_a = KnowledgeGapReport(
+            should_post=True,
+            category="docs_gap",
+            title="Missing Recovery Docs",
+            topic="yETH recovery vault explanations",
+            product="yETH",
+            chain="ethereum",
+            evidence_summary="One wording.",
+            current_official_grounding="Grounding A.",
+            assessment="Assessment A.",
+            suggested_action="Docs update.",
+            confidence="medium",
+        )
+        report_b = KnowledgeGapReport(
+            should_post=True,
+            category="docs_gap",
+            title="missing recovery docs",
+            topic="YETH recovery vault explanations",
+            product="yeth",
+            chain="Ethereum",
+            evidence_summary="Different wording.",
+            current_official_grounding="Grounding B.",
+            assessment="Assessment B.",
+            suggested_action="docs update.",
+            confidence="high",
+        )
+
+        self.assertEqual(_build_report_signature(report_a), _build_report_signature(report_b))
+
     async def test_process_ticket_dry_run_returns_formatted_report_without_posting(self) -> None:
         report = KnowledgeGapReport(
             should_post=True,
@@ -264,6 +319,173 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["report_posted"])
         self.assertIn("formatted_report", result)
         mock_post.assert_not_called()
+
+    async def test_process_ticket_skips_open_ticket_when_closed_only(self) -> None:
+        with patch(
+            "knowledge_gap_worker.prepare_ticket_transcript",
+            return_value=PreparedTicketTranscript(
+                channel_id="1484632286216454295",
+                channel_name="ticket-legacy-link",
+                message_count=5,
+                transcript_text="...",
+            ),
+        ):
+            result = await process_ticket(
+                "1484632286216454295",
+                limit=80,
+                report_channel_id=TEST_REPORT_CHANNEL_ID,
+                dry_run=True,
+                closed_only=True,
+            )
+
+        self.assertEqual(result["skipped_reason"], "open_ticket")
+        self.assertFalse(result["report_posted"])
+
+    async def test_process_tickets_dedupes_matching_reports_within_run(self) -> None:
+        report = KnowledgeGapReport(
+            should_post=True,
+            category="faq_candidate",
+            title="Legacy UI discovery gap",
+            topic="Legacy positions URL",
+            product="legacy UI",
+            chain="arbitrum",
+            evidence_summary="Users cannot find legacy positions.",
+            current_official_grounding="Official destination exists.",
+            assessment="This is recurring confusion.",
+            suggested_action="FAQ entry.",
+            confidence="high",
+        )
+        prepared_transcripts = [
+            PreparedTicketTranscript("1", "closed-1", 3, "ticket one"),
+            PreparedTicketTranscript("2", "closed-2", 4, "ticket two"),
+        ]
+
+        with (
+            patch(
+                "knowledge_gap_worker.prepare_ticket_transcript",
+                side_effect=prepared_transcripts,
+            ),
+            patch(
+                "knowledge_gap_worker.analyze_transcript_for_knowledge_gap",
+                return_value=report,
+            ),
+            patch("knowledge_gap_worker.post_report_message") as mock_post,
+        ):
+            results = await process_tickets(
+                ["1", "2"],
+                limit=80,
+                report_channel_id=TEST_REPORT_CHANNEL_ID,
+                dry_run=False,
+                closed_only=True,
+                state_path=None,
+                max_posts=None,
+            )
+
+        self.assertTrue(results[0]["report_posted"])
+        self.assertEqual(results[1]["skipped_reason"], "duplicate_report")
+        mock_post.assert_called_once()
+
+    async def test_process_tickets_uses_state_file_for_dedupe(self) -> None:
+        report = KnowledgeGapReport(
+            should_post=True,
+            category="faq_candidate",
+            title="Legacy UI discovery gap",
+            topic="Legacy positions URL",
+            product="legacy UI",
+            chain="arbitrum",
+            evidence_summary="Users cannot find legacy positions.",
+            current_official_grounding="Official destination exists.",
+            assessment="This is recurring confusion.",
+            suggested_action="FAQ entry.",
+            confidence="high",
+        )
+        expected_signature = _build_report_signature(report)
+
+        with unittest.mock.patch(
+            "knowledge_gap_worker.prepare_ticket_transcript",
+            return_value=PreparedTicketTranscript("1", "closed-1", 3, "ticket one"),
+        ), unittest.mock.patch(
+            "knowledge_gap_worker.analyze_transcript_for_knowledge_gap",
+            return_value=report,
+        ), unittest.mock.patch(
+            "knowledge_gap_worker.post_report_message"
+        ) as mock_post, unittest.mock.patch(
+            "knowledge_gap_worker._load_reported_signatures",
+            return_value={expected_signature},
+        ), unittest.mock.patch(
+            "knowledge_gap_worker._save_reported_signatures"
+        ):
+            results = await process_tickets(
+                ["1"],
+                limit=80,
+                report_channel_id=TEST_REPORT_CHANNEL_ID,
+                dry_run=False,
+                closed_only=True,
+                state_path="state.json",
+                max_posts=None,
+            )
+
+        self.assertEqual(results[0]["skipped_reason"], "duplicate_report")
+        mock_post.assert_not_called()
+
+    async def test_process_tickets_respects_max_posts_limit(self) -> None:
+        reports = [
+            KnowledgeGapReport(
+                should_post=True,
+                category="faq_candidate",
+                title="Legacy UI discovery gap",
+                topic="Legacy positions URL",
+                product="legacy UI",
+                chain="arbitrum",
+                evidence_summary="Users cannot find legacy positions.",
+                current_official_grounding="Official destination exists.",
+                assessment="This is recurring confusion.",
+                suggested_action="FAQ entry.",
+                confidence="high",
+            ),
+            KnowledgeGapReport(
+                should_post=True,
+                category="docs_gap",
+                title="Missing recovery docs",
+                topic="yETH recovery vault explanations",
+                product="yETH",
+                chain="ethereum",
+                evidence_summary="Users keep asking if they can reclaim 1:1.",
+                current_official_grounding="Docs are thin.",
+                assessment="This is a docs gap.",
+                suggested_action="Docs update.",
+                confidence="medium",
+            ),
+        ]
+        prepared_transcripts = [
+            PreparedTicketTranscript("1", "closed-1", 3, "ticket one"),
+            PreparedTicketTranscript("2", "closed-2", 4, "ticket two"),
+        ]
+
+        with (
+            patch(
+                "knowledge_gap_worker.prepare_ticket_transcript",
+                side_effect=prepared_transcripts,
+            ),
+            patch(
+                "knowledge_gap_worker.analyze_transcript_for_knowledge_gap",
+                side_effect=reports,
+            ),
+            patch("knowledge_gap_worker.post_report_message") as mock_post,
+        ):
+            results = await process_tickets(
+                ["1", "2"],
+                limit=80,
+                report_channel_id=TEST_REPORT_CHANNEL_ID,
+                dry_run=False,
+                closed_only=True,
+                state_path=None,
+                max_posts=1,
+            )
+
+        self.assertTrue(results[0]["report_posted"])
+        self.assertEqual(results[1]["skipped_reason"], "max_posts_reached")
+        mock_post.assert_called_once()
 
 
 class KnowledgeGapWorkerCliTests(unittest.IsolatedAsyncioTestCase):

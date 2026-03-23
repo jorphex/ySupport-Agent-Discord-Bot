@@ -1,9 +1,11 @@
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -241,6 +243,47 @@ def prepare_ticket_transcript(channel_or_link: str, limit: int = 80) -> Prepared
     )
 
 
+def _is_closed_ticket(prepared_transcript: PreparedTicketTranscript) -> bool:
+    return prepared_transcript.channel_name.lower().startswith("closed-")
+
+
+def _build_report_signature(report: KnowledgeGapReport) -> str:
+    signature_payload = {
+        "category": report.category,
+        "title": report.title.strip().lower(),
+        "topic": report.topic.strip().lower(),
+        "product": (report.product or "").strip().lower(),
+        "chain": (report.chain or "").strip().lower(),
+        "suggested_action": report.suggested_action.strip().lower(),
+    }
+    serialized = json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _load_reported_signatures(state_path: str | None) -> set[str]:
+    if not state_path:
+        return set()
+    path = Path(state_path)
+    if not path.exists():
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return set()
+    signatures = payload.get("reported_signatures")
+    if not isinstance(signatures, list):
+        return set()
+    return {str(signature) for signature in signatures if str(signature).strip()}
+
+
+def _save_reported_signatures(state_path: str | None, signatures: set[str]) -> None:
+    if not state_path:
+        return
+    path = Path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"reported_signatures": sorted(signatures)}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 async def _run_structured_agent(agent: Agent, input_text: str, output_type: type[BaseModel], workflow_name: str):
     runner = Runner()
     result = await runner.run(
@@ -345,8 +388,21 @@ async def process_ticket(
     limit: int,
     report_channel_id: int,
     dry_run: bool,
+    closed_only: bool = False,
+    known_signatures: Optional[set[str]] = None,
+    max_posts: Optional[int] = None,
+    posted_count: int = 0,
 ) -> dict[str, object]:
     prepared = await asyncio.to_thread(prepare_ticket_transcript, channel_or_link, limit)
+    if closed_only and not _is_closed_ticket(prepared):
+        return {
+            "channel_id": prepared.channel_id,
+            "channel_name": prepared.channel_name,
+            "message_count": prepared.message_count,
+            "report_posted": False,
+            "report": None,
+            "skipped_reason": "open_ticket",
+        }
     report = await analyze_transcript_for_knowledge_gap(prepared)
     if report is None:
         return {
@@ -355,6 +411,29 @@ async def process_ticket(
             "message_count": prepared.message_count,
             "report_posted": False,
             "report": None,
+        }
+
+    report_signature = _build_report_signature(report)
+    if known_signatures is not None and report_signature in known_signatures:
+        return {
+            "channel_id": prepared.channel_id,
+            "channel_name": prepared.channel_name,
+            "message_count": prepared.message_count,
+            "report_posted": False,
+            "report": report.model_dump(),
+            "report_signature": report_signature,
+            "skipped_reason": "duplicate_report",
+        }
+
+    if max_posts is not None and posted_count >= max_posts:
+        return {
+            "channel_id": prepared.channel_id,
+            "channel_name": prepared.channel_name,
+            "message_count": prepared.message_count,
+            "report_posted": False,
+            "report": report.model_dump(),
+            "report_signature": report_signature,
+            "skipped_reason": "max_posts_reached",
         }
 
     formatted = format_knowledge_gap_report(report, affected_channels=[prepared])
@@ -366,8 +445,47 @@ async def process_ticket(
         "message_count": prepared.message_count,
         "report_posted": not dry_run,
         "report": report.model_dump(),
+        "report_signature": report_signature,
         "formatted_report": formatted,
     }
+
+
+async def process_tickets(
+    channels: list[str],
+    *,
+    limit: int,
+    report_channel_id: int,
+    dry_run: bool,
+    closed_only: bool,
+    state_path: str | None,
+    max_posts: Optional[int],
+) -> list[dict[str, object]]:
+    known_signatures = _load_reported_signatures(state_path)
+    run_signatures = set(known_signatures)
+    results: list[dict[str, object]] = []
+    posted_count = 0
+
+    for channel in channels:
+        result = await process_ticket(
+            channel,
+            limit=limit,
+            report_channel_id=report_channel_id,
+            dry_run=dry_run,
+            closed_only=closed_only,
+            known_signatures=run_signatures,
+            max_posts=max_posts,
+            posted_count=posted_count,
+        )
+        results.append(result)
+        report_signature = result.get("report_signature")
+        if isinstance(report_signature, str) and report_signature:
+            run_signatures.add(report_signature)
+        if result.get("report_posted"):
+            posted_count += 1
+
+    if not dry_run:
+        _save_reported_signatures(state_path, run_signatures)
+    return results
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -399,22 +517,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Analyze and print JSON results without posting to Discord.",
     )
+    parser.add_argument(
+        "--closed-only",
+        action="store_true",
+        help="Only analyze ticket channels whose names start with 'closed-'.",
+    )
+    parser.add_argument(
+        "--state-path",
+        default=None,
+        help="Optional JSON file used to persist already-posted report signatures for dedupe.",
+    )
+    parser.add_argument(
+        "--max-posts",
+        type=int,
+        default=None,
+        help="Optional maximum number of reports to post in a single run after dedupe/filtering.",
+    )
     return parser
 
 
 async def _main_async(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    results = []
-    for channel in args.channels:
-        results.append(
-            await process_ticket(
-                channel,
-                limit=args.limit,
-                report_channel_id=args.report_channel_id,
-                dry_run=args.dry_run,
-            )
-        )
+    results = await process_tickets(
+        args.channels,
+        limit=args.limit,
+        report_channel_id=args.report_channel_id,
+        dry_run=args.dry_run,
+        closed_only=args.closed_only,
+        state_path=args.state_path,
+        max_posts=args.max_posts,
+    )
     print(json.dumps({"results": results}, indent=2))
     return 0
 

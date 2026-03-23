@@ -92,6 +92,9 @@ For offline support-quality review, the repo now includes a Discord-only knowled
 - add more ticket channels to analyze multiple tickets in one run
 - add `--limit N` to control transcript size
 - use `--report-channel-id <channel_id>` to override the private report sink
+- use `--closed-only` to skip any ticket channel whose name does not start with `closed-`
+- use `--state-path <json_path>` to persist already-posted report signatures for dedupe across runs
+- use `--max-posts N` to cap how many reports can be posted in a single run after filtering and dedupe
 
 Phase-1 behavior:
 
@@ -100,6 +103,13 @@ Phase-1 behavior:
 - classifies whether the ticket should become a private internal report
 - emits docs-gap / FAQ / bot-behavior / product-confusion / issue-draft style reports
 - posts to `KNOWLEDGE_GAP_REPORT_CHANNEL_ID`; set it explicitly in the environment for the private destination channel
+
+Phase-2 behavior:
+
+- supports bounded multi-ticket runs
+- can skip open/live tickets when you only want closed-ticket review
+- dedupes reports within a run and optionally across runs via a persisted signature file
+- can bound the number of reports posted in one run so a future scheduled job cannot spam the private channel
 
 Intentional boundaries:
 
