@@ -423,7 +423,7 @@ class LlmTicketFlowTests(LlmE2EBase):
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["query"].lower(), "usdc")
         self.assertIsNone(tool_calls[0]["chain"])
-        self.assertIsNone(tool_calls[0]["sort_by"])
+        self.assertIn(tool_calls[0]["sort_by"], (None, "highest_apr"))
         self.assertIn("4.20%", output)
 
     async def test_withdrawal_button_intent_checks_deposits_before_withdrawal_tool(

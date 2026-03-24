@@ -502,6 +502,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 for marker in (
                     "observed impact",
                     "vulnerability claim",
+                    "bug claim",
                     "actual report",
                     "exploit mechanism",
                     "specific claim",
