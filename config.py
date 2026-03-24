@@ -35,10 +35,6 @@ def _env_csv(name: str) -> list[str]:
     return [part.strip() for part in raw_value.split(",") if part.strip()]
 
 
-def _env_str(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
-
-
 def _env_int(name: str, default: int | None = None) -> int | None:
     raw_value = os.getenv(name)
     if raw_value is None or not raw_value.strip():

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import logging
@@ -767,11 +766,6 @@ def build_repo_context_index(
     }
 
 
-def repo_context_available(db_path: Path | str | None = None) -> bool:
-    status = get_repo_context_status(db_path=db_path, enabled=True, require_fresh=False)
-    return bool(status.get("available", False))
-
-
 def _connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(db_path or config.REPO_CONTEXT_DB_PATH)
     conn = sqlite3.connect(path)
@@ -1386,29 +1380,3 @@ def format_repo_artifacts(artifacts: Iterable[dict[str, Any]]) -> str:
     if not parts:
         return "No repo artifacts were found for the requested references."
     return "\n\n---\n\n".join(parts)
-
-
-def format_repo_context(results: Iterable[RepoSearchResult]) -> str:
-    return format_repo_search_results(results)
-
-
-def should_use_repo_context(query: str) -> bool:
-    lowered = query.lower()
-    repo_terms = [
-        "styfi",
-        "veyfi",
-        "ve yfi",
-        "vault",
-        "router",
-        "strategy",
-        "periphery",
-        "erc4626",
-        "contract",
-        "bug",
-        "exploit",
-        "reentrancy",
-        "migration",
-        "security",
-        "governance staking",
-    ]
-    return any(term in lowered for term in repo_terms)

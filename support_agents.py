@@ -10,7 +10,6 @@ from agents import (
     input_guardrail, GuardrailFunctionOutput,
     RunConfig,
     TResponseInputItem,
-    AgentsException,
 )
 from agents.model_settings import Reasoning
 
@@ -62,13 +61,6 @@ class TicketTriageDecision(BaseModel):
         description="User-facing message for ask_clarifying, respond_directly, or human_escalation. Leave empty for route_* actions.",
     )
     reasoning: str = Field(..., description="Brief explanation for the routing decision.")
-
-
-class GuardrailResponseMessageException(AgentsException):
-    def __init__(self, message: str, guardrail_output: Optional[BDPriorityCheckOutput] = None):
-        super().__init__(message)
-        self.message = message
-        self.guardrail_output = guardrail_output
 
 
 def _gpt5_model_settings(
