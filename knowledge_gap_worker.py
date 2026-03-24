@@ -176,6 +176,25 @@ def _supported_chain_names() -> set[str]:
     return set(config.RPC_URLS)
 
 
+def _build_repo_grounding_query(candidate: KnowledgeGapCandidate) -> str:
+    parts = [
+        candidate.grounding_query.strip(),
+        candidate.topic.strip(),
+        candidate.evidence_summary.strip(),
+    ]
+    seen: set[str] = set()
+    ordered_parts: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        normalized = part.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered_parts.append(part)
+    return "\n\n".join(ordered_parts)
+
+
 def _extract_transcript_chain_hint(prepared_transcript: PreparedTicketTranscript) -> Optional[str]:
     transcript_text = prepared_transcript.transcript_text.lower()
     chain_id_matches = {
@@ -379,7 +398,7 @@ async def analyze_transcript_for_knowledge_gap(
     repo_grounding = ""
     if candidate.needs_repo_context:
         repo_grounding = await tools_lib.core_pretriage_repo_claim(
-            candidate.grounding_query,
+            _build_repo_grounding_query(candidate),
             include_docs=False,
         )
 
