@@ -119,6 +119,35 @@ class LlmE2EBase(unittest.IsolatedAsyncioTestCase):
         await _close_agents_http_clients()
         await super().asyncTearDown()
 
+    def assertNoGenericBugTriage(self, text: str) -> None:
+        lowered = text.lower()
+        for marker in ("browser", "device", "steps to reproduce", "screen recording"):
+            self.assertNotIn(marker, lowered)
+
+    def assertNoInternalBranchMenu(self, text: str) -> None:
+        lowered = text.lower()
+        for marker in (
+            "would you like me",
+            "which would you like",
+            "tell me what to inspect",
+            "pick one",
+        ):
+            self.assertNotIn(marker, lowered)
+
+    def assertNoMissingTxContextPrompt(self, text: str) -> None:
+        lowered = text.lower()
+        for marker in ("please provide the tx hash", "which chain"):
+            self.assertNotIn(marker, lowered)
+
+    def assertNoDataLookupDetour(self, text: str) -> None:
+        lowered = text.lower()
+        for marker in (
+            "find vaults",
+            "what token, vault, or criteria",
+            "check your deposits",
+        ):
+            self.assertNotIn(marker, lowered)
+
     async def _run_support_turn(
         self,
         message: str,
@@ -322,4 +351,3 @@ class LlmE2EBase(unittest.IsolatedAsyncioTestCase):
             if tool.name == tool_name:
                 return tool
         raise AssertionError(f"Tool {tool_name} not found on agent {agent.name}.")
-

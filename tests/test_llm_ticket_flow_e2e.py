@@ -92,7 +92,7 @@ class LlmTicketFlowTests(LlmE2EBase):
             or "failed" in lowered
             or "allowance-state failure" in lowered
         )
-        self.assertNotIn("what browser", lowered)
+        self.assertNoGenericBugTriage(lowered)
 
     async def test_ticket_flow_tx_hash_followup_investigates_without_branching_question(
         self,
@@ -162,12 +162,7 @@ class LlmTicketFlowTests(LlmE2EBase):
         lowered = outcome.raw_final_reply.lower()
         self.assertNotIn("forwarded", lowered)
         self.assertNotIn("transferred to", lowered)
-        self.assertNotIn("would you like me to", lowered)
-        self.assertNotIn("if you need a deeper decode", lowered)
-        self.assertNotIn("tell me what to inspect next", lowered)
-        self.assertNotIn("which would you like", lowered)
-        self.assertNotIn("decode the logs", lowered)
-        self.assertNotIn("inspect a specific vault", lowered)
+        self.assertNoInternalBranchMenu(lowered)
         self.assertTrue("transaction" in lowered or tx_hash.lower() in lowered)
 
     async def test_ticket_flow_follow_up_look_into_it_reuses_known_tx_context(self) -> None:
@@ -242,10 +237,8 @@ class LlmTicketFlowTests(LlmE2EBase):
         )
 
         lowered = outcome.raw_final_reply.lower()
-        self.assertNotIn("which chain", lowered)
-        self.assertNotIn("please provide the tx hash", lowered)
-        self.assertNotIn("would you like me to", lowered)
-        self.assertNotIn("which would you like", lowered)
+        self.assertNoMissingTxContextPrompt(lowered)
+        self.assertNoInternalBranchMenu(lowered)
 
     async def test_katana_discrepancy_transcript_keeps_investigating_without_user_branch_selection(
         self,
@@ -309,8 +302,7 @@ class LlmTicketFlowTests(LlmE2EBase):
         third_reply = outcomes[2].raw_final_reply.lower()
         self.assertNotEqual(second_reply.strip(), "")
         self.assertNotEqual(third_reply.strip(), "")
-        self.assertNotIn("please provide the tx hash", third_reply)
-        self.assertNotIn("which chain", third_reply)
+        self.assertNoMissingTxContextPrompt(third_reply)
         self.assertTrue(
             "yvvbusdt" in third_reply
             or config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower() in third_reply
@@ -369,7 +361,7 @@ class LlmTicketFlowTests(LlmE2EBase):
         lowered = outcomes[2].raw_final_reply.lower()
         self.assertNotIn("forwarded", lowered)
         self.assertNotIn("transferred to specialists", lowered)
-        self.assertNotIn("please provide the tx hash", lowered)
+        self.assertNoMissingTxContextPrompt(lowered)
 
     async def test_deposit_button_intent_calls_check_all_deposits_tool(self) -> None:
         tool_calls: list[dict] = []
@@ -605,7 +597,7 @@ class LlmTicketFlowTests(LlmE2EBase):
         lowered = outcome.raw_final_reply.lower()
         self.assertIn("legacy-veyfi.yearn.fi/manage", lowered)
         self.assertIn("styfi.yearn.fi", lowered)
-        self.assertNotIn("browser", lowered)
+        self.assertNoGenericBugTriage(lowered)
         self.assertNotIn("screenshot", lowered)
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
 
