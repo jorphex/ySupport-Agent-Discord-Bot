@@ -167,6 +167,35 @@ def _normalize_ticket_triage_decision(
     )
 
 
+async def resolve_freeform_starting_agent(
+    *,
+    runner,
+    input_list: str | List[TResponseInputItem],
+    run_context: BotRunContext,
+    workflow_name: str,
+) -> str:
+    """
+    Public free-form routing should use the same structured router that ticket
+    flow uses for docs/data/bug lane selection. If the router decides the turn
+    can be handled directly, needs clarification, or needs human escalation,
+    start with triage instead.
+    """
+    router_result: RunResult = await runner.run(
+        starting_agent=ticket_triage_router_agent,
+        input=input_list,
+        max_turns=4,
+        run_config=RunConfig(
+            workflow_name=f"{workflow_name} / ticket-triage-router",
+            group_id=str(run_context.channel_id),
+        ),
+        context=run_context,
+    )
+    decision = _normalize_ticket_triage_decision(
+        router_result.final_output_as(TicketTriageDecision)
+    )
+    return ROUTE_ACTION_TO_AGENT_KEY.get(decision.action, "triage")
+
+
 def _reply_requests_human_handoff(reply_text: str) -> bool:
     return config.HUMAN_HANDOFF_TAG_PLACEHOLDER in reply_text
 

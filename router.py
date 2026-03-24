@@ -129,30 +129,6 @@ def is_wallet_rejection(text: str) -> bool:
     return any(phrase in q for phrase in phrase_rejections)
 
 
-def should_force_docs_route(text: str) -> bool:
-    if not text:
-        return False
-    q = text.lower()
-    if is_bug_report_query(q):
-        return False
-    if is_account_specific_veyfi_query(q):
-        return False
-    docs_keywords = [
-        "veyfi", "styfi", "dyfi", "yip", "governance", "staking",
-        "yeth", "recovery vault", "reclaim", "recovery",
-    ]
-    if any(k in q for k in docs_keywords):
-        return True
-    if "contract address" in q:
-        data_keywords = [
-            "vault", "vaults", "deposit", "withdraw", "apy", "tvl",
-            "balance", "strategy", "strategies", "pps", "price per share", "yield"
-        ]
-        if not any(k in q for k in data_keywords):
-            return True
-    return False
-
-
 def select_starting_agent(text: str, run_context) -> AgentKey:
     intent = run_context.initial_button_intent
     if intent in ["data_deposit_check", "data_withdrawal_flow_start", "data_vault_search", "data_deposits_withdrawals_start"]:
@@ -163,6 +139,8 @@ def select_starting_agent(text: str, run_context) -> AgentKey:
         return "bug"
     if intent == "investigate_issue":
         return "triage"
-    if should_force_docs_route(text):
-        return "docs"
+    # Free-form messages should stay in triage unless the runtime already has a
+    # stronger structured reason to start elsewhere. That keeps lane selection
+    # owned by the triage/router agents instead of duplicated keyword policy
+    # here in the wrapper.
     return "triage"

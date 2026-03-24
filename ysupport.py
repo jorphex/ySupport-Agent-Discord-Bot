@@ -51,7 +51,12 @@ from ticket_investigation_executor import (
     TicketExecutionHooks,
     TransportTicketInvestigationExecutor,
 )
-from ticket_investigation_runtime import TicketInvestigationRuntime, TicketTurnRequest, _resolve_agent
+from ticket_investigation_runtime import (
+    TicketInvestigationRuntime,
+    TicketTurnRequest,
+    _resolve_agent,
+    resolve_freeform_starting_agent,
+)
 from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
@@ -249,6 +254,13 @@ class TicketBot(discord.Client):
                                 input_list[-1].get("content", "") if input_list else "",
                                 public_run_context
                             )
+                            if agent_key == "triage":
+                                agent_key = await resolve_freeform_starting_agent(
+                                    runner=self.runner,
+                                    input_list=input_list,
+                                    run_context=public_run_context,
+                                    workflow_name=f"Public Stateful Trigger-{message.channel.id}",
+                                )
                             starting_agent = _resolve_agent(agent_key)
                             result: RunResult = await self.runner.run(
                                 starting_agent=starting_agent,

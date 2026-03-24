@@ -67,6 +67,7 @@ from ticket_investigation_runtime import (
     _reply_requests_human_handoff,
     _reply_requests_tx_investigation_followup,
     _select_ticket_starting_agent,
+    resolve_freeform_starting_agent,
     TicketInvestigationRuntime,
     TicketTurnRequest,
 )
@@ -98,24 +99,24 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(select_starting_agent("the claim button is missing", context), "triage")
 
-    def test_select_starting_agent_routes_styfi_question_to_docs(self) -> None:
+    def test_select_starting_agent_keeps_styfi_question_in_triage(self) -> None:
         context = BotRunContext(channel_id=3, project_context="yearn")
-        self.assertEqual(select_starting_agent("Where do I see my stYFI position?", context), "docs")
+        self.assertEqual(select_starting_agent("Where do I see my stYFI position?", context), "triage")
 
-    def test_select_starting_agent_routes_styfi_contract_address_question_to_docs(self) -> None:
+    def test_select_starting_agent_keeps_styfi_contract_address_question_in_triage(self) -> None:
         context = BotRunContext(channel_id=25, project_context="yearn")
         self.assertEqual(
             select_starting_agent("what's the contract address for styfi? it just launched today", context),
-            "docs",
+            "triage",
         )
 
-    def test_select_starting_agent_routes_yeth_recovery_question_to_docs(self) -> None:
+    def test_select_starting_agent_keeps_yeth_recovery_question_in_triage(self) -> None:
         context = BotRunContext(channel_id=23, project_context="yearn")
         message = (
             "I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. "
             "Does that mean I can reclaim my lost ETH 1:1, and why would someone stay in the recovery vault?"
         )
-        self.assertEqual(select_starting_agent(message, context), "docs")
+        self.assertEqual(select_starting_agent(message, context), "triage")
 
     def test_select_starting_agent_keeps_harvest_family_question_in_triage(self) -> None:
         context = BotRunContext(channel_id=24, project_context="yearn")
@@ -610,6 +611,34 @@ class _FakeRunner:
 
 
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolve_freeform_starting_agent_reuses_ticket_router_for_public_lane_selection(self) -> None:
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=None,
+                    last_agent=None,
+                    _history=[],
+                    _decision=TicketTriageDecision(
+                        action="route_docs",
+                        message=None,
+                        reasoning="docs question",
+                    ),
+                ),
+            ]
+        )
+        context = BotRunContext(channel_id=30, project_context="yearn")
+
+        agent_key = await resolve_freeform_starting_agent(
+            runner=fake_runner,
+            input_list="Where do I see my stYFI position?",
+            run_context=context,
+            workflow_name="tests.public_route",
+        )
+
+        self.assertEqual(agent_key, "docs")
+        self.assertEqual(len(fake_runner.calls), 1)
+        self.assertIs(fake_runner.calls[0]["starting_agent"], ticket_triage_router_agent)
+
     async def test_ticket_agent_flow_routes_triage_decision_to_docs_specialist(self) -> None:
         channel_id = 31
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
