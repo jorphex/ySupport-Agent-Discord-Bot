@@ -125,6 +125,14 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(select_starting_agent(message, context), "triage")
 
+    def test_select_starting_agent_keeps_apy_mechanics_question_in_triage(self) -> None:
+        context = BotRunContext(channel_id=28, project_context="yearn")
+        message = (
+            "How is the AUSD vault in katana earning 10%+ native APY for almost a month "
+            "if the strategies inside are earning less than 1%?"
+        )
+        self.assertEqual(select_starting_agent(message, context), "triage")
+
     def test_select_starting_agent_keeps_free_form_withdrawal_in_triage(self) -> None:
         context = BotRunContext(channel_id=4, project_context="yearn")
         message = (

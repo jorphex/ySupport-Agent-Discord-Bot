@@ -546,6 +546,41 @@ class LlmEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("check your deposits", lowered)
         self.assertNotIn("wallet address", lowered)
 
+    async def test_apy_mechanics_question_routes_to_docs_not_vault_search(self) -> None:
+        docs_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            docs_calls.append(user_query)
+            return (
+                "Official Yearn docs say vault APY is backward-looking from pricePerShare (PPS) change, "
+                "annualized over the relevant window. On non-Ethereum chains the displayed net APY can use "
+                "weekly PPS change, so it can diverge from individual strategy APR figures. The docs I have do "
+                "not document a separate donation or TVL-outflow adjustment formula beyond the PPS-based calculation."
+            )
+
+        async def fail_search_vaults(*args, **kwargs) -> str:
+            raise AssertionError("Vault search should not run for an APY mechanics explanation question.")
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            with patch("tools_lib.core_search_vaults", new=fail_search_vaults):
+                outcome = await self._run_ticket_flow(
+                    "How is the AUSD vault in katana earning 10%+ native APY for almost a month "
+                    "if the strategies inside are earning less than 1%?",
+                    channel_id=9038,
+                )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(docs_calls), 1)
+        self.assertIn("apy", docs_calls[0].lower())
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("pricepershare", lowered)
+        self.assertIn("pps", lowered)
+        self.assertIn("backward-looking", lowered)
+        self.assertNotIn("find vaults", lowered)
+        self.assertNotIn("what token, vault, or criteria", lowered)
+        self.assertNotIn("check your deposits", lowered)
+        self.assertNotIn("wallet address", lowered)
+
     async def test_onboarding_question_uses_docs_backed_getting_started_answer_without_yfi_detour(
         self,
     ) -> None:
