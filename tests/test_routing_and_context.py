@@ -212,6 +212,24 @@ class RoutingTests(unittest.TestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
+    def test_follow_up_routing_does_not_keep_bug_lane_sticky_without_structured_state(self) -> None:
+        channel_id = 29
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.last_specialty = "bug"
+        try:
+            agent_key = _select_ticket_starting_agent(
+                "where do i see my styfi position?",
+                context,
+                current_history=[
+                    {"role": "assistant", "content": "Please share the page and button state."},
+                ],
+                investigation_job=investigation_job,
+            )
+            self.assertEqual(agent_key, "triage")
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
     def test_merge_explicit_evidence_into_job_tracks_chain_and_tx_hash(self) -> None:
         channel_id = 22
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
@@ -255,21 +273,13 @@ class RoutingTests(unittest.TestCase):
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
         try:
             investigation_job.remember_wallet("0x1111111111111111111111111111111111111111")
+            investigation_job.remember_withdrawal_target(
+                "katana",
+                "0x80c34BD3A3569E126e7055831036aa7b212cB159",
+            )
             hints = TicketInvestigationRuntime.build_contextual_hints(
                 investigation_job,
                 "I'd like support withdrawing",
-                current_history=[
-                    {"role": "user", "content": "0x1111111111111111111111111111111111111111"},
-                    {
-                        "role": "assistant",
-                        "content": (
-                            "**Katana Active Deposits:**\n"
-                            "**Vault:** [Vault Name](https://yearn.fi/v3/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n"
-                            "  Address: `0x80c34BD3A3569E126e7055831036aa7b212cB159`\n"
-                            "  Total Position: **1.000000 yvVBUSDT**"
-                        ),
-                    },
-                ],
             )
 
             self.assertEqual(len(hints), 1)
@@ -317,6 +327,10 @@ class InvestigationJobTests(unittest.TestCase):
         job.remember_wallet("0x1111111111111111111111111111111111111111")
         job.remember_chain("katana")
         job.remember_tx_hash("0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0")
+        job.remember_withdrawal_target(
+            "katana",
+            "0x80c34BD3A3569E126e7055831036aa7b212cB159",
+        )
         job.begin_investigating()
         job.complete_specialist_turn("data")
         job.mark_waiting_for_user()
@@ -332,14 +346,38 @@ class InvestigationJobTests(unittest.TestCase):
             job.evidence.tx_hashes,
             ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
         )
+        self.assertEqual(job.evidence.withdrawal_target_chain, "katana")
+        self.assertEqual(
+            job.evidence.withdrawal_target_vault,
+            "0x80c34BD3A3569E126e7055831036aa7b212cB159",
+        )
 
     def test_job_clears_current_specialty_when_non_specialist_turn_completes(self) -> None:
         job = TicketInvestigationJob(channel_id=78, current_specialty="bug", last_specialty="bug")
+        job.remember_withdrawal_target(
+            "katana",
+            "0x80c34BD3A3569E126e7055831036aa7b212cB159",
+        )
 
         job.complete_specialist_turn(None)
 
         self.assertIsNone(job.current_specialty)
         self.assertEqual(job.last_specialty, "bug")
+        self.assertIsNone(job.evidence.withdrawal_target_chain)
+        self.assertIsNone(job.evidence.withdrawal_target_vault)
+
+    def test_job_clears_withdrawal_target_when_turn_leaves_data_lane(self) -> None:
+        job = TicketInvestigationJob(channel_id=79)
+        job.remember_withdrawal_target(
+            "katana",
+            "0x80c34BD3A3569E126e7055831036aa7b212cB159",
+        )
+
+        job.complete_specialist_turn("docs")
+
+        self.assertEqual(job.current_specialty, "docs")
+        self.assertIsNone(job.evidence.withdrawal_target_chain)
+        self.assertIsNone(job.evidence.withdrawal_target_vault)
 
 
 class RepoHelperTests(unittest.TestCase):
@@ -689,6 +727,50 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(fake_runner.calls[1]["starting_agent"], yearn_docs_qa_agent)
         self.assertEqual(outcome.completed_agent_key, "docs")
         self.assertIn("positions page", outcome.raw_final_reply.lower())
+
+    async def test_ticket_agent_flow_remembers_single_withdrawal_target_from_data_reply(self) -> None:
+        channel_id = 36
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=(
+                        "**Katana Active Deposits:**\n"
+                        "**Vault:** [Vault Name](https://yearn.fi/v3/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n"
+                        "  Address: `0x80c34BD3A3569E126e7055831036aa7b212cB159`\n"
+                        "  Total Position: **1.000000 yvVBUSDT**"
+                    ),
+                    last_agent=yearn_data_agent,
+                    _history=[],
+                ),
+            ]
+        )
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="data_deposit_check",
+        )
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text="0x1111111111111111111111111111111111111111",
+                    input_list=[{"role": "user", "content": "0x1111111111111111111111111111111111111111"}],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(outcome.completed_agent_key, "data")
+        self.assertEqual(investigation_job.evidence.withdrawal_target_chain, "katana")
+        self.assertEqual(
+            investigation_job.evidence.withdrawal_target_vault,
+            "0x80c34BD3A3569E126e7055831036aa7b212cB159",
+        )
 
     async def test_ticket_agent_flow_returns_direct_router_message_without_second_run(self) -> None:
         channel_id = 32

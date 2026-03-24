@@ -46,6 +46,8 @@ class InvestigationEvidence:
     wallet: Optional[str] = None
     chain: Optional[str] = None
     tx_hashes: List[str] = field(default_factory=list)
+    withdrawal_target_chain: Optional[str] = None
+    withdrawal_target_vault: Optional[str] = None
 
 
 @dataclass
@@ -81,7 +83,10 @@ class TicketInvestigationJob:
         if specialty in {"data", "docs", "bug"}:
             self.last_specialty = specialty
             self.current_specialty = specialty
+            if specialty != "data":
+                self.clear_withdrawal_target()
             return
+        self.clear_withdrawal_target()
         self.clear_current_specialty()
 
     def remember_wallet(self, wallet: str) -> None:
@@ -94,6 +99,14 @@ class TicketInvestigationJob:
         if tx_hash not in self.evidence.tx_hashes:
             self.evidence.tx_hashes.append(tx_hash)
 
+    def remember_withdrawal_target(self, chain: str, vault: str) -> None:
+        self.evidence.withdrawal_target_chain = chain
+        self.evidence.withdrawal_target_vault = vault
+
+    def clear_withdrawal_target(self) -> None:
+        self.evidence.withdrawal_target_chain = None
+        self.evidence.withdrawal_target_vault = None
+
     def apply_snapshot(self, other: "TicketInvestigationJob") -> None:
         self.requested_intent = other.requested_intent
         self.mode = other.mode
@@ -102,6 +115,8 @@ class TicketInvestigationJob:
         self.evidence.wallet = other.evidence.wallet
         self.evidence.chain = other.evidence.chain
         self.evidence.tx_hashes = list(other.evidence.tx_hashes)
+        self.evidence.withdrawal_target_chain = other.evidence.withdrawal_target_chain
+        self.evidence.withdrawal_target_vault = other.evidence.withdrawal_target_vault
 
 
 # Globals

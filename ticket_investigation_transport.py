@@ -119,6 +119,8 @@ def serialize_investigation_evidence(
         "wallet": evidence.wallet,
         "chain": evidence.chain,
         "tx_hashes": list(evidence.tx_hashes),
+        "withdrawal_target_chain": evidence.withdrawal_target_chain,
+        "withdrawal_target_vault": evidence.withdrawal_target_vault,
     }
 
 
@@ -129,6 +131,8 @@ def deserialize_investigation_evidence(
         wallet=payload.get("wallet"),
         chain=payload.get("chain"),
         tx_hashes=list(payload.get("tx_hashes", [])),
+        withdrawal_target_chain=payload.get("withdrawal_target_chain"),
+        withdrawal_target_vault=payload.get("withdrawal_target_vault"),
     )
 
 
@@ -177,6 +181,8 @@ def build_smoke_transport_request() -> "TicketExecutionTransportRequest":
                 "wallet": None,
                 "chain": None,
                 "tx_hashes": [],
+                "withdrawal_target_chain": None,
+                "withdrawal_target_vault": None,
             },
         },
         workflow_name="ticket_execution_status.smoke_probe",
