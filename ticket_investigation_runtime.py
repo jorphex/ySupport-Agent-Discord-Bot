@@ -190,48 +190,6 @@ def _reply_requests_human_handoff(reply_text: str) -> bool:
     return config.HUMAN_HANDOFF_TAG_PLACEHOLDER in reply_text
 
 
-def _reply_requests_tx_investigation_followup(reply_text: str) -> bool:
-    lowered = reply_text.lower()
-    investigation_markers = (
-        "decode",
-        "deeper decode",
-        "receipt",
-        "log",
-        "contract call",
-        "continue investigating",
-        "continue the investigation",
-        "deeper on-chain inspection",
-        "deeper onchain investigation",
-        "inspect next",
-        "inspect",
-        "proceed",
-    )
-    if not any(marker in lowered for marker in investigation_markers):
-        return False
-
-    invitation_markers = (
-        "would you like me",
-        "which would you like",
-        "if you want",
-        "if you need",
-        "next steps",
-        "pick one",
-        "tell me what to inspect next",
-        "tell me what to inspect",
-        "what to inspect next",
-    )
-    if any(marker in lowered for marker in invitation_markers):
-        return True
-
-    option_menu_markers = (
-        "i can:",
-        "i can (",
-        "which one",
-        "which option",
-    )
-    return any(marker in lowered for marker in option_menu_markers) and " or " in lowered
-
-
 def _contains_report_artifact_evidence(text: str) -> bool:
     if bool(
         re.search(
@@ -307,6 +265,34 @@ def _merge_explicit_evidence_into_job(
     text: str,
 ) -> None:
     TicketInvestigationRuntime.merge_explicit_evidence(investigation_job, text)
+
+
+def _build_specialist_turn_input(request: TicketTurnRequest) -> List[TResponseInputItem]:
+    input_list = list(request.input_list)
+    extra_system_prompts: list[str] = []
+
+    known_tx_hashes = request.investigation_job.evidence.tx_hashes
+    if known_tx_hashes and not any(tx_hash in request.aggregated_text for tx_hash in known_tx_hashes):
+        extra_system_prompts.append(
+            "Continue the current transaction investigation yourself. "
+            "Do not ask the user whether you should proceed or which internal investigation branch to take. "
+            "Do not say 'I can', 'would you like', 'which would you like', or present an option menu. "
+            "Choose the single next investigation step yourself, run it, and give the next grounded finding. "
+            "Only escalate to a human if a real blocker remains after that step."
+        )
+
+    if _contains_report_artifact_evidence(request.aggregated_text):
+        extra_system_prompts.append(
+            "This turn includes a submitted report artifact or pasted PoC code. "
+            "Do one bounded repo/docs pre-triage pass before escalating. "
+            "If repo/docs clearly explain or contradict the claim, answer directly and do not escalate. "
+            "If the artifact lacks a concrete Yearn-specific claim, ask one focused follow-up for the exact Yearn contract/path, concrete claim, and observed impact. "
+            "Only escalate if a plausible unresolved security issue remains after that pre-triage."
+        )
+
+    if extra_system_prompts:
+        input_list.append({"role": "system", "content": " ".join(extra_system_prompts)})
+    return input_list
 
 
 class TicketInvestigationRuntime:
@@ -453,9 +439,10 @@ class TicketInvestigationRuntime:
         if agent_key == "bug" and request.send_bug_review_status is not None:
             await request.send_bug_review_status()
 
+        specialist_input = _build_specialist_turn_input(request)
         result: RunResult = await self.runner.run(
             starting_agent=_resolve_agent(agent_key),
-            input=request.input_list,
+            input=specialist_input,
             max_turns=config.MAX_TICKET_CONVERSATION_TURNS,
             run_config=RunConfig(
                 workflow_name=request.workflow_name,
@@ -476,65 +463,6 @@ class TicketInvestigationRuntime:
                 )
             else:
                 request.investigation_job.clear_withdrawal_target()
-        if (
-            request.investigation_job.evidence.tx_hashes
-            and not _reply_requests_human_handoff(raw_final_reply)
-            and _reply_requests_tx_investigation_followup(raw_final_reply)
-        ):
-            corrected_result: RunResult = await self.runner.run(
-                starting_agent=_resolve_agent(agent_key),
-                input=conversation_history
-                + [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Continue the current transaction investigation yourself. "
-                            "Do not ask the user whether you should proceed or which internal investigation branch to take. "
-                            "Do not say 'I can', 'would you like', 'which would you like', or present an option menu. "
-                            "Choose the single next investigation step yourself, run it, and give the next grounded finding. "
-                            "Only escalate to a human if a real blocker remains after that step."
-                        ),
-                    }
-                ],
-                max_turns=4,
-                run_config=RunConfig(
-                    workflow_name=f"{request.workflow_name} / tx-investigation-followup",
-                    group_id=str(request.run_context.channel_id),
-                ),
-                context=request.run_context,
-            )
-            raw_final_reply = corrected_result.final_output or raw_final_reply
-            conversation_history = corrected_result.to_input_list()
-            completed_agent_key = _agent_to_key(corrected_result.last_agent)
-        if (
-            _contains_report_artifact_evidence(request.aggregated_text)
-            and _reply_requests_human_handoff(raw_final_reply)
-        ):
-            corrected_result = await self.runner.run(
-                starting_agent=_resolve_agent(agent_key),
-                input=conversation_history
-                + [
-                    {
-                        "role": "system",
-                        "content": (
-                            "This turn includes a submitted report artifact or pasted PoC code. "
-                            "Do one bounded repo/docs pre-triage pass before escalating. "
-                            "If repo/docs clearly explain or contradict the claim, answer directly and do not escalate. "
-                            "If the artifact lacks a concrete Yearn-specific claim, ask one focused follow-up for the exact Yearn contract/path, concrete claim, and observed impact. "
-                            "Only escalate if a plausible unresolved security issue remains after that pre-triage."
-                        ),
-                    }
-                ],
-                max_turns=4,
-                run_config=RunConfig(
-                    workflow_name=f"{request.workflow_name} / report-artifact-pretriage",
-                    group_id=str(request.run_context.channel_id),
-                ),
-                context=request.run_context,
-            )
-            raw_final_reply = corrected_result.final_output or raw_final_reply
-            conversation_history = corrected_result.to_input_list()
-            completed_agent_key = _agent_to_key(corrected_result.last_agent)
         return TicketAgentFlowOutcome(
             raw_final_reply=raw_final_reply,
             conversation_history=conversation_history,

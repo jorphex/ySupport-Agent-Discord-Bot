@@ -32,12 +32,12 @@ from support_agents import (
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
+    _build_specialist_turn_input,
     TicketAgentFlowOutcome,
     _contains_report_artifact_evidence,
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
-    _reply_requests_tx_investigation_followup,
     _select_ticket_starting_agent,
     resolve_freeform_starting_agent,
     TicketInvestigationRuntime,
@@ -414,31 +414,51 @@ class TriageDecisionTests(unittest.TestCase):
         )
         self.assertFalse(_reply_requests_human_handoff("This is a direct answer."))
 
-    def test_reply_requests_tx_investigation_followup_detects_internal_branch_question(self) -> None:
-        self.assertTrue(
-            _reply_requests_tx_investigation_followup(
-                "I can continue investigating. Would you like me to decode the logs or inspect the receipt?"
-            )
+    def test_build_specialist_turn_input_adds_tx_followup_contract_up_front(self) -> None:
+        channel_id = 77
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        investigation_job.remember_tx_hash(
+            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
         )
-        self.assertTrue(
-            _reply_requests_tx_investigation_followup(
-                "If you need a deeper decode, tell me what to inspect next."
-            )
+        request = TicketTurnRequest(
+            aggregated_text="look into it",
+            input_list=[{"role": "user", "content": "look into it"}],
+            current_history=[],
+            run_context=BotRunContext(channel_id=channel_id, project_context="yearn"),
+            investigation_job=investigation_job,
+            workflow_name="tests.runtime",
         )
-        self.assertTrue(
-            _reply_requests_tx_investigation_followup(
-                "Next steps — which would you like? I can run a deeper onchain investigation or escalate."
-            )
+        try:
+            specialist_input = _build_specialist_turn_input(request)
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(specialist_input[-1]["role"], "system")
+        self.assertIn(
+            "Do not ask the user whether you should proceed",
+            specialist_input[-1]["content"],
         )
-        self.assertTrue(
-            _reply_requests_tx_investigation_followup(
-                "If you want, I can (pick one): decode more logs, inspect related calls, or escalate. Which would you like?"
-            )
+
+    def test_build_specialist_turn_input_adds_report_pretriage_contract_up_front(self) -> None:
+        channel_id = 78
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        request = TicketTurnRequest(
+            aggregated_text="Report: https://gist.github.com/example/abcdef1234567890",
+            input_list=[{"role": "user", "content": "Report: https://gist.github.com/example/abcdef1234567890"}],
+            current_history=[],
+            run_context=BotRunContext(channel_id=channel_id, project_context="yearn"),
+            investigation_job=investigation_job,
+            workflow_name="tests.runtime",
         )
-        self.assertFalse(
-            _reply_requests_tx_investigation_followup(
-                "The tx failed because allowance was too low."
-            )
+        try:
+            specialist_input = _build_specialist_turn_input(request)
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(specialist_input[-1]["role"], "system")
+        self.assertIn(
+            "Do one bounded repo/docs pre-triage pass",
+            specialist_input[-1]["content"],
         )
 
     def test_contains_report_artifact_evidence_detects_supported_hosts_and_code_blocks(self) -> None:
@@ -840,7 +860,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.completed_agent_key, "bug")
         self.assertTrue(outcome.requires_human_handoff)
 
-    async def test_ticket_agent_flow_retries_tx_investigation_branch_question_once(self) -> None:
+    async def test_ticket_agent_flow_injects_tx_followup_contract_before_specialist_run(self) -> None:
         channel_id = 34
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
         investigation_job.last_specialty = "data"
@@ -850,25 +870,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         fake_runner = _FakeRunner(
             [
-                _FakeResult(
-                    final_output=(
-                        "I can continue investigating. Would you like me to decode the logs or inspect the receipt?"
-                    ),
-                    last_agent=yearn_data_agent,
-                    _history=[
-                        {
-                            "role": "user",
-                            "content": "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
-                        },
-                        {
-                            "role": "assistant",
-                            "content": (
-                                "I can continue investigating. "
-                                "Would you like me to decode the logs or inspect the receipt?"
-                            ),
-                        },
-                    ],
-                ),
                 _FakeResult(
                     final_output="The tx succeeded on Katana and minted 650.9147 yvWBUSDT shares.",
                     last_agent=yearn_data_agent,
@@ -901,42 +902,21 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
-        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertEqual(len(fake_runner.calls), 1)
         self.assertEqual(outcome.completed_agent_key, "data")
-        self.assertNotIn("would you like me", outcome.raw_final_reply.lower())
         self.assertIn("650.9147", outcome.raw_final_reply)
-        corrected_input = fake_runner.calls[1]["input"]
-        self.assertEqual(corrected_input[-1]["role"], "system")
+        specialist_input = fake_runner.calls[0]["input"]
+        self.assertEqual(specialist_input[-1]["role"], "system")
         self.assertIn(
             "Do not ask the user whether you should proceed",
-            corrected_input[-1]["content"],
+            specialist_input[-1]["content"],
         )
 
-    async def test_ticket_agent_flow_retries_public_report_artifact_handoff_once(self) -> None:
+    async def test_ticket_agent_flow_injects_report_pretriage_contract_before_specialist_run(self) -> None:
         channel_id = 341
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
         fake_runner = _FakeRunner(
             [
-                _FakeResult(
-                    final_output=(
-                        "This needs human review. "
-                        f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
-                    ),
-                    last_agent=yearn_bug_triage_agent,
-                    _history=[
-                        {
-                            "role": "user",
-                            "content": "Report: https://gist.github.com/example/abcdef1234567890",
-                        },
-                        {
-                            "role": "assistant",
-                            "content": (
-                                "This needs human review. "
-                                f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
-                            ),
-                        },
-                    ],
-                ),
                 _FakeResult(
                     final_output=(
                         "I checked the report, but it still needs the exact Yearn contract/path and a concrete claim."
@@ -982,13 +962,13 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
-        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertEqual(len(fake_runner.calls), 1)
         self.assertEqual(outcome.completed_agent_key, "bug")
         self.assertFalse(outcome.requires_human_handoff)
         self.assertIn("exact yearn contract", outcome.raw_final_reply.lower())
-        corrected_input = fake_runner.calls[1]["input"]
-        self.assertEqual(corrected_input[-1]["role"], "system")
-        self.assertIn("Do one bounded repo/docs pre-triage pass", corrected_input[-1]["content"])
+        specialist_input = fake_runner.calls[0]["input"]
+        self.assertEqual(specialist_input[-1]["role"], "system")
+        self.assertIn("Do one bounded repo/docs pre-triage pass", specialist_input[-1]["content"])
 
     async def test_ticket_agent_flow_switches_from_data_followup_to_bug_for_repro_issue(self) -> None:
         channel_id = 35
