@@ -112,7 +112,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run_structured_agent(agent, input_text, output_type, workflow_name):
             return FakeCandidate()
 
-        with patch("knowledge_gap_worker._run_structured_agent", new=fake_run_structured_agent):
+        with patch("knowledge_gap_reporting._run_structured_agent", new=fake_run_structured_agent):
             result = await analyze_transcript_for_knowledge_gap(prepared)
 
         self.assertIsNone(result)
@@ -162,9 +162,9 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             return report
 
         with (
-            patch("knowledge_gap_worker._run_structured_agent", new=fake_run_structured_agent),
+            patch("knowledge_gap_reporting._run_structured_agent", new=fake_run_structured_agent),
             patch(
-                "knowledge_gap_worker.tools_lib.core_answer_from_docs",
+                "knowledge_gap_reporting.tools_lib.core_answer_from_docs",
                 return_value="Official docs point users to styfi.yearn.fi for stYFI.",
             ),
         ):
@@ -220,9 +220,9 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             return "Repo grounding"
 
         with (
-            patch("knowledge_gap_worker._run_structured_agent", new=fake_run_structured_agent),
-            patch("knowledge_gap_worker.tools_lib.core_answer_from_docs", return_value="Docs grounding"),
-            patch("knowledge_gap_worker.tools_lib.core_pretriage_repo_claim", new=fake_pretriage_repo_claim),
+            patch("knowledge_gap_reporting._run_structured_agent", new=fake_run_structured_agent),
+            patch("knowledge_gap_reporting.tools_lib.core_answer_from_docs", return_value="Docs grounding"),
+            patch("knowledge_gap_reporting.tools_lib.core_pretriage_repo_claim", new=fake_pretriage_repo_claim),
         ):
             result = await analyze_transcript_for_knowledge_gap(prepared)
 
@@ -279,9 +279,9 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             return "Repo grounding"
 
         with (
-            patch("knowledge_gap_worker._run_structured_agent", new=fake_run_structured_agent),
-            patch("knowledge_gap_worker.tools_lib.core_answer_from_docs", return_value="Docs grounding"),
-            patch("knowledge_gap_worker.tools_lib.core_pretriage_repo_claim", new=fake_pretriage_repo_claim),
+            patch("knowledge_gap_reporting._run_structured_agent", new=fake_run_structured_agent),
+            patch("knowledge_gap_reporting.tools_lib.core_answer_from_docs", return_value="Docs grounding"),
+            patch("knowledge_gap_reporting.tools_lib.core_pretriage_repo_claim", new=fake_pretriage_repo_claim),
         ):
             result = await analyze_transcript_for_knowledge_gap(prepared)
 
@@ -337,7 +337,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             transcript_text="User says the position is on chain 42161 and only visible in the legacy UI.",
         )
 
-        with patch("knowledge_gap_worker._supported_chain_id_map", return_value={42161: "arbitrum"}):
+        with patch("knowledge_gap_reporting._supported_chain_id_map", return_value={42161: "arbitrum"}):
             finalized = finalize_knowledge_gap_report(report, transcript)
 
         self.assertEqual(finalized.chain, "arbitrum")
@@ -363,7 +363,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             transcript_text="User says they cannot find a legacy vault.",
         )
 
-        with patch("knowledge_gap_worker._supported_chain_id_map", return_value={42161: "arbitrum"}):
+        with patch("knowledge_gap_reporting._supported_chain_id_map", return_value={42161: "arbitrum"}):
             finalized = finalize_knowledge_gap_report(report, transcript)
 
         self.assertIsNone(finalized.chain)
