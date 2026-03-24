@@ -202,6 +202,237 @@ class TicketBot(discord.Client):
 
         await self.process_ticket_message(channel_id, run_context, is_button_trigger=True, synthetic_user_message_for_log=synthetic_text)
 
+    async def _handle_public_trigger_message(
+        self,
+        message: discord.Message,
+        trigger_char_used: str,
+    ) -> bool:
+        logging.info(
+            "Stateful public trigger '%s' detected by %s in channel %s",
+            trigger_char_used,
+            message.author.name,
+            message.channel.id,
+        )
+
+        try:
+            await message.delete()
+        except Exception as e:
+            logging.warning(f"Failed to delete trigger message {message.id}: {e}")
+
+        try:
+            original_message = await message.channel.fetch_message(message.reference.message_id)
+            if not (original_message and not original_message.author.bot and original_message.content):
+                return True
+
+            original_author_id = original_message.author.id
+            current_history: List[TResponseInputItem] = []
+
+            conversation = public_conversations.get(original_author_id)
+            if conversation:
+                time_since_last = datetime.now(timezone.utc) - conversation.last_interaction_time
+                if time_since_last <= timedelta(minutes=config.PUBLIC_TRIGGER_TIMEOUT_MINUTES):
+                    logging.info(
+                        "Continuing public conversation for user %s (last active %.1fs ago).",
+                        original_author_id,
+                        time_since_last.total_seconds(),
+                    )
+                    current_history = conversation.history
+                else:
+                    logging.info(
+                        "Public conversation for user %s expired (%.1fs ago). Starting new context.",
+                        original_author_id,
+                        time_since_last.total_seconds(),
+                    )
+                    public_conversations.pop(original_author_id, None)
+
+            input_list = current_history + [{"role": "user", "content": original_message.content}]
+            public_run_context = BotRunContext(
+                channel_id=message.channel.id,
+                is_public_trigger=True,
+                project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
+            )
+
+            async with message.channel.typing():
+                try:
+                    run_config = RunConfig(
+                        workflow_name=f"Public Stateful Trigger-{message.channel.id}",
+                        group_id=str(original_author_id)
+                    )
+                    agent_key = select_starting_agent(
+                        input_list[-1].get("content", "") if input_list else "",
+                        public_run_context
+                    )
+                    if agent_key == "triage":
+                        agent_key = await resolve_freeform_starting_agent(
+                            runner=self.runner,
+                            input_list=input_list,
+                            run_context=public_run_context,
+                            workflow_name=f"Public Stateful Trigger-{message.channel.id}",
+                        )
+                    result: RunResult = await self.runner.run(
+                        starting_agent=_resolve_agent(agent_key),
+                        input=input_list,
+                        max_turns=5,
+                        run_config=run_config,
+                        context=public_run_context
+                    )
+                    new_history = result.to_input_list()
+                    public_conversations[original_author_id] = PublicConversation(
+                        history=new_history,
+                        last_interaction_time=datetime.now(timezone.utc)
+                    )
+                    logging.info(
+                        "Saved updated public conversation context for user %s. History length: %s items.",
+                        original_author_id,
+                        len(new_history),
+                    )
+
+                    raw_reply = result.final_output if result.final_output else "I could not determine a response."
+                    actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
+                    final_reply = raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+                    await send_long_message(original_message, final_reply)
+                except Exception as e:
+                    logging.error(
+                        "Error during public trigger agent run for user %s: %s",
+                        original_author_id,
+                        e,
+                        exc_info=True,
+                    )
+                    await original_message.reply(
+                        f"Sorry, an error occurred while processing that request. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>.",
+                        mention_author=False,
+                    )
+            return True
+        except discord.NotFound:
+            logging.warning(f"Original message for public trigger reply {message.id} not found.")
+            return True
+        except discord.Forbidden:
+            logging.warning(f"Missing permissions to fetch original message for public trigger reply {message.id}.")
+            return True
+        except Exception as e:
+            logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
+            return True
+
+    async def _collect_aggregated_ticket_text(
+        self,
+        channel_id: int,
+        run_context: BotRunContext,
+        *,
+        is_button_trigger: bool,
+        synthetic_user_message_for_log: str,
+    ) -> str | None:
+        if is_button_trigger:
+            return synthetic_user_message_for_log.strip()
+
+        debounce_seconds = _ticket_debounce_seconds(channel_id, run_context)
+        try:
+            await asyncio.sleep(debounce_seconds)
+        except asyncio.CancelledError:
+            logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
+            return None
+        return pending_messages.pop(channel_id, None)
+
+    async def _build_ticket_turn_input(
+        self,
+        *,
+        channel: discord.TextChannel,
+        channel_id: int,
+        run_context: BotRunContext,
+        investigation_job,
+        aggregated_text: str,
+    ) -> tuple[List[TResponseInputItem], List[TResponseInputItem]]:
+        intent = run_context.initial_button_intent
+        is_data_intent = intent in [
+            'data_deposit_check',
+            'data_withdrawal_flow_start',
+            'data_vault_search',
+            'data_deposits_withdrawals_start',
+        ]
+        current_user_content = aggregated_text
+        system_hints: List[str] = []
+
+        if is_data_intent:
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+
+        pending_wallet = pending_wallet_confirmation_by_channel.get(channel_id)
+        if pending_wallet:
+            if is_wallet_confirmation(aggregated_text):
+                last_wallet_by_channel[channel_id] = pending_wallet
+                pending_wallet_confirmation_by_channel.pop(channel_id, None)
+                system_hints.append(f"User confirmed their wallet address is {pending_wallet}. Use this address going forward.")
+            elif is_wallet_rejection(aggregated_text):
+                pending_wallet_confirmation_by_channel.pop(channel_id, None)
+                system_hints.append("User rejected the suggested wallet address. Ask for the correct wallet address if needed.")
+
+        extracted_address_or_ens = None
+        if is_data_intent:
+            extracted_address_or_ens = tools_lib.extract_address_or_ens(aggregated_text) or aggregated_text
+        elif is_message_primarily_address(aggregated_text) and is_probable_wallet_address(aggregated_text):
+            extracted_address_or_ens = aggregated_text
+
+        if extracted_address_or_ens:
+            parsed_address = tools_lib.resolve_ens(extracted_address_or_ens)
+            if parsed_address:
+                last_wallet = last_wallet_by_channel.get(channel_id)
+                if is_data_intent:
+                    last_wallet_by_channel[channel_id] = parsed_address
+                    investigation_job.remember_wallet(parsed_address)
+                    current_user_content = _canonicalize_current_user_message(
+                        aggregated_text,
+                        run_context,
+                        parsed_address,
+                    )
+                    system_hints.append(
+                        f"Resolved wallet address for this turn: {parsed_address}. Use this exact address for any wallet-based tool call."
+                    )
+                elif last_wallet and parsed_address != last_wallet:
+                    pending_wallet_confirmation_by_channel[channel_id] = parsed_address
+                    system_hints.append(
+                        f"User provided a new address {parsed_address} but previous wallet was {last_wallet}. "
+                        "Ask to confirm whether the new address is their wallet before replacing."
+                    )
+                else:
+                    last_wallet_by_channel[channel_id] = parsed_address
+                    investigation_job.remember_wallet(parsed_address)
+                    current_user_content = _canonicalize_current_user_message(
+                        aggregated_text,
+                        run_context,
+                        parsed_address,
+                    )
+
+                if is_data_intent:
+                    ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
+                    try:
+                        await channel.send(ack_message)
+                        last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+                        logging.info(f"Sent pre-run acknowledgement message to channel {channel_id}")
+                    except Exception as e:
+                        logging.warning(f"Failed to send pre-run acknowledgement message: {e}")
+
+        current_history = conversation_threads.get(channel_id, [])
+        input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": current_user_content}]
+
+        if system_hints:
+            input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
+
+        contextual_hints = self.investigation_runtime.build_contextual_hints(
+            investigation_job,
+            aggregated_text,
+            current_history=current_history,
+        )
+        if contextual_hints:
+            input_list = input_list[:-1] + [{"role": "system", "content": " ".join(contextual_hints)}] + [input_list[-1]]
+
+        if is_bug_report_query(aggregated_text):
+            last_wallet = last_wallet_by_channel.get(channel_id)
+            if last_wallet and last_wallet not in aggregated_text:
+                input_list = input_list[:-1] + [{
+                    "role": "system",
+                    "content": f"Context: User previously provided wallet address {last_wallet} for this ticket. Use it if needed; do not ask again unless they want a different address."
+                }] + [input_list[-1]]
+
+        return current_history, input_list
+
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.author.id == self.user.id:
             return
@@ -212,93 +443,8 @@ class TicketBot(discord.Client):
         is_trigger_user = str(message.author.id) in config.PUBLIC_TRIGGER_USER_IDS
 
         if is_reply and is_trigger_user and is_valid_trigger_char:
-            logging.info(f"Stateful public trigger '{trigger_char_used}' detected by {message.author.name} in channel {message.channel.id}")
-
-            try:
-                await message.delete()
-            except Exception as e:
-                logging.warning(f"Failed to delete trigger message {message.id}: {e}")
-
-            try:
-                original_message = await message.channel.fetch_message(message.reference.message_id)
-                if original_message and not original_message.author.bot and original_message.content:
-
-                    original_author_id = original_message.author.id
-                    current_history: List[TResponseInputItem] = []
-
-                    conversation = public_conversations.get(original_author_id)
-                    if conversation:
-                        time_since_last = datetime.now(timezone.utc) - conversation.last_interaction_time
-                        if time_since_last <= timedelta(minutes=config.PUBLIC_TRIGGER_TIMEOUT_MINUTES):
-                            logging.info(f"Continuing public conversation for user {original_author_id} (last active {time_since_last.total_seconds():.1f}s ago).")
-                            current_history = conversation.history
-                        else:
-                            logging.info(f"Public conversation for user {original_author_id} expired ({time_since_last.total_seconds():.1f}s ago). Starting new context.")
-                            public_conversations.pop(original_author_id, None)
-
-                    input_list = current_history + [{"role": "user", "content": original_message.content}]
-
-                    public_run_context = BotRunContext(
-                        channel_id=message.channel.id,
-                        is_public_trigger=True,
-                        project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
-                    )
-
-                    async with message.channel.typing():
-                        try:
-                            run_config = RunConfig(
-                                workflow_name=f"Public Stateful Trigger-{message.channel.id}",
-                                group_id=str(original_author_id)
-                            )
-                            agent_key = select_starting_agent(
-                                input_list[-1].get("content", "") if input_list else "",
-                                public_run_context
-                            )
-                            if agent_key == "triage":
-                                agent_key = await resolve_freeform_starting_agent(
-                                    runner=self.runner,
-                                    input_list=input_list,
-                                    run_context=public_run_context,
-                                    workflow_name=f"Public Stateful Trigger-{message.channel.id}",
-                                )
-                            starting_agent = _resolve_agent(agent_key)
-                            result: RunResult = await self.runner.run(
-                                starting_agent=starting_agent,
-                                input=input_list,
-                                max_turns=5,
-                                run_config=run_config,
-                                context=public_run_context
-                            )
-
-                            new_history = result.to_input_list()
-                            new_conversation = PublicConversation(
-                                history=new_history,
-                                last_interaction_time=datetime.now(timezone.utc)
-                            )
-                            public_conversations[original_author_id] = new_conversation
-                            logging.info(f"Saved updated public conversation context for user {original_author_id}. History length: {len(new_history)} items.")
-
-                            raw_reply = result.final_output if result.final_output else "I could not determine a response."
-                            actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
-                            final_reply = raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
-
-                            await send_long_message(original_message, final_reply)
-
-                        except Exception as e:
-                            logging.error(f"Error during public trigger agent run for user {original_author_id}: {e}", exc_info=True)
-                            await original_message.reply(f"Sorry, an error occurred while processing that request. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>.", mention_author=False)
-
-                    return
-
-            except discord.NotFound:
-                logging.warning(f"Original message for public trigger reply {message.id} not found.")
-                return
-            except discord.Forbidden:
-                logging.warning(f"Missing permissions to fetch original message for public trigger reply {message.id}.")
-                return
-            except Exception as e:
-                logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
-                return
+            await self._handle_public_trigger_message(message, trigger_char_used)
+            return
 
         if not isinstance(message.channel, discord.TextChannel) or not message.channel.category:
             return
@@ -359,18 +505,12 @@ class TicketBot(discord.Client):
         current_task = asyncio.current_task()
         try:
             investigation_job = get_or_create_ticket_investigation_job(channel_id)
-            aggregated_text = None
-            if is_button_trigger:
-                aggregated_text = synthetic_user_message_for_log.strip()
-            else:
-                debounce_seconds = _ticket_debounce_seconds(channel_id, run_context)
-                try:
-                    await asyncio.sleep(debounce_seconds)
-                except asyncio.CancelledError:
-                    logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
-                    return
-
-                aggregated_text = pending_messages.pop(channel_id, None)
+            aggregated_text = await self._collect_aggregated_ticket_text(
+                channel_id,
+                run_context,
+                is_button_trigger=is_button_trigger,
+                synthetic_user_message_for_log=synthetic_user_message_for_log,
+            )
             if not aggregated_text:
                 return
             self.investigation_runtime.merge_explicit_evidence(investigation_job, aggregated_text)
@@ -379,90 +519,13 @@ class TicketBot(discord.Client):
             if not isinstance(channel, discord.TextChannel):
                 return
 
-            intent = run_context.initial_button_intent
-            is_data_intent = intent in ['data_deposit_check', 'data_withdrawal_flow_start', 'data_vault_search', 'data_deposits_withdrawals_start']
-            current_user_content = aggregated_text
-            system_hints: List[str] = []
-
-            if is_data_intent:
-                pending_wallet_confirmation_by_channel.pop(channel_id, None)
-
-            pending_wallet = pending_wallet_confirmation_by_channel.get(channel_id)
-            if pending_wallet:
-                if is_wallet_confirmation(aggregated_text):
-                    last_wallet_by_channel[channel_id] = pending_wallet
-                    pending_wallet_confirmation_by_channel.pop(channel_id, None)
-                    system_hints.append(f"User confirmed their wallet address is {pending_wallet}. Use this address going forward.")
-                elif is_wallet_rejection(aggregated_text):
-                    pending_wallet_confirmation_by_channel.pop(channel_id, None)
-                    system_hints.append("User rejected the suggested wallet address. Ask for the correct wallet address if needed.")
-
-            extracted_address_or_ens = None
-            if is_data_intent:
-                extracted_address_or_ens = tools_lib.extract_address_or_ens(aggregated_text) or aggregated_text
-            elif is_message_primarily_address(aggregated_text) and is_probable_wallet_address(aggregated_text):
-                extracted_address_or_ens = aggregated_text
-
-            if extracted_address_or_ens:
-                parsed_address = tools_lib.resolve_ens(extracted_address_or_ens)
-                if parsed_address:
-                    last_wallet = last_wallet_by_channel.get(channel_id)
-                    if is_data_intent:
-                        last_wallet_by_channel[channel_id] = parsed_address
-                        investigation_job.remember_wallet(parsed_address)
-                        current_user_content = _canonicalize_current_user_message(
-                            aggregated_text,
-                            run_context,
-                            parsed_address,
-                        )
-                        system_hints.append(
-                            f"Resolved wallet address for this turn: {parsed_address}. Use this exact address for any wallet-based tool call."
-                        )
-                    elif last_wallet and parsed_address != last_wallet:
-                        pending_wallet_confirmation_by_channel[channel_id] = parsed_address
-                        system_hints.append(
-                            f"User provided a new address {parsed_address} but previous wallet was {last_wallet}. "
-                            "Ask to confirm whether the new address is their wallet before replacing."
-                        )
-                    else:
-                        last_wallet_by_channel[channel_id] = parsed_address
-                        investigation_job.remember_wallet(parsed_address)
-                        current_user_content = _canonicalize_current_user_message(
-                            aggregated_text,
-                            run_context,
-                            parsed_address,
-                        )
-
-                    if is_data_intent:
-                        ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
-                        try:
-                            await channel.send(ack_message)
-                            last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-                            logging.info(f"Sent pre-run acknowledgement message to channel {channel_id}")
-                        except Exception as e:
-                            logging.warning(f"Failed to send pre-run acknowledgement message: {e}")
-
-            current_history = conversation_threads.get(channel_id, [])
-            input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": current_user_content}]
-
-            if system_hints:
-                input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
-
-            contextual_hints: List[str] = []
-            contextual_hints.extend(
-                self.investigation_runtime.build_contextual_hints(
-                    investigation_job,
-                    aggregated_text,
-                    current_history=current_history,
-                )
+            current_history, input_list = await self._build_ticket_turn_input(
+                channel=channel,
+                channel_id=channel_id,
+                run_context=run_context,
+                investigation_job=investigation_job,
+                aggregated_text=aggregated_text,
             )
-            if contextual_hints:
-                input_list = input_list[:-1] + [{"role": "system", "content": " ".join(contextual_hints)}] + [input_list[-1]]
-
-            if is_bug_report_query(aggregated_text):
-                last_wallet = last_wallet_by_channel.get(channel_id)
-                if last_wallet and last_wallet not in aggregated_text:
-                    input_list = input_list[:-1] + [{"role": "system", "content": f"Context: User previously provided wallet address {last_wallet} for this ticket. Use it if needed; do not ask again unless they want a different address."}] + [input_list[-1]]
 
             logging.info(f"Processing for ticket {channel_id} (Context: {run_context.project_context}, Initial Button Intent: {run_context.initial_button_intent}): '{aggregated_text[:100]}...'")
 
