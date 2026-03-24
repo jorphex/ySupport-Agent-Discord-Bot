@@ -10,6 +10,7 @@ from knowledge_gap_worker import (
     KnowledgeGapCandidate,
     _build_report_signature,
     _build_repo_grounding_query,
+    _should_fetch_repo_grounding,
     _snowflake_sort_key,
     discover_recent_closed_ticket_channels,
     preview_recent_closed_ticket_channels,
@@ -231,6 +232,62 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(candidate.topic, repo_queries[0])
         self.assertIn(candidate.evidence_summary, repo_queries[0])
 
+    async def test_analyze_transcript_fetches_repo_grounding_for_issue_draft_when_model_flag_is_false(
+        self,
+    ) -> None:
+        prepared = PreparedTicketTranscript(
+            channel_id="1479167148310925425",
+            channel_name="closed-1433",
+            message_count=4,
+            transcript_text="[2026-03-05T17:23:55+00:00] User: VaultV3 withdrawal accounting issue.",
+        )
+
+        candidate = KnowledgeGapCandidate(
+            reportable=True,
+            category="issue_draft_candidate",
+            title="Potential VaultV3 issue",
+            topic="VaultV3 accounting",
+            product="VaultV3.vy",
+            chain=None,
+            grounding_query="Assess whether VaultV3 accounting is safe.",
+            evidence_summary="Reporter claims PPS inflation.",
+            suggested_action="Engineering review.",
+            needs_repo_context=False,
+        )
+        report = KnowledgeGapReport(
+            should_post=True,
+            category="issue_draft_candidate",
+            title="Potential VaultV3 issue",
+            topic="VaultV3 accounting",
+            product="VaultV3.vy",
+            chain=None,
+            evidence_summary="Evidence summary",
+            current_official_grounding="Grounding",
+            assessment="Assessment",
+            suggested_action="Suggested action",
+            confidence="medium",
+        )
+        repo_queries: list[str] = []
+
+        async def fake_run_structured_agent(agent, input_text, output_type, workflow_name):
+            if workflow_name == "Knowledge Gap Candidate Analysis":
+                return candidate
+            return report
+
+        async def fake_pretriage_repo_claim(claim_text: str, *, include_docs: bool = True, limit=None, include_legacy=False, include_ui=False) -> str:
+            repo_queries.append(claim_text)
+            return "Repo grounding"
+
+        with (
+            patch("knowledge_gap_worker._run_structured_agent", new=fake_run_structured_agent),
+            patch("knowledge_gap_worker.tools_lib.core_answer_from_docs", return_value="Docs grounding"),
+            patch("knowledge_gap_worker.tools_lib.core_pretriage_repo_claim", new=fake_pretriage_repo_claim),
+        ):
+            result = await analyze_transcript_for_knowledge_gap(prepared)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(repo_queries), 1)
+
     def test_format_knowledge_gap_report_renders_internal_fields(self) -> None:
         report = KnowledgeGapReport(
             should_post=True,
@@ -359,6 +416,22 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(_build_report_signature(report_a), _build_report_signature(report_b))
+
+    def test_should_fetch_repo_grounding_for_issue_draft_even_if_model_flag_is_false(self) -> None:
+        candidate = KnowledgeGapCandidate(
+            reportable=True,
+            category="issue_draft_candidate",
+            title="Potential issue",
+            topic="VaultV3 accounting",
+            product="VaultV3.vy",
+            chain=None,
+            grounding_query="Assess whether this is a real issue.",
+            evidence_summary="Reporter claims PPS inflation.",
+            suggested_action="Engineering review.",
+            needs_repo_context=False,
+        )
+
+        self.assertTrue(_should_fetch_repo_grounding(candidate))
 
     def test_snowflake_sort_key_handles_missing_or_invalid_values(self) -> None:
         self.assertEqual(_snowflake_sort_key(None), 0)

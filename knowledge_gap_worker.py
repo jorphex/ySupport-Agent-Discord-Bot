@@ -276,14 +276,16 @@ def _is_closed_ticket(prepared_transcript: PreparedTicketTranscript) -> bool:
 def _build_report_signature(report: KnowledgeGapReport) -> str:
     signature_payload = {
         "category": report.category,
-        "title": report.title.strip().lower(),
         "topic": report.topic.strip().lower(),
         "product": (report.product or "").strip().lower(),
         "chain": (report.chain or "").strip().lower(),
-        "suggested_action": report.suggested_action.strip().lower(),
     }
     serialized = json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _should_fetch_repo_grounding(candidate: KnowledgeGapCandidate) -> bool:
+    return candidate.needs_repo_context or candidate.category == "issue_draft_candidate"
 
 
 def _load_reported_signatures(state_path: str | None) -> set[str]:
@@ -396,7 +398,7 @@ async def analyze_transcript_for_knowledge_gap(
 
     docs_grounding = await tools_lib.core_answer_from_docs(candidate.grounding_query)
     repo_grounding = ""
-    if candidate.needs_repo_context:
+    if _should_fetch_repo_grounding(candidate):
         repo_grounding = await tools_lib.core_pretriage_repo_claim(
             _build_repo_grounding_query(candidate),
             include_docs=False,
@@ -481,61 +483,18 @@ async def process_ticket(
     max_posts: Optional[int] = None,
     posted_count: int = 0,
 ) -> dict[str, object]:
-    prepared = await asyncio.to_thread(prepare_ticket_transcript, channel_or_link, limit)
-    if closed_only and not _is_closed_ticket(prepared):
-        return {
-            "channel_id": prepared.channel_id,
-            "channel_name": prepared.channel_name,
-            "message_count": prepared.message_count,
-            "report_posted": False,
-            "report": None,
-            "skipped_reason": "open_ticket",
-        }
-    report = await analyze_transcript_for_knowledge_gap(prepared)
-    if report is None:
-        return {
-            "channel_id": prepared.channel_id,
-            "channel_name": prepared.channel_name,
-            "message_count": prepared.message_count,
-            "report_posted": False,
-            "report": None,
-        }
-
-    report_signature = _build_report_signature(report)
-    if known_signatures is not None and report_signature in known_signatures:
-        return {
-            "channel_id": prepared.channel_id,
-            "channel_name": prepared.channel_name,
-            "message_count": prepared.message_count,
-            "report_posted": False,
-            "report": report.model_dump(),
-            "report_signature": report_signature,
-            "skipped_reason": "duplicate_report",
-        }
-
-    if max_posts is not None and posted_count >= max_posts:
-        return {
-            "channel_id": prepared.channel_id,
-            "channel_name": prepared.channel_name,
-            "message_count": prepared.message_count,
-            "report_posted": False,
-            "report": report.model_dump(),
-            "report_signature": report_signature,
-            "skipped_reason": "max_posts_reached",
-        }
-
-    formatted = format_knowledge_gap_report(report, affected_channels=[prepared])
-    if not dry_run:
-        await asyncio.to_thread(post_report_message, report_channel_id, formatted)
-    return {
-        "channel_id": prepared.channel_id,
-        "channel_name": prepared.channel_name,
-        "message_count": prepared.message_count,
-        "report_posted": not dry_run,
-        "report": report.model_dump(),
-        "report_signature": report_signature,
-        "formatted_report": formatted,
-    }
+    results = await process_tickets(
+        [channel_or_link],
+        limit=limit,
+        report_channel_id=report_channel_id,
+        dry_run=dry_run,
+        closed_only=closed_only,
+        state_path=None,
+        max_posts=max_posts,
+        known_signatures_override=known_signatures if known_signatures is not None else set(),
+        posted_groups_so_far=posted_count,
+    )
+    return results[0]
 
 
 async def process_tickets(
@@ -547,8 +506,14 @@ async def process_tickets(
     closed_only: bool,
     state_path: str | None,
     max_posts: Optional[int],
+    known_signatures_override: Optional[set[str]] = None,
+    posted_groups_so_far: int = 0,
 ) -> list[dict[str, object]]:
-    known_signatures = _load_reported_signatures(state_path)
+    known_signatures = (
+        known_signatures_override
+        if known_signatures_override is not None
+        else _load_reported_signatures(state_path)
+    )
     results: list[dict[str, object]] = []
     pending_groups: dict[str, PendingReportGroup] = {}
 
@@ -616,7 +581,7 @@ async def process_tickets(
             pending_groups[report_signature].transcripts.append(prepared)
             pending_groups[report_signature].result_indexes.append(result_index)
 
-    posted_group_count = 0
+    posted_group_count = posted_groups_so_far
     for report_signature, group in pending_groups.items():
         formatted = format_knowledge_gap_report(group.report, affected_channels=group.transcripts)
         within_post_budget = max_posts is None or posted_group_count < max_posts
@@ -636,7 +601,7 @@ async def process_tickets(
             else:
                 results[result_index]["skipped_reason"] = "max_posts_reached"
 
-    if not dry_run:
+    if not dry_run and known_signatures_override is None:
         _save_reported_signatures(state_path, known_signatures)
     return results
 
