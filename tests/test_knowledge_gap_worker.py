@@ -411,7 +411,7 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(sent_payloads), 3)
         self.assertTrue(
             all(
-                url.endswith("/channels/TEST_REPORT_CHANNEL_ID/messages") and payload.get("flags") == 4
+                url.endswith(f"/channels/{TEST_REPORT_CHANNEL_ID}/messages") and payload.get("flags") == 4
                 for url, payload in sent_payloads
             )
         )
