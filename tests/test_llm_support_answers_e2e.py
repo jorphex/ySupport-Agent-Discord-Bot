@@ -328,6 +328,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
 
         lowered = output.lower()
         self.assertIn("yvusdc", lowered)
+        self.assertIn("yearn.fi/vaults/1/0x1111111111111111111111111111111111111111", lowered)
         self.assertNotIn("no one can decide for you", lowered)
         self.assertNotIn("docs do not specify a single best", lowered)
         self.assertNotIn("according to the docs", lowered)
