@@ -1,51 +1,59 @@
 # ySupport Discord Bot
 
-A Discord support bot for Yearn that handles ticket triage, public-trigger interactions, and structured follow‑ups. It uses tool-backed agents for vault lookups, deposit checks, and docs Q&A, and applies guardrails to detect and handle BD/PR/listing requests. Built to keep support fast and consistent across public and ticketed conversations.
+Discord support bot for Yearn.
 
-- Triage support tickets and public triggers
-- Provide vault info, deposit checks, and docs Q&A
-- Detect and redirect BD/PR/listing requests
+Current scope:
+- support tickets
+- public trigger conversations
+- docs/process answers
+- vault/deposit/withdrawal help
+- bounded repo/docs/onchain investigation
+- offline knowledge-gap reporting from ticket transcripts
 
-## Ticket Execution Modes
+## Ticket Execution
 
-Ticket investigation turns run through a configurable execution boundary.
+Ticket investigations run through a configurable execution boundary.
 
+Modes:
 - `TICKET_EXECUTION_ENDPOINT=local`
   - default
-  - runs the investigation worker in-process
+  - runs the in-app investigation runtime in the bot process
 - `TICKET_EXECUTION_ENDPOINT=subprocess`
-  - runs the JSON worker contract in a separate process
+  - runs the same investigation runtime in a separate worker process
 - `TICKET_EXECUTION_ENDPOINT=codex_exec`
-  - runs the JSON worker contract through the Codex bundle/command boundary
+  - runs ticket execution through the Codex worker boundary
 
-Optional failover:
-
+Optional fallback:
 - `TICKET_EXECUTION_FALLBACK_ENDPOINT=local`
 - `TICKET_EXECUTION_FALLBACK_ENDPOINT=subprocess`
 
-Operational policy:
-
-- if any execution mode uses `codex_exec`, set either `TICKET_EXECUTION_ARTIFACT_DIR` or `TICKET_EXECUTION_RUN_DIR_ROOT`
-- if `codex_exec` is the primary mode, a fallback endpoint is strongly recommended
-- execution sandboxes are always per-run temporary workspaces; persistent roots only receive exported copies after the run completes
-- exported sandbox copies are archived as read-only snapshots so they are not reused as mutable workspaces
-- custom subprocess or Codex wrappers should use `TICKET_EXECUTION_RUN_DIR` for scratch access instead of assuming cwd is the sandbox root
-
-Useful rollout env vars:
-
+Important execution settings:
 - `TICKET_EXECUTION_CODEX_COMMAND`
-  - override the base Codex command
 - `TICKET_EXECUTION_CODEX_MODEL`
-  - optional model override for `codex_exec`
 - `TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES`
-  - extra allowed command prefixes for bounded external execution
 - `TICKET_EXECUTION_ARTIFACT_DIR`
-  - export per-run request/prompt/stdout/stderr/metadata artifacts from the disposable sandbox
 - `TICKET_EXECUTION_RUN_DIR_ROOT`
-  - export per-run scratch-directory copies without forcing full artifact capture
 
-RPC env vars:
+Execution behavior:
+- sandboxes are per-run temporary workspaces
+- persistent roots only receive exported copies after the run
+- exported copies are read-only snapshots
+- wrappers should use `TICKET_EXECUTION_RUN_DIR` for scratch access instead of assuming cwd is the live sandbox root
 
+Health/status:
+- `python -m ticket_execution_status`
+- `python -m ticket_execution_status --smoke`
+
+The status command reports:
+- runtime validation
+- execution primary/fallback mode
+- sandbox/export policy
+- repo-context status
+- deterministic smoke result when `--smoke` is used
+
+## RPC Configuration
+
+Preferred per-chain RPC env vars:
 - `ETHEREUM_RPC_URL`
 - `BASE_RPC_URL`
 - `ARBITRUM_RPC_URL`
@@ -53,75 +61,59 @@ RPC env vars:
 - `POLYGON_RPC_URL`
 - `SONIC_RPC_URL`
 - `KATANA_RPC_URL`
-- if a per-chain RPC URL is unset, the code currently falls back to the shared `ALCHEMY_KEY` template where available, except Katana which falls back to its default public RPC
 
-Suggested rollout order:
-
-1. `local`
-2. `subprocess`
-3. `codex_exec` with `TICKET_EXECUTION_FALLBACK_ENDPOINT=local`
-4. `codex_exec` without fallback only after you trust the worker path
-
-Health check:
-
-- run `python -m ticket_execution_status`
-- it prints JSON with:
-  - runtime environment validation
-  - execution primary/fallback
-  - workspace/artifact policy
-  - validation result and warnings
-  - repo-context status
-- exit code is nonzero when the runtime environment or ticket execution config is invalid
-- the Docker image also uses this command as its container `HEALTHCHECK`
-- run `python -m ticket_execution_status --smoke` to execute a deterministic smoke turn through the currently configured endpoint and fallback path
+Fallback behavior:
+- if a per-chain RPC URL is unset, the code falls back to the shared `ALCHEMY_KEY` template where available
+- Katana falls back to its default public RPC if unset
 
 ## Ticket Transcript Helper
 
-For regression capture and ticket review, you can fetch a read-only normalized transcript from Discord without copying chat messages manually.
+Fetch a normalized Discord ticket transcript for review or regression work:
 
-- run `python -m ticket_transcript_fetch <channel_id_or_discord_link>`
-- add `--limit N` to control how many recent messages to fetch
-- add `--json` to emit normalized JSON instead of plain text
-- the helper uses the configured `DISCORD_BOT_TOKEN` and only reads message history for channels the bot can already access
+- `python -m ticket_transcript_fetch <channel_id_or_discord_link>`
+- add `--limit N` to control history length
+- add `--json` for normalized JSON output
+
+The helper is read-only and only accesses channels the configured bot token can already read.
 
 ## Knowledge-Gap Worker
 
-For offline support-quality review, the repo now includes a Discord-only knowledge-gap worker that reuses the same `DISCORD_BOT_TOKEN` as `ysupport`.
+Offline support-quality worker for private internal reporting.
 
-- run `python -m knowledge_gap_worker <channel_id_or_discord_link> --dry-run`
-- add more ticket channels to analyze multiple tickets in one run
-- use `--recent-closed N` to discover the N most recent `closed-*` ticket channels automatically
-- add `--limit N` to control transcript size
-- use `--report-channel-id <channel_id>` to override the private report sink
-- use `--closed-only` to skip any ticket channel whose name does not start with `closed-`
-- use `--state-path <json_path>` to persist already-posted report signatures for dedupe across runs
-- use `--max-posts N` to cap how many reports can be posted in a single run after filtering and dedupe
+Typical dry run:
+- `python -m knowledge_gap_worker <channel_id_or_discord_link> --dry-run`
 
-Phase-1 behavior:
+Useful options:
+- `--recent-closed N`
+- `--preview-discovery`
+- `--closed-only`
+- `--limit N`
+- `--report-channel-id <channel_id>`
+- `--state-path <json_path>`
+- `--max-posts N`
 
-- reads Discord ticket history only
-- grounds the ticket against existing Yearn docs and repo tools
-- classifies whether the ticket should become a private internal report
-- emits docs-gap / FAQ / bot-behavior / product-confusion / issue-draft style reports
-- posts to `KNOWLEDGE_GAP_REPORT_CHANNEL_ID`; set it explicitly in the environment for the private destination channel
+What it does:
+- reads ticket transcripts from Discord
+- grounds them against existing Yearn docs/repo tools
+- classifies whether the ticket should become an internal report
+- emits reports in these categories:
+  - `docs_gap`
+  - `faq_candidate`
+  - `bot_behavior_gap`
+  - `product_confusion`
+  - `issue_draft_candidate`
 
-Phase-2 behavior:
-
-- supports bounded multi-ticket runs
-- can skip open/live tickets when you only want closed-ticket review
-- dedupes reports within a run and optionally across runs via a persisted signature file
-- can bound the number of reports posted in one run so a future scheduled job cannot spam the private channel
-
-Phase-3 behavior:
-
-- groups matching report signatures within a run into one private report
-- keeps multiple affected ticket references in the same formatted message
-- counts grouped themes against `--max-posts`, not raw ticket count
-
-Intentional boundaries:
-
-- same Discord bot token as `ysupport`
+Operational boundaries:
+- reuses the same Discord bot token as `ysupport`
 - separate offline workflow from the live support bot
-- separate workflow from `ysupportreporter`
-- no Telegram/internal-chat ingestion in phase 1
+- separate from `ysupportreporter`
+- no Telegram/internal-chat ingestion
 - no automatic public GitHub posting
+
+## Notes
+
+For local operator references, see:
+- `WORKER_MAINTAINER_REFERENCE.md`
+- `MODEL_MAINTAINER_REFERENCE.md`
+
+These are intentionally local-only and gitignored.
