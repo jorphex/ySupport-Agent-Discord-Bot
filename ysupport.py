@@ -96,6 +96,13 @@ def _canonicalize_current_user_message(
     return aggregated_text
 
 
+def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
+    guardrail_info = exc.guardrail_result.output.output_info
+    if isinstance(guardrail_info, dict) and "message" in guardrail_info:
+        return guardrail_info["message"]
+    return "Your request could not be processed due to input checks."
+
+
 # Discord Bot Implementation
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
@@ -291,6 +298,17 @@ class TicketBot(discord.Client):
                     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
                     final_reply = raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
                     await send_long_message(original_message, final_reply)
+                except InputGuardrailTripwireTriggered as e:
+                    logging.warning(
+                        "Input Guardrail triggered in public channel %s for user %s.",
+                        message.channel.id,
+                        original_author_id,
+                    )
+                    public_conversations.pop(original_author_id, None)
+                    await original_message.reply(
+                        _guardrail_tripwire_reply(e),
+                        mention_author=False,
+                    )
                 except Exception as e:
                     logging.error(
                         "Error during public trigger agent run for user %s: %s",
@@ -565,11 +583,7 @@ class TicketBot(discord.Client):
                         )
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
-                    guardrail_info = e.guardrail_result.output.output_info
-                    if isinstance(guardrail_info, dict) and "message" in guardrail_info:
-                        final_reply = guardrail_info["message"]
-                    else:
-                        final_reply = "Your request could not be processed due to input checks."
+                    final_reply = _guardrail_tripwire_reply(e)
                     should_stop_processing = True
                     conversation_threads.pop(channel_id, None)
                     clear_ticket_investigation_job(channel_id)

@@ -43,10 +43,62 @@ from ticket_investigation_runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
 )
-from ysupport import TicketBot, _canonicalize_current_user_message
+from ysupport import (
+    TicketBot,
+    _canonicalize_current_user_message,
+    _guardrail_tripwire_reply,
+)
 
 
 class RoutingTests(unittest.TestCase):
+    def test_guardrail_tripwire_reply_prefers_guardrail_message(self) -> None:
+        exc = type(
+            "FakeTripwire",
+            (),
+            {
+                "guardrail_result": type(
+                    "FakeResult",
+                    (),
+                    {
+                        "output": type(
+                            "FakeOutput",
+                            (),
+                            {"output_info": {"message": "Please use the BD contact path."}},
+                        )()
+                    },
+                )()
+            },
+        )()
+
+        self.assertEqual(
+            _guardrail_tripwire_reply(exc),
+            "Please use the BD contact path.",
+        )
+
+    def test_guardrail_tripwire_reply_falls_back_when_message_missing(self) -> None:
+        exc = type(
+            "FakeTripwire",
+            (),
+            {
+                "guardrail_result": type(
+                    "FakeResult",
+                    (),
+                    {
+                        "output": type(
+                            "FakeOutput",
+                            (),
+                            {"output_info": {"classification": {"request_type": "partnership"}}},
+                        )()
+                    },
+                )()
+            },
+        )()
+
+        self.assertEqual(
+            _guardrail_tripwire_reply(exc),
+            "Your request could not be processed due to input checks.",
+        )
+
     def test_select_starting_agent_uses_data_button_intent(self) -> None:
         context = BotRunContext(
             channel_id=1,
