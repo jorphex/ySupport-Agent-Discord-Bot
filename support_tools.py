@@ -44,15 +44,18 @@ def _repo_search_block_message(run_context: BotRunContext) -> str:
 async def search_vaults_tool(
     query: str,
     chain: Optional[str] = None,
-    sort_by: Optional[str] = None
+    sort_by: Optional[str] = None,
+    recommended_only: bool = False,
 ) -> str:
     """
     Search for active Yearn vaults (v2/v3) using yDaemon API.
     Provide a search query (like token symbol 'USDC', vault name fragment 'staked eth', or vault address).
     Optionally filter by 'chain' (e.g., 'ethereum', 'base').
     Optionally sort by 'highest_apr' or 'lowest_apr'.
+    Set `recommended_only=True` when you want recommendation-grade results that exclude
+    single-strategy / ys- style vaults by default.
     """
-    return await tools_lib.core_search_vaults(query, chain, sort_by)
+    return await tools_lib.core_search_vaults(query, chain, sort_by, recommended_only)
 
 
 @function_tool

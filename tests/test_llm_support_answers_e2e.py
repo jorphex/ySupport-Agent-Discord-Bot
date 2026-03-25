@@ -324,12 +324,64 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertEqual(starting_agent_key, "data")
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["query"], "all")
+        self.assertTrue(tool_calls[0]["recommended_only"])
 
         lowered = output.lower()
         self.assertIn("yvusdc", lowered)
         self.assertNotIn("no one can decide for you", lowered)
         self.assertNotIn("docs do not specify a single best", lowered)
         self.assertNotIn("according to the docs", lowered)
+
+    async def test_recommendation_question_avoids_single_strategy_ys_vaults_by_default(
+        self,
+    ) -> None:
+        tool_calls: list[dict] = []
+        tool = self._get_agent_tool(yearn_data_agent, "search_vaults_tool")
+
+        async def fake_on_invoke_tool(ctx, input: str) -> str:
+            payload = json.loads(input)
+            tool_calls.append(payload)
+            self.assertTrue(payload["recommended_only"])
+            return (
+                "Found 2 Yearn vault(s) matching 'all'. Showing top 2 (sorted by recommendation quality) with details:\n\n"
+                "---\n\n"
+                "Vault: Yearn USDC (yvUSDC)\n"
+                "Address: 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                "Yearn UI Link: https://yearn.fi/vaults/1/0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                "Kind: Multi Strategy\n"
+                "Current Net APY (compounded): 4.20% (Type: v2:averaged)\n"
+                "TVL (USD): $1000000.00\n"
+                "Featuring Score: 0.95\n"
+                "Risk Level: 1\n"
+                "Strategies (3):\n"
+                "  1. Name: Strat One (`0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01`)\n\n"
+                "---\n\n"
+                "Vault: Yearn DAI (yvDAI)\n"
+                "Address: 0xcccccccccccccccccccccccccccccccccccccccc\n"
+                "Yearn UI Link: https://yearn.fi/vaults/1/0xcccccccccccccccccccccccccccccccccccccccc\n"
+                "Kind: Multi Strategy\n"
+                "Current Net APY (compounded): 3.80% (Type: v2:averaged)\n"
+                "TVL (USD): $850000.00\n"
+                "Featuring Score: 0.89\n"
+                "Risk Level: 1\n"
+                "Strategies (2):\n"
+                "  1. Name: Strat One (`0xcccccccccccccccccccccccccccccccccccccc01`)\n"
+            )
+
+        with patch.object(tool, "on_invoke_tool", new=fake_on_invoke_tool):
+            output, _, starting_agent_key = await self._run_support_turn(
+                "What Yearn vaults would you recommend right now if I want a simple place to start?"
+            )
+
+        self.assertEqual(starting_agent_key, "data")
+        self.assertEqual(len(tool_calls), 1)
+        self.assertTrue(tool_calls[0]["recommended_only"])
+
+        lowered = output.lower()
+        self.assertIn("yvusdc", lowered)
+        self.assertIn("yvdai", lowered)
+        self.assertNotIn("ysusdc", lowered)
+        self.assertNotIn("single strategy", lowered)
 
     async def test_charity_vault_builder_question_uses_official_setup_guide_and_steps(
         self,

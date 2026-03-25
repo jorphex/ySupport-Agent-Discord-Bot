@@ -1442,12 +1442,19 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
 async def core_search_vaults(
     query: str,
     chain: Optional[str] = None,
-    sort_by: Optional[str] = None 
+    sort_by: Optional[str] = None,
+    recommended_only: bool = False,
 ) -> str:
     """
     Core logic to search for Yearn vaults.
     """
-    logging.info(f"[CoreTool:search_vaults] Query: '{query}', Chain: '{chain}', Sort By: '{sort_by}'")
+    logging.info(
+        "[CoreTool:search_vaults] Query: '%s', Chain: '%s', Sort By: '%s', Recommended Only: %s",
+        query,
+        chain,
+        sort_by,
+        recommended_only,
+    )
     api_url = "https://ydaemon.yearn.fi/vaults/detected?limit=2000"
     
     # Use config for max results if defined, else default
@@ -1474,8 +1481,36 @@ async def core_search_vaults(
 
         query_lower = query.lower().strip()
         matched_vaults = []
+        recommendation_fallback_vaults = []
         is_address_query = Web3.is_address(query_lower)
         match_all_vaults = query_lower in {"all", "*"}
+
+        def _is_recommendable_vault(v_data: dict) -> bool:
+            symbol = (v_data.get("symbol") or "").lower()
+            kind = (v_data.get("kind") or "").lower()
+            strategies = v_data.get("strategies") or []
+            if symbol.startswith("ys"):
+                return False
+            if "single strategy" in kind:
+                return False
+            if len(strategies) <= 1:
+                return False
+            return True
+
+        def _recommendation_sort_key(v_data: dict) -> tuple[float, float, float, float]:
+            info_obj = v_data.get("info", {})
+            featuring_score = float(v_data.get("featuringScore") or 0.0)
+            risk_level = info_obj.get("riskLevel")
+            try:
+                risk_score = -float(risk_level)
+            except (TypeError, ValueError):
+                risk_score = float("-inf")
+            return (
+                featuring_score,
+                risk_score,
+                v_data.get("_computedTVL_USD", 0.0),
+                v_data.get("_computedAPY", 0.0),
+            )
 
         for v_data in filtered_vaults:
             vault_address = v_data.get("address", "").lower()
@@ -1513,13 +1548,21 @@ async def core_search_vaults(
                     v_data["_computedTVL_USD"] = float(v_data.get('tvl', {}).get('tvl', 0))
                 except (ValueError, TypeError):
                     v_data["_computedTVL_USD"] = 0.0
+                recommendation_fallback_vaults.append(v_data)
+                if recommended_only and not _is_recommendable_vault(v_data):
+                    continue
                 matched_vaults.append(v_data)
+
+        if recommended_only and not matched_vaults:
+            matched_vaults = recommendation_fallback_vaults
 
         if not matched_vaults:
             return "No active Yearn vaults found matching your criteria."
 
         # --- Sorting ---
-        if sort_by == "highest_apr":
+        if recommended_only and sort_by not in {"highest_apr", "lowest_apr"}:
+            matched_vaults.sort(key=_recommendation_sort_key, reverse=True)
+        elif sort_by == "highest_apr":
             matched_vaults.sort(key=lambda v: v.get("_computedAPY", 0.0), reverse=True)
         elif sort_by == "lowest_apr":
             matched_vaults.sort(key=lambda v: v.get("_computedAPY", 0.0), reverse=False)
