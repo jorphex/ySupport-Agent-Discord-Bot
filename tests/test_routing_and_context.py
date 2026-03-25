@@ -224,7 +224,7 @@ class RoutingTests(unittest.TestCase):
                         "role": "assistant",
                         "content": (
                             "**Active Deposits:**\n"
-                            "**Vault:** [Ethereum Vault](https://yearn.fi/v3/1/0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e) (Symbol: yvUSDC-1)\n"
+                            "**Vault:** [Ethereum Vault](https://yearn.fi/vaults/1/0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e) (Symbol: yvUSDC-1)\n"
                             "  Address: `0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e`\n"
                             "  Total Position: **1.000000 yvUSDC-1**"
                         ),
@@ -780,7 +780,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 _FakeResult(
                     final_output=(
                         "**Katana Active Deposits:**\n"
-                        "**Vault:** [Vault Name](https://yearn.fi/v3/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n"
+                        "**Vault:** [Vault Name](https://yearn.fi/vaults/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n"
                         "  Address: `0x80c34BD3A3569E126e7055831036aa7b212cB159`\n"
                         "  Total Position: **1.000000 yvVBUSDT**"
                     ),

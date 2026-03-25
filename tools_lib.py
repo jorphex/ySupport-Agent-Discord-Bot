@@ -989,11 +989,7 @@ async def query_active_deposits_logic(resolved_address: str, chain: Optional[str
                     decimals = int(vault_info.get("decimals", 18))
                     total_display_balance = total_balance / (10 ** decimals)
                     vault_address = Web3.to_checksum_address(vault_info.get("address"))
-                    api_version_str = vault_info.get('version', '')
-                    if api_version_str.startswith("3."):
-                        vault_url = f"https://yearn.fi/v3/{chain_id}/{vault_address}"
-                    else:
-                        vault_url = f"https://yearn.fi/vaults/{chain_id}/{vault_address}"
+                    vault_url = f"https://yearn.fi/vaults/{chain_id}/{vault_address}"
                     vault_name = vault_info.get('name', 'Unknown Vault')
                     vault_symbol = vault_info.get('symbol', 'N/A')
                     deposit_lines = [
@@ -1210,7 +1206,7 @@ async def core_get_withdrawal_instructions(user_address_or_ens: Optional[str], v
     # --- Step 4: Determine V2/V3 Version and Format Instructions ---
     api_version_str = vault_details_json.get("version", "")
     vault_name = vault_details_json.get("name", vault_checksum_addr)
-    yearn_ui_link = f"https://yearn.fi/v3/{chain_id}/{vault_checksum_addr}"
+    yearn_ui_link = f"https://yearn.fi/vaults/{chain_id}/{vault_checksum_addr}"
 
     intro_message = (
         f"Okay, here are instructions for withdrawing from the **{vault_name}** vault (`{vault_checksum_addr}`) on **{chain.capitalize()}** using the block explorer.\n\n"
@@ -1321,7 +1317,7 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
 
     if api_version_str.startswith("3."):
         simplified_version = f"V3 (API: {api_version_str})"
-        yearn_ui_link = f"https://yearn.fi/v3/{chain_id_for_url}/{address}"
+        yearn_ui_link = f"https://yearn.fi/vaults/{chain_id_for_url}/{address}"
     elif api_version_str.startswith("0."):
         simplified_version = f"V2 (API: {api_version_str})"
         yearn_ui_link = f"https://yearn.fi/vaults/{chain_id_for_url}/{address}"

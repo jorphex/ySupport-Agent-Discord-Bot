@@ -121,9 +121,9 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fake_answer_from_docs(user_query: str) -> str:
             tool_calls.append(user_query)
             return (
-                "Official sources do not document a 1:1 yETH recovery guarantee or a per-holder claim formula. "
+                "The docs do not document a 1:1 yETH recovery guarantee or a per-holder claim formula. "
                 "Recovered assets, if any, are redistributed to affected depositors, but the exact claim amount and "
-                "recovery-vault tradeoffs are not specified in the official materials I have."
+                "recovery-vault tradeoffs are not documented there."
             )
 
         async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None, include_ui=None) -> str:
@@ -147,7 +147,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertIn("yeth", tool_calls[0].lower())
 
         lowered = outcome.raw_final_reply.lower()
-        self.assertIn("official", lowered)
+        self.assertIn("the docs do not", lowered)
         self.assertNoDataLookupDetour(lowered)
         self.assertNotIn("do you want me to check", lowered)
         self.assertNotIn("wallet address now", lowered)
@@ -160,8 +160,8 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fake_answer_from_docs(user_query: str) -> str:
             tool_calls.append(user_query)
             return (
-                "Official docs list the Ethereum mainnet stYFI contract as "
-                "0x42b25284E8ae427D79da78b65DFFC232aAECc016. "
+                "The stYFI contract on Ethereum mainnet is "
+                "0x42b25284E8ae427D79da78b65DFFC232aAECc016.\n"
                 "Source: Yearn docs, stYFI contract addresses."
             )
 
@@ -177,7 +177,8 @@ class LlmSupportAnswerTests(LlmE2EBase):
 
         lowered = outcome.raw_final_reply.lower()
         self.assertIn("0x42b25284e8ae427d79da78b65dffc232aaecc016", lowered)
-        self.assertIn("official", lowered)
+        self.assertNotIn("official docs list", lowered)
+        self.assertNotIn("based on the docs", lowered)
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
         self.assertNoDataLookupDetour(lowered)
 
@@ -205,9 +206,9 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fake_answer_from_docs(user_query: str) -> str:
             tool_calls.append(user_query)
             return (
-                "Official docs for Yearn factory strategies say `harvest()` is permissionless, "
-                "but calling harvest only claims rewards. Swapping and realizing those rewards can happen later, "
-                "so not seeing rewards immediately can be normal. If you have a specific failed tx or stuck action, "
+                "`harvest()` is permissionless, but calling harvest only claims rewards. "
+                "Swapping and realizing those rewards can happen later, so not seeing rewards immediately can be normal. "
+                "If you have a specific failed tx or stuck action, "
                 "send that evidence and I can investigate further."
             )
 
@@ -235,10 +236,10 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fake_answer_from_docs(user_query: str) -> str:
             docs_calls.append(user_query)
             return (
-                "Official Yearn docs say vault APY is backward-looking from pricePerShare (PPS) change, "
-                "annualized over the relevant window. On non-Ethereum chains the displayed net APY can use "
-                "weekly PPS change, so it can diverge from individual strategy APR figures. The docs I have do "
-                "not document a separate donation or TVL-outflow adjustment formula beyond the PPS-based calculation."
+                "Vault APY is backward-looking from pricePerShare (PPS) change, annualized over the relevant window. "
+                "On non-Ethereum chains the displayed net APY can use weekly PPS change, so it can diverge from individual "
+                "strategy APR figures. The docs do not document a separate donation or TVL-outflow adjustment formula "
+                "beyond the PPS-based calculation."
             )
 
         async def fail_search_vaults(*args, **kwargs) -> str:
