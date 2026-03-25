@@ -930,3 +930,81 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("approvals", investigation)
         self.assertIn("Observed 1 transfer(s) out from the tx sender.", investigation)
         self.assertIn("Decoded 1 approval event(s).", investigation)
+
+
+class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_core_search_vaults_supports_all_query(self) -> None:
+        class FakeResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self) -> None:
+                return None
+
+            async def json(self):
+                return [
+                    {
+                        "chainID": 1,
+                        "address": "0x1111111111111111111111111111111111111111",
+                        "name": "Yearn USDC",
+                        "symbol": "yvUSDC",
+                        "token": {
+                            "name": "USD Coin",
+                            "symbol": "USDC",
+                            "address": "0x2222222222222222222222222222222222222222",
+                            "decimals": 6,
+                            "price": 1.0,
+                        },
+                        "apr": {
+                            "netAPR": 0.042,
+                            "points": {"weekAgo": 0.04, "monthAgo": 0.041, "inception": 0.05},
+                            "fees": {"performance": 0.1, "management": 0.02},
+                        },
+                        "tvl": {"tvl": 1000000},
+                        "info": {"riskLevel": 1, "isRetired": False, "isBoosted": False, "isHighlighted": True},
+                        "migration": {"available": False},
+                        "strategies": [],
+                    },
+                    {
+                        "chainID": 42161,
+                        "address": "0x3333333333333333333333333333333333333333",
+                        "name": "Yearn DAI",
+                        "symbol": "yvDAI",
+                        "token": {
+                            "name": "Dai Stablecoin",
+                            "symbol": "DAI",
+                            "address": "0x4444444444444444444444444444444444444444",
+                            "decimals": 18,
+                            "price": 1.0,
+                        },
+                        "apr": {
+                            "netAPR": 0.031,
+                            "points": {"weekAgo": 0.029, "monthAgo": 0.03, "inception": 0.032},
+                            "fees": {"performance": 0.1, "management": 0.02},
+                        },
+                        "tvl": {"tvl": 500000},
+                        "info": {"riskLevel": 2, "isRetired": False, "isBoosted": False, "isHighlighted": False},
+                        "migration": {"available": False},
+                        "strategies": [],
+                    },
+                ]
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        with patch("tools_lib.aiohttp.ClientSession", return_value=FakeSession()):
+            result = await tools_lib.core_search_vaults("all")
+
+        self.assertIn("Found 2 Yearn vault(s) matching 'all'.", result)
+        self.assertIn("Vault: Yearn USDC (yvUSDC)", result)
+        self.assertIn("Vault: Yearn DAI (yvDAI)", result)

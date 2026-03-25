@@ -282,6 +282,55 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertNotIn("acquiring yearn tokens", lowered)
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
 
+    async def test_recommendation_question_routes_to_data_and_suggests_current_vaults(
+        self,
+    ) -> None:
+        tool_calls: list[dict] = []
+        tool = self._get_agent_tool(yearn_data_agent, "search_vaults_tool")
+
+        async def fake_on_invoke_tool(ctx, input: str) -> str:
+            payload = json.loads(input)
+            tool_calls.append(payload)
+            return (
+                "Found 3 Yearn vault(s) matching 'all'. Showing top 3 (sorted by TVL (Descending)) with details:\n\n"
+                "---\n\n"
+                "Vault: Yearn USDC (yvUSDC)\n"
+                "Address: 0x1111111111111111111111111111111111111111\n"
+                "Yearn UI Link: https://yearn.fi/vaults/1/0x1111111111111111111111111111111111111111\n"
+                "Current Net APY (compounded): 4.20% (Type: v2:averaged)\n"
+                "TVL (USD): $1000000.00\n"
+                "Risk Level: 1\n\n"
+                "---\n\n"
+                "Vault: Yearn DAI (yvDAI)\n"
+                "Address: 0x2222222222222222222222222222222222222222\n"
+                "Yearn UI Link: https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222\n"
+                "Current Net APY (compounded): 3.80% (Type: v2:averaged)\n"
+                "TVL (USD): $850000.00\n"
+                "Risk Level: 1\n\n"
+                "---\n\n"
+                "Vault: Yearn WETH (yvWETH)\n"
+                "Address: 0x3333333333333333333333333333333333333333\n"
+                "Yearn UI Link: https://yearn.fi/vaults/1/0x3333333333333333333333333333333333333333\n"
+                "Current Net APY (compounded): 2.10% (Type: v2:averaged)\n"
+                "TVL (USD): $780000.00\n"
+                "Risk Level: 2\n"
+            )
+
+        with patch.object(tool, "on_invoke_tool", new=fake_on_invoke_tool):
+            output, _, starting_agent_key = await self._run_support_turn(
+                "What Yearn vaults would you recommend right now if I want a simple place to start?"
+            )
+
+        self.assertEqual(starting_agent_key, "data")
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["query"], "all")
+
+        lowered = output.lower()
+        self.assertIn("yvusdc", lowered)
+        self.assertNotIn("no one can decide for you", lowered)
+        self.assertNotIn("docs do not specify a single best", lowered)
+        self.assertNotIn("according to the docs", lowered)
+
     async def test_charity_vault_builder_question_uses_official_setup_guide_and_steps(
         self,
     ) -> None:

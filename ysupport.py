@@ -135,7 +135,7 @@ class TicketBot(discord.Client):
             "This can take a couple of minutes."
         )
         try:
-            await channel.send(message)
+            await channel.send(message, suppress_embeds=True)
             last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
             logging.info("Sent bug-review status message to channel %s", channel_id)
         except Exception as e:
@@ -178,7 +178,7 @@ class TicketBot(discord.Client):
                     "---"
                 )
                 try:
-                    await channel.send(welcome_message, view=InitialInquiryView())
+                    await channel.send(welcome_message, view=InitialInquiryView(), suppress_embeds=True)
                     channels_awaiting_initial_button_press.add(channel.id)
                     last_bot_reply_ts_by_channel[channel.id] = datetime.now(timezone.utc)
                     logging.info(f"Sent initial inquiry buttons to channel {channel.id}")
@@ -308,6 +308,7 @@ class TicketBot(discord.Client):
                     await original_message.reply(
                         _guardrail_tripwire_reply(e),
                         mention_author=False,
+                        suppress_embeds=True,
                     )
                 except Exception as e:
                     logging.error(
@@ -319,6 +320,7 @@ class TicketBot(discord.Client):
                     await original_message.reply(
                         f"Sorry, an error occurred while processing that request. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>.",
                         mention_author=False,
+                        suppress_embeds=True,
                     )
             return True
         except discord.NotFound:
@@ -421,7 +423,7 @@ class TicketBot(discord.Client):
                 if is_data_intent:
                     ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
                     try:
-                        await channel.send(ack_message)
+                        await channel.send(ack_message, suppress_embeds=True)
                         last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
                         logging.info(f"Sent pre-run acknowledgement message to channel {channel_id}")
                     except Exception as e:
@@ -472,7 +474,12 @@ class TicketBot(discord.Client):
 
         if channel_id in channels_awaiting_initial_button_press:
             try:
-                await message.reply("Please select an option from the buttons on my previous message to get started.", delete_after=20, mention_author=False)
+                await message.reply(
+                    "Please select an option from the buttons on my previous message to get started.",
+                    delete_after=20,
+                    mention_author=False,
+                    suppress_embeds=True,
+                )
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
             except Exception:
                 pass
@@ -502,7 +509,7 @@ class TicketBot(discord.Client):
         if existing_task and not existing_task.done():
             existing_task.cancel()
             try:
-                await message.channel.send("Got it — updating based on your latest message.")
+                await message.channel.send("Got it — updating based on your latest message.", suppress_embeds=True)
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
             except Exception:
                 pass

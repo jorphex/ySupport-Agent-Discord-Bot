@@ -1472,9 +1472,10 @@ async def core_search_vaults(
             if query_chain_id:
                 filtered_vaults = [v for v in filtered_vaults if v.get("chainID") == query_chain_id]
 
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
         matched_vaults = []
         is_address_query = Web3.is_address(query_lower)
+        match_all_vaults = query_lower in {"all", "*"}
 
         for v_data in filtered_vaults:
             vault_address = v_data.get("address", "").lower()
@@ -1486,7 +1487,9 @@ async def core_search_vaults(
             underlying_address = token_info.get("address", "").lower() if token_info else ""
 
             match = False
-            if is_address_query:
+            if match_all_vaults:
+                match = True
+            elif is_address_query:
                 if query_lower == vault_address or query_lower == underlying_address:
                     match = True
             elif query_lower == symbol or query_lower == token_symbol:

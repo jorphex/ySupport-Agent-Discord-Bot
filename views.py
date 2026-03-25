@@ -44,9 +44,9 @@ class InitialInquiryView(View):
             investigation_job.mark_waiting_for_user()
 
         if interaction.channel:
-            await interaction.channel.send(prompt_message)
+            await interaction.channel.send(prompt_message, suppress_embeds=True)
         else:
-            await interaction.followup.send(prompt_message, ephemeral=False)
+            await interaction.followup.send(prompt_message, ephemeral=False, suppress_embeds=True)
 
         logging.info(f"Button '{button_custom_id}' clicked in {interaction.channel.id}. Intent set to '{intent_category}'. Sent follow-up prompt.")
 
@@ -82,9 +82,9 @@ class InitialInquiryView(View):
     async def bd_partner_button(self, interaction: discord.Interaction, button: Button):
         await self.handle_button_click(interaction, button.custom_id)
         if interaction.channel:
-            await interaction.channel.send(STANDARD_REDIRECT_MESSAGE)
+            await interaction.channel.send(STANDARD_REDIRECT_MESSAGE, suppress_embeds=True)
         else:
-            await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False)
+            await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False, suppress_embeds=True)
         stopped_channels.add(interaction.channel.id)
         logging.info(f"BD/Partner inquiry redirected in {interaction.channel.id}. Bot stopped.")
 
@@ -93,9 +93,9 @@ class InitialInquiryView(View):
         await self.handle_button_click(interaction, button.custom_id)
         prompt = "Okay, please describe your issue or question in detail below. I'll do my best to assist or find the right help for you."
         if interaction.channel:
-            await interaction.channel.send(prompt)
+            await interaction.channel.send(prompt, suppress_embeds=True)
         else:
-            await interaction.followup.send(prompt, ephemeral=False)
+            await interaction.followup.send(prompt, ephemeral=False, suppress_embeds=True)
         channel_intent_after_button[interaction.channel.id] = "other_free_form"
         investigation_job = get_or_create_ticket_investigation_job(interaction.channel.id)
         investigation_job.record_requested_intent("other_free_form")
@@ -155,7 +155,7 @@ class StopBotView(View):
 
         confirmation_message = "Support bot stopped for this channel. ySupport contributors are available for further inquiries."
         try:
-            await interaction.followup.send(confirmation_message, ephemeral=False)
+            await interaction.followup.send(confirmation_message, ephemeral=False, suppress_embeds=True)
         except Exception:
             if interaction.channel:
-                await interaction.channel.send(confirmation_message)
+                await interaction.channel.send(confirmation_message, suppress_embeds=True)
