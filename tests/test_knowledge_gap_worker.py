@@ -316,6 +316,35 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("**Suggested action**", formatted)
         self.assertIn("**Confidence:** medium", formatted)
 
+    def test_format_issue_draft_report_uses_triage_headings(self) -> None:
+        report = KnowledgeGapReport(
+            should_post=True,
+            category="issue_draft_candidate",
+            title="Potential VaultV3 accounting issue",
+            topic="VaultV3 withdrawal accounting",
+            product="VaultV3.vy",
+            chain="ethereum",
+            evidence_summary="Reporter claims PPS inflation is possible during withdrawal accounting.",
+            current_official_grounding="Repo context shows balance-diff accounting in the relevant path.",
+            assessment="The claim is plausible enough for internal engineering/security review.",
+            suggested_action="Open an internal engineering/security triage thread with the grounded claim summary.",
+            confidence="high",
+        )
+
+        formatted = format_knowledge_gap_report(
+            report,
+            affected_channels=[
+                PreparedTicketTranscript(channel_id="789", channel_name="closed-1433", message_count=4, transcript_text="")
+            ],
+        )
+
+        self.assertIn("**Reported issue**", formatted)
+        self.assertIn("**Current grounding**", formatted)
+        self.assertIn("**Triage assessment**", formatted)
+        self.assertIn("**Recommended next step**", formatted)
+        self.assertNotIn("**Current official grounding**", formatted)
+        self.assertNotIn("**Suggested action**", formatted)
+
     def test_finalize_knowledge_gap_report_uses_supported_chain_hint_from_transcript(self) -> None:
         report = KnowledgeGapReport(
             should_post=True,

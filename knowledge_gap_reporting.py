@@ -313,17 +313,38 @@ def format_knowledge_gap_report(
             f"**Affected tickets:** {affected_ticket_refs}",
             f"**Confidence:** {report.confidence}",
             "",
-            "**Evidence**",
-            report.evidence_summary,
-            "",
-            "**Current official grounding**",
-            report.current_official_grounding,
-            "",
-            "**Assessment**",
-            report.assessment,
-            "",
-            "**Suggested action**",
-            report.suggested_action,
         ]
     )
+    if report.category == "issue_draft_candidate":
+        lines.extend(
+            [
+                "**Reported issue**",
+                report.evidence_summary,
+                "",
+                "**Current grounding**",
+                report.current_official_grounding,
+                "",
+                "**Triage assessment**",
+                report.assessment,
+                "",
+                "**Recommended next step**",
+                report.suggested_action,
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "**Evidence**",
+                report.evidence_summary,
+                "",
+                "**Current official grounding**",
+                report.current_official_grounding,
+                "",
+                "**Assessment**",
+                report.assessment,
+                "",
+                "**Suggested action**",
+                report.suggested_action,
+            ]
+        )
     return "\n".join(lines).strip()
