@@ -933,6 +933,65 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
+    def test_format_single_vault_data_handles_nullable_apr_fields(self) -> None:
+        formatted = tools_lib.format_single_vault_data_for_llm(
+            {
+                "name": "Nullable Vault",
+                "symbol": "yvNULL",
+                "address": "0x1111111111111111111111111111111111111111",
+                "version": "3.0.4",
+                "kind": "Multi Strategy",
+                "description": "Test vault",
+                "token": {
+                    "name": "USD Coin",
+                    "symbol": "USDC",
+                    "address": "0x2222222222222222222222222222222222222222",
+                },
+                "tvl": {"price": None, "tvl": None},
+                "apr": {
+                    "netAPR": None,
+                    "type": "v3:averaged",
+                    "forwardAPR": {"netAPR": None, "type": "projection"},
+                    "fees": {"performance": None, "management": None},
+                    "points": {"weekAgo": None, "monthAgo": None, "inception": None},
+                },
+                "featuringScore": None,
+                "info": {"riskLevel": None, "isRetired": False, "isBoosted": False, "isHighlighted": False},
+                "migration": {"available": False},
+                "strategies": [
+                    {
+                        "name": "Strat One",
+                        "address": "0x3333333333333333333333333333333333333333",
+                        "status": "active",
+                        "netAPR": None,
+                        "details": {"lastReport": None},
+                    }
+                ],
+                "staking": {
+                    "available": True,
+                    "source": "veYFI",
+                    "address": "0x4444444444444444444444444444444444444444",
+                    "rewards": [
+                        {
+                            "name": "Reward",
+                            "symbol": "RWD",
+                            "address": "0x5555555555555555555555555555555555555555",
+                            "apr": None,
+                            "isFinished": False,
+                            "finishedAt": None,
+                        }
+                    ],
+                },
+            },
+            1,
+        )
+
+        self.assertIn("Current Net APY (compounded): N/A", formatted)
+        self.assertIn("Vault Fees: Performance=N/A, Management=N/A", formatted)
+        self.assertIn("Historical Net APY: Week Ago=N/A, Month Ago=N/A, Inception=N/A", formatted)
+        self.assertIn("Individual APY: N/A", formatted)
+        self.assertIn("APY: N/A", formatted)
+
     async def test_core_search_vaults_supports_all_query(self) -> None:
         class FakeResponse:
             async def __aenter__(self):

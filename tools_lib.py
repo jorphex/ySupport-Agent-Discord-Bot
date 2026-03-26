@@ -1303,6 +1303,22 @@ def format_timestamp_to_readable(timestamp: Optional[Union[int, float, str]]) ->
     except (ValueError, TypeError):
         return str(timestamp)
 
+
+def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_percent_field(value: Any) -> str:
+    numeric_value = _safe_float(value, None)
+    if numeric_value is None:
+        return "N/A"
+    return f"{numeric_value * 100:.2f}%"
+
 def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
     """
     Formats a single vault's JSON data into a readable string for the LLM.
@@ -1338,12 +1354,13 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
     underlying_symbol = token_info.get('symbol', 'N/A')
     underlying_address = token_info.get('address', 'N/A')
     tvl_data = data.get('tvl', {})
-    underlying_price = tvl_data.get('price', 0.0)
+    underlying_price = _safe_float(tvl_data.get('price'), 0.0) or 0.0
     output_lines.append(f"Underlying Token: {underlying_name} ({underlying_symbol}) - `{underlying_address}` - Price: ${underlying_price:,.4f}")
     output_lines.append("")
 
     output_lines.append("TVL & Share Price:")
-    output_lines.append(f"  TVL (USD): ${tvl_data.get('tvl', 0.0):,.2f}")
+    tvl_usd = _safe_float(tvl_data.get('tvl'), 0.0) or 0.0
+    output_lines.append(f"  TVL (USD): ${tvl_usd:,.2f}")
     raw_pps = data.get('pricePerShare', '0')
     try:
         vault_decimals = int(data.get('decimals', 18))
@@ -1355,24 +1372,24 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
 
     apr_data = data.get('apr', {})
     output_lines.append("APY Information:")
-    net_apy = apr_data.get('netAPR', 0.0) * 100
-    output_lines.append(f"  Current Net APY (compounded): {net_apy:.2f}% (Type: {apr_data.get('type', 'N/A')})")
+    net_apy_text = _format_percent_field(apr_data.get('netAPR'))
+    output_lines.append(f"  Current Net APY (compounded): {net_apy_text} (Type: {apr_data.get('type', 'N/A')})")
     
     forward_apr_data = apr_data.get('forwardAPR', {})
     if forward_apr_data and forward_apr_data.get('netAPR') is not None:
-        forward_net_apy = forward_apr_data.get('netAPR', 0.0) * 100
-        output_lines.append(f"  Estimated Forward APY (projection): {forward_net_apy:.2f}% (Type: {forward_apr_data.get('type', 'N/A')})")
+        forward_net_apy_text = _format_percent_field(forward_apr_data.get('netAPR'))
+        output_lines.append(f"  Estimated Forward APY (projection): {forward_net_apy_text} (Type: {forward_apr_data.get('type', 'N/A')})")
     
     fees = apr_data.get('fees', {})
-    perf_fee = fees.get('performance', 0.0) * 100
-    mgmt_fee = fees.get('management', 0.0) * 100
-    output_lines.append(f"  Vault Fees: Performance={perf_fee:.2f}%, Management={mgmt_fee:.2f}%")
+    perf_fee = _format_percent_field(fees.get('performance'))
+    mgmt_fee = _format_percent_field(fees.get('management'))
+    output_lines.append(f"  Vault Fees: Performance={perf_fee}, Management={mgmt_fee}")
     
     points = apr_data.get('points', {})
-    week_ago_apy = points.get('weekAgo', 0.0) * 100
-    month_ago_apy = points.get('monthAgo', 0.0) * 100
-    inception_apy = points.get('inception', 0.0) * 100
-    output_lines.append(f"  Historical Net APY: Week Ago={week_ago_apy:.2f}%, Month Ago={month_ago_apy:.2f}%, Inception={inception_apy:.2f}%")
+    week_ago_apy = _format_percent_field(points.get('weekAgo'))
+    month_ago_apy = _format_percent_field(points.get('monthAgo'))
+    inception_apy = _format_percent_field(points.get('inception'))
+    output_lines.append(f"  Historical Net APY: Week Ago={week_ago_apy}, Month Ago={month_ago_apy}, Inception={inception_apy}")
     output_lines.append("")
 
     output_lines.append("Other Info:")
@@ -1393,7 +1410,7 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
             strat_name = strat.get('name', 'Unnamed Strategy')
             strat_addr = strat.get('address', 'N/A')
             strat_status = strat.get('status', 'N/A')
-            strat_apy = strat.get('netAPR', 0.0) * 100
+            strat_apy = _format_percent_field(strat.get('netAPR'))
             strat_details = strat.get('details', {})
             debt_ratio_raw = strat_details.get('debtRatio')
             debt_ratio_percent = "N/A"
@@ -1405,7 +1422,7 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
             last_report = format_timestamp_to_readable(strat_details.get('lastReport'))
             output_lines.append(f"  {i+1}. Name: {strat_name} (`{strat_addr}`)")
             output_lines.append(f"     Status: {strat_status}")
-            output_lines.append(f"     Individual APY: {strat_apy:.2f}%")
+            output_lines.append(f"     Individual APY: {strat_apy}")
             output_lines.append(f"     Allocation (Debt Ratio): {debt_ratio_percent}")
             output_lines.append(f"     Last Report: {last_report}")
     else:
@@ -1424,11 +1441,11 @@ def format_single_vault_data_for_llm(data: Dict, chain_id_for_url: int) -> str:
                 rew_name = reward.get('name', 'N/A')
                 rew_sym = reward.get('symbol', 'N/A')
                 rew_addr = reward.get('address', 'N/A')
-                rew_apy = reward.get('apr', 0.0) * 100
+                rew_apy = _format_percent_field(reward.get('apr'))
                 rew_finished = reward.get('isFinished', False)
                 rew_ends = format_timestamp_to_readable(reward.get('finishedAt'))
                 output_lines.append(f"    - Token: {rew_name} ({rew_sym}) `{rew_addr}`")
-                output_lines.append(f"      APY: {rew_apy:.2f}%")
+                output_lines.append(f"      APY: {rew_apy}")
                 output_lines.append(f"      Status: {'Finished' if rew_finished else 'Ongoing'} (Ends: {rew_ends})")
         else:
             output_lines.append("  Rewards: None listed.")
