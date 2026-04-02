@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 
-from agents import TResponseInputItem
+try:
+    from agents import TResponseInputItem
+except ModuleNotFoundError:
+    TResponseInputItem = dict[str, Any]
 
 
 SpecialtyKey = Literal["data", "docs", "bug"]

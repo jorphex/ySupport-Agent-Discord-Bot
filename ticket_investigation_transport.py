@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agents import TResponseInputItem
+try:
+    from agents import TResponseInputItem
+except ModuleNotFoundError:
+    TResponseInputItem = dict[str, Any]
 
 from state import BotRunContext, InvestigationEvidence, TicketInvestigationJob
-from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketTurnRequest
+
+if TYPE_CHECKING:
+    from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketTurnRequest
 
 
 TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
@@ -146,6 +153,8 @@ def serialize_flow_outcome(flow_outcome: TicketAgentFlowOutcome) -> dict[str, An
 
 
 def deserialize_flow_outcome(payload: dict[str, Any]) -> TicketAgentFlowOutcome:
+    from ticket_investigation_runtime import TicketAgentFlowOutcome
+
     return TicketAgentFlowOutcome(
         raw_final_reply=payload["raw_final_reply"],
         conversation_history=list(payload["conversation_history"]),
@@ -256,6 +265,8 @@ class TicketExecutionTransportRequest:
         )
 
     def to_turn_request(self) -> TicketTurnRequest:
+        from ticket_investigation_runtime import TicketTurnRequest
+
         return TicketTurnRequest(
             aggregated_text=self.aggregated_text,
             input_list=list(self.input_list),

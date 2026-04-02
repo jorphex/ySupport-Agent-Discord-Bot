@@ -1,14 +1,18 @@
+from __future__ import annotations
+
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 from state import TicketInvestigationJob
 from ticket_investigation_transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
-from ticket_investigation_runtime import TicketTurnRequest
-from ticket_investigation_worker import TicketInvestigationWorker, TicketWorkerResult
+
+if TYPE_CHECKING:
+    from ticket_investigation_runtime import TicketTurnRequest
+    from ticket_investigation_worker import TicketInvestigationWorker
 
 
 @dataclass
@@ -56,7 +60,7 @@ class LocalTicketInvestigationExecutor:
                 effective_request,
                 send_bug_review_status=hooks.send_bug_review_status,
             )
-        worker_result: TicketWorkerResult = await self.worker.execute_turn(effective_request)
+        worker_result = await self.worker.execute_turn(effective_request)
         return TicketExecutionResult(
             flow_outcome=worker_result.flow_outcome,
             updated_job=updated_job,
