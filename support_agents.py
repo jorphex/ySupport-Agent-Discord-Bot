@@ -63,6 +63,89 @@ class TicketTriageDecision(BaseModel):
     reasoning: str = Field(..., description="Brief explanation for the routing decision.")
 
 
+def _looks_like_vendor_security_outreach(text: str) -> bool:
+    lowered = (text or "").lower()
+    vendor_terms = (
+        "threat intelligence",
+        "analysts",
+        "vendor",
+        "service",
+        "services",
+        "monitoring",
+        "scan",
+        "scans",
+        "broader scan",
+        "trial",
+        "free trial",
+        "takedown",
+        "takedowns",
+        "brand protection",
+        "impersonation",
+        "fake domains",
+        "malicious domains",
+        "phishing domains",
+        "free of charge",
+    )
+    return any(term in lowered for term in vendor_terms)
+
+
+def _looks_like_concrete_security_disclosure(text: str) -> bool:
+    lowered = (text or "").lower()
+    disclosure_terms = (
+        "vulnerability",
+        "security issue",
+        "security report",
+        "bug report",
+        "exploit",
+        "responsibly disclose",
+        "responsible disclosure",
+        "proof of concept",
+        "poc",
+        "full technical report",
+        "technical report",
+    )
+    component_terms = (
+        "contract",
+        "strategy",
+        "vault",
+        "router",
+        "styfi",
+        "veyfi",
+        "_withdraw",
+        "_unstake",
+        "component:",
+        "issue:",
+    )
+    impact_terms = (
+        "impact:",
+        "severity",
+        "loss of funds",
+        "fund loss",
+        "freezing of user funds",
+        "freeze of user funds",
+        "permanent user fund loss",
+        "permanent freezing",
+        "permanent loss",
+    )
+    submission_blocker_terms = (
+        "immunefi",
+        "zkpassport",
+        "identity verification",
+        "secure way to submit",
+        "preferred secure way",
+        "submit the full report",
+    )
+
+    has_disclosure_term = any(term in lowered for term in disclosure_terms)
+    has_component_term = any(term in lowered for term in component_terms)
+    has_impact_term = any(term in lowered for term in impact_terms)
+    has_submission_blocker = any(term in lowered for term in submission_blocker_terms)
+
+    return has_disclosure_term and (
+        has_submission_blocker or (has_component_term and has_impact_term)
+    )
+
+
 def _gpt5_model_settings(
     *,
     effort: str,
@@ -139,31 +222,51 @@ async def bd_priority_guardrail(
             run_config=run_config_guardrail
         )
         check_output = result.final_output_as(BDPriorityCheckOutput)
+        effective_request_type = check_output.request_type
 
-        logging.info(f"[Guardrail:BD/Priority] Check result: type={check_output.request_type}, Reasoning: {check_output.reasoning}")
+        if (
+            effective_request_type == "vendor_security"
+            and _looks_like_concrete_security_disclosure(text_input)
+            and not _looks_like_vendor_security_outreach(text_input)
+        ):
+            logging.info(
+                "[Guardrail:BD/Priority] Overriding vendor_security to not_bd_pr for concrete security disclosure."
+            )
+            effective_request_type = "not_bd_pr"
+
+        logging.info(
+            "[Guardrail:BD/Priority] Check result: raw_type=%s effective_type=%s Reasoning: %s",
+            check_output.request_type,
+            effective_request_type,
+            check_output.reasoning,
+        )
 
         message_to_send = None
         should_trigger = False
 
-        if check_output.request_type == "listing":
+        if effective_request_type == "listing":
             message_to_send = LISTING_DENIAL_MESSAGE
             should_trigger = True
-        elif check_output.request_type == "vendor_security":
+        elif effective_request_type == "vendor_security":
             message_to_send = SECURITY_VENDOR_BOUNDARY_MESSAGE
             should_trigger = True
-        elif check_output.request_type in ["partnership", "marketing", "other_bd"]:
+        elif effective_request_type in ["partnership", "marketing", "other_bd"]:
             message_to_send = STANDARD_REDIRECT_MESSAGE
             should_trigger = True
-        elif check_output.request_type == "job_inquiry":
+        elif effective_request_type == "job_inquiry":
             message_to_send = JOB_INQUIRY_REDIRECT_MESSAGE
             should_trigger = True
 
         output_info_dict = {
-            "classification": check_output.model_dump()
+            "classification": check_output.model_dump(),
+            "effective_request_type": effective_request_type,
         }
         if should_trigger and message_to_send:
             output_info_dict["message"] = message_to_send
-            logging.info(f"[Guardrail:BD/Priority] Returning tripwire=True. Type: {check_output.request_type}.")
+            logging.info(
+                "[Guardrail:BD/Priority] Returning tripwire=True. Type: %s.",
+                effective_request_type,
+            )
             return GuardrailFunctionOutput(
                 output_info=output_info_dict,
                 tripwire_triggered=True

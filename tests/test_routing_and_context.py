@@ -22,6 +22,7 @@ from state import (
 from ticket_investigation_worker import TicketInvestigationWorker
 from support_agents import (
     BDPriorityCheckOutput,
+    _looks_like_concrete_security_disclosure,
     bd_priority_guardrail,
     TicketTriageDecision,
     ticket_triage_router_agent,
@@ -32,8 +33,10 @@ from support_agents import (
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
+    _bug_bounty_intake_boundary_reply,
     _build_specialist_turn_input,
     TicketAgentFlowOutcome,
+    _looks_like_bug_bounty_intake_boundary_case,
     _contains_report_artifact_evidence,
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
@@ -186,6 +189,25 @@ class RoutingTests(unittest.TestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
+    def test_bug_bounty_intake_boundary_helper_matches_opening_request(self) -> None:
+        text = (
+            "Good day team, me and my team discovered an issue that should be addressed "
+            "and hope to be rewarded for our efforts"
+        )
+
+        self.assertTrue(_looks_like_bug_bounty_intake_boundary_case(text))
+
+    def test_bug_bounty_intake_boundary_reply_points_to_security_process(self) -> None:
+        reply = _bug_bounty_intake_boundary_reply(
+            "Good day team, me and my team discovered an issue that should be addressed "
+            "and hope to be rewarded for our efforts"
+        )
+
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("docs.yearn.fi/developers/security", reply)
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, reply)
+
     def test_follow_up_routing_does_not_force_data_reuse_for_ui_issue(self) -> None:
         channel_id = 26
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
@@ -318,6 +340,17 @@ class RoutingTests(unittest.TestCase):
 
 
 class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
+    def test_concrete_security_disclosure_helper_detects_immunefi_blocked_report(self) -> None:
+        text = (
+            "Hello Yearn Finance Security Team, I would like to responsibly disclose a critical "
+            "vulnerability affecting the stYFI contract. Immunefi identity verification is blocked "
+            "because zkPassport is not working. Please let me know the preferred secure way to "
+            "submit the full technical report. Impact: permanent user fund loss. Component: "
+            "stYFI contract (_withdraw / _unstake interaction)."
+        )
+
+        self.assertTrue(_looks_like_concrete_security_disclosure(text))
+
     async def test_vendor_security_boundary_uses_firm_message(self) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
@@ -341,6 +374,39 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             result.output_info["message"],
             SECURITY_VENDOR_BOUNDARY_MESSAGE,
         )
+
+    async def test_concrete_security_disclosure_overrides_vendor_security_false_positive(
+        self,
+    ) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return BDPriorityCheckOutput(
+                    request_type="vendor_security",
+                    reasoning="mentions security team and secure report path",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        disclosure = (
+            "Hello Yearn Finance Security Team, I would like to responsibly disclose a critical "
+            "vulnerability affecting the stYFI contract related to stream state handling during "
+            "instant withdrawals. Immunefi identity verification is blocked because zkPassport is "
+            "not functioning. Please let me know the preferred secure way to submit the full "
+            "technical report. Impact: permanent user fund loss. Component: stYFI contract "
+            "(_withdraw / _unstake interaction)."
+        )
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await bd_priority_guardrail.guardrail_function(
+                None,
+                None,
+                disclosure,
+            )
+
+        self.assertFalse(result.tripwire_triggered)
+        self.assertEqual(result.output_info["classification"]["request_type"], "vendor_security")
+        self.assertEqual(result.output_info["effective_request_type"], "not_bd_pr")
 
 
 class InvestigationJobTests(unittest.TestCase):
@@ -863,6 +929,46 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
             ),
         )
+
+    async def test_ticket_agent_flow_short_circuits_bug_bounty_intake_boundary(self) -> None:
+        channel_id = 37
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner([])
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text=(
+                        "Good day team, me and my team discovered an issue that should be addressed "
+                        "and hope to be rewarded for our efforts"
+                    ),
+                    input_list=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Good day team, me and my team discovered an issue that should be addressed "
+                                "and hope to be rewarded for our efforts"
+                            ),
+                        }
+                    ],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 0)
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("docs.yearn.fi/developers/security", lowered)
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("browser", lowered)
+        self.assertNotIn("device", lowered)
 
     async def test_ticket_agent_flow_marks_specialist_reply_handoff_explicitly(self) -> None:
         channel_id = 33

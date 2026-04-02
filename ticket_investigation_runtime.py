@@ -22,6 +22,7 @@ TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
 ADDRESS_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
 ACTIVE_DEPOSITS_HEADER_RE = re.compile(r"\*\*(?P<chain>[A-Za-z0-9 _/-]+) Active Deposits:\*\*")
 CHAIN_NAMES = ("ethereum", "base", "arbitrum", "optimism", "polygon", "sonic", "katana")
+SECURITY_PROCESS_URL = "https://docs.yearn.fi/developers/security"
 ROUTE_ACTION_TO_AGENT_KEY = {
     "route_data": "data",
     "route_docs": "docs",
@@ -154,6 +155,67 @@ def _normalize_ticket_triage_decision(
         action=decision.action,
         message=message,
         reasoning=decision.reasoning,
+    )
+
+
+def _looks_like_bug_bounty_intake_boundary_case(text: str) -> bool:
+    lowered = (text or "").lower()
+    reward_terms = (
+        "reward",
+        "rewarded",
+        "bounty",
+        "compensat",
+        "paid for",
+        "our efforts",
+    )
+    report_terms = (
+        "issue",
+        "bug",
+        "security issue",
+        "vulnerability",
+        "exploit",
+        "report",
+        "disclos",
+    )
+    concrete_terms = (
+        "contract",
+        "strategy",
+        "vault",
+        "router",
+        "component:",
+        "impact:",
+        "proof of concept",
+        "poc",
+        "foundry",
+        "steps to reproduce",
+        "reproduce",
+        "vaultv3",
+        "_redeem",
+        "_update_debt",
+        "_withdraw",
+        "_unstake",
+    )
+
+    if not any(term in lowered for term in reward_terms):
+        return False
+    if not any(term in lowered for term in report_terms):
+        return False
+    if _contains_report_artifact_evidence(text):
+        return False
+    if TX_HASH_RE.search(text or "") or ADDRESS_RE.search(text or ""):
+        return False
+    if any(term in lowered for term in concrete_terms):
+        return False
+    return True
+
+
+def _bug_bounty_intake_boundary_reply(text: str) -> str | None:
+    if not _looks_like_bug_bounty_intake_boundary_case(text):
+        return None
+    return (
+        "If you are reporting a Yearn security issue and want bounty or disclosure handling, "
+        f"use Yearn's official security process at {SECURITY_PROCESS_URL}. "
+        f"Human help is required beyond that path. {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
     )
 
 
@@ -387,6 +449,24 @@ class TicketInvestigationRuntime:
         return hints
 
     async def run_turn(self, request: TicketTurnRequest) -> TicketAgentFlowOutcome:
+        # Safety boundary: do not let bounty-seeking security openings fall into
+        # generic bug-intake prompts before the reporter reaches the official
+        # security path.
+        direct_boundary_reply = _bug_bounty_intake_boundary_reply(
+            request.aggregated_text
+        )
+        if direct_boundary_reply is not None:
+            return TicketAgentFlowOutcome(
+                raw_final_reply=direct_boundary_reply,
+                conversation_history=_append_ticket_reply_to_history(
+                    request.current_history,
+                    request.aggregated_text,
+                    direct_boundary_reply,
+                ),
+                completed_agent_key=None,
+                requires_human_handoff=True,
+            )
+
         agent_key = _select_ticket_starting_agent(
             request.aggregated_text,
             request.run_context,

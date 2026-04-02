@@ -263,6 +263,45 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertNoDataLookupDetour(lowered)
         self.assertNotIn("wallet address", lowered)
 
+    async def test_closed_1431_value_drop_question_replays_to_docs_not_wallet_detour(
+        self,
+    ) -> None:
+        docs_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            docs_calls.append(user_query)
+            return (
+                "The vault position value is not documented as a guaranteed 1:1 USD carry-through from the deposit moment. "
+                "Vault share value can differ from the deposit asset's spot value because the position is represented by vault shares "
+                "and the docs describe PPS-based value reporting rather than a fixed deposit-dollar display. "
+                "If you want a wallet-specific reconciliation after that mechanics explanation, share the exact account context for investigation."
+            )
+
+        async def fail_search_vaults(*args, **kwargs) -> str:
+            raise AssertionError("Vault search should not run for the closed-1431 value-drop replay.")
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            with patch("tools_lib.core_search_vaults", new=fail_search_vaults):
+                outcome = await self._run_ticket_flow(
+                    "Hi\n"
+                    "I staked 0.2 ETH about a week ago on the yCVR pool:\n"
+                    "https://yearn.fi/vaults/1/0x27B5739e22ad9033bcBf192059122d163b60349D\n"
+                    "transaction:\n"
+                    "https://etherscan.io/tx/0x720e06726fe8482bf0d297494ee4e569dd663e65c77f2d1b5c694a7af724565b\n\n"
+                    "What I don't understand is that the 0.2 ETH, also a week ago was about $400 in value.\n"
+                    "But my staked value on the pool is only about $278 as the transaction also states.\n\n"
+                    "Did I just instantly lose about 30% upon staking or am I missing something?",
+                    channel_id=9040,
+                )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(docs_calls), 1)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertTrue("pps" in lowered or "vault share" in lowered or "value" in lowered)
+        self.assertNoDataLookupDetour(lowered)
+        self.assertNotIn("wallet address", lowered)
+        self.assertNotIn("withdrawals", lowered)
+
     async def test_onboarding_question_uses_docs_backed_getting_started_answer_without_yfi_detour(
         self,
     ) -> None:
@@ -543,6 +582,27 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertNotIn("share more details", lowered)
         self.assertIn("cannot engage", lowered)
 
+    async def test_closed_1433_reward_seeking_issue_report_uses_security_process_boundary(
+        self,
+    ) -> None:
+        outcome = await self._run_ticket_flow(
+            "Good day team, me and my team discovered an issue that should be addressed "
+            "and hope to be rewarded for our efforts",
+            channel_id=9041,
+        )
+
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertTrue(
+            "docs.yearn.fi/developers/security" in lowered
+            or "github.com/yearn/yearn-security" in lowered
+            or "security@yearn.finance" in lowered
+        )
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
+        self.assertNotIn("describe the bug", lowered)
+        self.assertNoGenericBugTriage(lowered)
+
     async def test_security_report_gist_submission_with_no_concrete_claim_requests_specifics_before_handoff(
         self,
     ) -> None:
@@ -592,6 +652,36 @@ class LlmSupportAnswerTests(LlmE2EBase):
         )
         self.assertNoGenericBugTriage(lowered)
         self.assertNotIn("{human_handoff_tag_placeholder}", lowered)
+
+    async def test_ticket_1462_reward_distribution_question_replays_to_docs_not_generic_ack(
+        self,
+    ) -> None:
+        docs_calls: list[str] = []
+
+        async def fake_answer_from_docs(user_query: str) -> str:
+            docs_calls.append(user_query)
+            return (
+                "Harvest can claim rewards before they are swapped and realized into the vault position, so delayed distribution can be normal. "
+                "Thresholds or waiting periods mentioned informally are not the same thing as a guaranteed immediate distribution trigger. "
+                "If you have a specific failed transaction or a stuck action, share that evidence for investigation."
+            )
+
+        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+            outcome = await self._run_ticket_flow(
+                "Hi. I have vaults cvxcrv. Awards are not distributed. How does this happen? "
+                "How long should I wait? I already asked, I was told that this happens when the rewards "
+                "are more than $ 300, but already more than $ 400. Nothing happens.",
+                channel_id=9042,
+            )
+
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertGreaterEqual(len(docs_calls), 1)
+        lowered = outcome.raw_final_reply.lower()
+        self.assertIn("rewards", lowered)
+        self.assertTrue("delay" in lowered or "normal" in lowered)
+        self.assertNoDataLookupDetour(lowered)
+        self.assertNotIn("what would you like me to do with this address", lowered)
+        self.assertNotIn("okay, please describe your issue", lowered)
 
     async def test_security_report_gist_submission_uses_repo_pretriage_before_answering(
         self,
