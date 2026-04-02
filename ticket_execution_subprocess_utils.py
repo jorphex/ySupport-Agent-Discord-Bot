@@ -5,6 +5,8 @@ import json
 import logging
 import os
 from pathlib import Path
+import signal
+import subprocess
 from typing import Any, Sequence
 
 
@@ -89,6 +91,7 @@ async def run_bounded_subprocess(
     metadata: dict[str, Any],
     artifact_run_dir: Path | None,
 ) -> str:
+    creation_kwargs = _subprocess_creation_kwargs()
     process = await asyncio.create_subprocess_exec(
         *command,
         stdin=asyncio.subprocess.PIPE,
@@ -96,6 +99,7 @@ async def run_bounded_subprocess(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=env,
+        **creation_kwargs,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -103,8 +107,7 @@ async def run_bounded_subprocess(
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError as exc:
-        process.kill()
-        await process.wait()
+        await _terminate_subprocess(process)
         write_execution_artifacts(
             artifact_run_dir,
             stdout_text="",
@@ -130,3 +133,27 @@ async def run_bounded_subprocess(
     if len(stdout_text) > max_output_chars:
         raise RuntimeError(oversized_stdout_message)
     return stdout_text
+
+
+def _subprocess_creation_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        return {
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+        }
+    return {
+        "start_new_session": True,
+    }
+
+
+async def _terminate_subprocess(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        await process.wait()

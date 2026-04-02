@@ -1,12 +1,15 @@
+import asyncio
 import json
 import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import dataclass
 from unittest.mock import patch
 
+from ticket_execution_subprocess_utils import run_bounded_subprocess
 from ticket_investigation_json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     FailoverTicketExecutionJsonEndpoint,
@@ -459,6 +462,56 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     wants_bug_review_status=False,
                 ).to_json()
             )
+
+    async def test_run_bounded_subprocess_kills_spawned_child_processes_on_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            child_pid_path = os.path.join(temp_dir, "child_pid.txt")
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib, subprocess, sys, time; "
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                    f"pathlib.Path({child_pid_path!r}).write_text(str(child.pid), encoding='utf-8'); "
+                    "time.sleep(60)"
+                ),
+            ]
+
+            with self.assertRaises(RuntimeError):
+                await run_bounded_subprocess(
+                    command=command,
+                    stdin_text="",
+                    cwd=None,
+                    env=dict(os.environ),
+                    timeout_seconds=0.2,
+                    max_output_chars=1000,
+                    max_error_chars=1000,
+                    timeout_message="timed out",
+                    empty_stdout_message="empty",
+                    oversized_stdout_message="oversized",
+                    metadata={},
+                    artifact_run_dir=None,
+                )
+
+            deadline = time.time() + 5
+            child_pid = None
+            while time.time() < deadline:
+                if os.path.exists(child_pid_path):
+                    child_pid = int(open(child_pid_path, encoding="utf-8").read().strip())
+                    break
+                await asyncio.sleep(0.05)
+
+            self.assertIsNotNone(child_pid)
+            assert child_pid is not None
+
+            while time.time() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                self.fail("Timed-out subprocess left a spawned child process running.")
 
     async def test_subprocess_json_endpoint_uses_explicit_env_without_parent_inheritance(self) -> None:
         original_blocked = os.environ.get("BLOCKED_TEST_ENV")
