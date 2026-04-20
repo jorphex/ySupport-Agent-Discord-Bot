@@ -12,6 +12,7 @@ from discord_api import DISCORD_API_BASE, discord_get_json
 class TranscriptMessage:
     id: str
     timestamp: str
+    author_id: str
     author_name: str
     author_is_bot: bool
     content: str
@@ -22,6 +23,9 @@ class TranscriptMessage:
 class ChannelMetadata:
     id: str
     name: str
+
+
+SUPPORT_BOT_NAMES = {"ysupport"}
 
 
 def extract_channel_id(channel_or_link: str) -> str:
@@ -65,6 +69,7 @@ def fetch_channel_metadata(channel_id: str) -> ChannelMetadata:
 
 
 def normalize_message(raw_message: dict[str, Any]) -> TranscriptMessage:
+    author = raw_message.get("author", {})
     attachments = tuple(
         attachment.get("url", "")
         for attachment in raw_message.get("attachments", [])
@@ -76,21 +81,75 @@ def normalize_message(raw_message: dict[str, Any]) -> TranscriptMessage:
     return TranscriptMessage(
         id=str(raw_message["id"]),
         timestamp=str(raw_message["timestamp"]),
-        author_name=str(raw_message.get("author", {}).get("global_name") or raw_message.get("author", {}).get("username") or "unknown"),
-        author_is_bot=bool(raw_message.get("author", {}).get("bot")),
+        author_id=str(author.get("id") or ""),
+        author_name=str(author.get("global_name") or author.get("username") or "unknown"),
+        author_is_bot=bool(author.get("bot")),
         content=content,
         attachments=attachments,
     )
 
 
-def render_transcript(messages: Iterable[TranscriptMessage]) -> str:
-    rendered_lines: list[str] = []
+def _normalize_speaker_key(message: TranscriptMessage) -> str:
+    author_id = message.author_id.strip()
+    if author_id:
+        return author_id
+    return message.author_name.strip().lower()
+
+
+def _speaker_role(message: TranscriptMessage, *, ticket_user_key: str | None) -> str:
+    if message.author_is_bot:
+        if message.author_name.strip().lower() in SUPPORT_BOT_NAMES:
+            return "support_bot"
+        return "other_bot"
+    if ticket_user_key and _normalize_speaker_key(message) == ticket_user_key:
+        return "ticket_user"
+    return "human_contributor"
+
+
+def _collect_speaker_summary(messages: list[TranscriptMessage], *, ticket_user_key: str | None) -> list[str]:
+    speakers_by_role: dict[str, list[str]] = {
+        "ticket_user": [],
+        "support_bot": [],
+        "human_contributor": [],
+        "other_bot": [],
+    }
+    seen_names_by_role: dict[str, set[str]] = {role: set() for role in speakers_by_role}
+
     for message in messages:
+        role = _speaker_role(message, ticket_user_key=ticket_user_key)
+        speaker_name = message.author_name.strip() or "unknown"
+        normalized_name = speaker_name.lower()
+        if normalized_name in seen_names_by_role[role]:
+            continue
+        seen_names_by_role[role].add(normalized_name)
+        speakers_by_role[role].append(speaker_name)
+
+    lines = ["Speakers:"]
+    for role in ("ticket_user", "support_bot", "human_contributor", "other_bot"):
+        names = speakers_by_role[role]
+        if not names:
+            continue
+        lines.append(f"- {role}: {', '.join(names)}")
+    return lines
+
+
+def render_transcript(messages: Iterable[TranscriptMessage]) -> str:
+    message_list = list(messages)
+    ticket_user_key = next(
+        (_normalize_speaker_key(message) for message in message_list if not message.author_is_bot),
+        None,
+    )
+    rendered_lines: list[str] = []
+    if message_list:
+        rendered_lines.extend(_collect_speaker_summary(message_list, ticket_user_key=ticket_user_key))
+        rendered_lines.append("")
+    for message in message_list:
         try:
             timestamp = datetime.fromisoformat(message.timestamp.replace("Z", "+00:00")).isoformat()
         except ValueError:
             timestamp = message.timestamp
-        speaker = f"{message.author_name}{' [bot]' if message.author_is_bot else ''}"
+        speaker_role = _speaker_role(message, ticket_user_key=ticket_user_key)
+        speaker = f"{speaker_role}({message.author_name})"
         rendered_lines.append(f"[{timestamp}] {speaker}: {message.content}")
         for attachment_url in message.attachments:
             rendered_lines.append(f"  attachment: {attachment_url}")
@@ -138,8 +197,20 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "id": message.id,
                     "timestamp": message.timestamp,
+                    "author_id": message.author_id,
                     "author_name": message.author_name,
                     "author_is_bot": message.author_is_bot,
+                    "speaker_role": _speaker_role(
+                        message,
+                        ticket_user_key=next(
+                            (
+                                _normalize_speaker_key(candidate)
+                                for candidate in normalized_messages
+                                if not candidate.author_is_bot
+                            ),
+                            None,
+                        ),
+                    ),
                     "content": message.content,
                     "attachments": list(message.attachments),
                 }

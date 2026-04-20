@@ -279,7 +279,7 @@ class TicketBot(discord.Client):
                     result: RunResult = await self.runner.run(
                         starting_agent=_resolve_agent(agent_key),
                         input=input_list,
-                        max_turns=5,
+                        max_turns=config.MAX_PUBLIC_TRIGGER_TURNS,
                         run_config=run_config,
                         context=public_run_context
                     )
@@ -307,6 +307,29 @@ class TicketBot(discord.Client):
                     public_conversations.pop(original_author_id, None)
                     await original_message.reply(
                         _guardrail_tripwire_reply(e),
+                        mention_author=False,
+                        suppress_embeds=True,
+                    )
+                except MaxTurnsExceeded:
+                    logging.warning(
+                        "Max turns (%s) exceeded during public trigger run for user %s in channel %s.",
+                        config.MAX_PUBLIC_TRIGGER_TURNS,
+                        original_author_id,
+                        message.channel.id,
+                    )
+                    public_conversations.pop(original_author_id, None)
+                    if public_run_context.repo_search_calls:
+                        reply_text = (
+                            "I hit an internal analysis limit while reviewing repo evidence for that request. "
+                            f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to help."
+                        )
+                    else:
+                        reply_text = (
+                            "I hit an internal analysis limit while working on that request. "
+                            f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to help."
+                        )
+                    await original_message.reply(
+                        reply_text,
                         mention_author=False,
                         suppress_embeds=True,
                     )

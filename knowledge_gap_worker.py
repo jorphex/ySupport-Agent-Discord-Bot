@@ -9,6 +9,11 @@ from typing import Optional
 import config
 from discord_api import DISCORD_API_BASE, discord_get_json, discord_post_json
 from knowledge_gap_reporting import (
+    BotBehaviorGapExtraction,
+    DocsGapExtraction,
+    FaqCandidateExtraction,
+    IssueDraftExtraction,
+    ProductConfusionExtraction,
     KnowledgeGapCandidate,
     KnowledgeGapReport,
     PreparedTicketTranscript,
@@ -28,6 +33,11 @@ from ticket_transcript_fetch import (
 from utils import split_long_message
 
 __all__ = [
+    "BotBehaviorGapExtraction",
+    "DocsGapExtraction",
+    "FaqCandidateExtraction",
+    "IssueDraftExtraction",
+    "ProductConfusionExtraction",
     "KnowledgeGapCandidate",
     "KnowledgeGapReport",
     "PreparedTicketTranscript",

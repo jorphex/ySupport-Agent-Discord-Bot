@@ -1,8 +1,9 @@
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from unittest.mock import patch
 
-from agents import RunContextWrapper, Runner
+from agents import MaxTurnsExceeded, RunContextWrapper, Runner
 import discord
 
 from bot_behavior import SECURITY_VENDOR_BOUNDARY_MESSAGE
@@ -18,6 +19,8 @@ from state import (
     last_wallet_by_channel,
     pending_messages,
     pending_wallet_confirmation_by_channel,
+    public_conversations,
+    PublicConversation,
 )
 from ticket_investigation_worker import TicketInvestigationWorker
 from support_agents import (
@@ -660,6 +663,53 @@ class _FakeDiscordChannel:
         return _FakeTypingContext()
 
 
+class _FakeOriginalAuthor:
+    def __init__(self, author_id: int, *, bot: bool = False):
+        self.id = author_id
+        self.bot = bot
+
+
+class _FakeOriginalMessage:
+    def __init__(self, author_id: int, content: str):
+        self.author = _FakeOriginalAuthor(author_id)
+        self.content = content
+        self.replies: list[tuple[str, dict]] = []
+
+    async def reply(self, content: str, **kwargs):
+        self.replies.append((content, kwargs))
+
+
+class _FakePublicChannel(_FakeDiscordChannel):
+    def __init__(self, channel_id: int, original_message: _FakeOriginalMessage):
+        super().__init__(channel_id)
+        self._original_message = original_message
+
+    async def fetch_message(self, message_id: int):
+        return self._original_message
+
+
+class _FakeTriggerReference:
+    def __init__(self, message_id: int):
+        self.message_id = message_id
+
+
+class _FakeTriggerAuthor:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _FakeTriggerMessage:
+    def __init__(self, channel: _FakePublicChannel, *, reference_message_id: int):
+        self.id = 999
+        self.channel = channel
+        self.reference = _FakeTriggerReference(reference_message_id)
+        self.author = _FakeTriggerAuthor("tester")
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
 class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_process_ticket_message_uses_same_resolved_wallet_for_ack_and_turn_input(self) -> None:
         channel_id = 64
@@ -759,6 +809,56 @@ class _FakeRunner:
 
 
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(self) -> None:
+        original_author_id = 73
+        channel_id = 74
+        original_message = _FakeOriginalMessage(
+            author_id=original_author_id,
+            content="How is the stYFI APY calculated?",
+        )
+        trigger_channel = _FakePublicChannel(channel_id, original_message)
+        trigger_message = _FakeTriggerMessage(
+            trigger_channel,
+            reference_message_id=12345,
+        )
+
+        class _FailingPublicRunner:
+            def __init__(self):
+                self.calls: list[dict] = []
+
+            async def run(self, **kwargs):
+                self.calls.append(kwargs)
+                raise MaxTurnsExceeded("Max turns exceeded")
+
+        fake_runner = _FailingPublicRunner()
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.runner = fake_runner
+
+        public_conversations[original_author_id] = PublicConversation(
+            history=[{"role": "assistant", "content": "Earlier context"}],
+            last_interaction_time=datetime.now(timezone.utc),
+        )
+        try:
+            with (
+                patch.object(config, "MAX_PUBLIC_TRIGGER_TURNS", 9),
+                patch.object(config, "HUMAN_HANDOFF_TARGET_USER_ID", "999"),
+                patch("ysupport.select_starting_agent", return_value="docs"),
+            ):
+                handled = await bot._handle_public_trigger_message(trigger_message, "y")
+        finally:
+            public_conversations.pop(original_author_id, None)
+
+        self.assertTrue(handled)
+        self.assertTrue(trigger_message.deleted)
+        self.assertEqual(len(fake_runner.calls), 1)
+        self.assertEqual(fake_runner.calls[0]["max_turns"], 9)
+        self.assertNotIn(original_author_id, public_conversations)
+        self.assertEqual(len(original_message.replies), 1)
+        self.assertIn("internal analysis limit", original_message.replies[0][0].lower())
+        self.assertIn("<@999>", original_message.replies[0][0])
+        self.assertFalse(original_message.replies[0][1]["mention_author"])
+        self.assertTrue(original_message.replies[0][1]["suppress_embeds"])
+
     async def test_resolve_freeform_starting_agent_reuses_ticket_router_for_public_lane_selection(self) -> None:
         fake_runner = _FakeRunner(
             [
@@ -1306,6 +1406,22 @@ class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
         assert prompt is not None
         self.assertIn("initial_button_intent: other_free_form", prompt)
         self.assertIn("is_public_trigger: false", prompt)
+
+    async def test_docs_agent_system_prompt_includes_compact_mechanics_answer_rules(self) -> None:
+        context = BotRunContext(
+            channel_id=71,
+            project_context="yearn",
+            is_public_trigger=True,
+        )
+        prompt = await yearn_docs_qa_agent.get_system_prompt(RunContextWrapper(context))
+
+        self.assertIsNotNone(prompt)
+        assert prompt is not None
+        self.assertIn("Synthesize Across Official Sources", prompt)
+        self.assertIn("Question-Order Answers", prompt)
+        self.assertIn("No Add-On Components", prompt)
+        self.assertIn("Do not default to a general walkthrough", prompt)
+        self.assertIn("closest supported mechanism in one sentence", prompt)
 
     async def test_bug_agent_system_prompt_keeps_handoff_placeholder(self) -> None:
         context = BotRunContext(

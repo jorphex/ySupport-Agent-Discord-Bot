@@ -33,22 +33,24 @@ class TicketTranscriptFetchTests(unittest.TestCase):
                 "id": "1",
                 "timestamp": "2026-03-22T11:08:00.000000+00:00",
                 "content": "",
-                "author": {"username": "ySupport", "bot": True},
+                "author": {"id": "42", "username": "ySupport", "bot": True},
                 "attachments": [{"url": "https://cdn.example/test.png"}],
             }
         )
 
+        self.assertEqual(normalized.author_id, "42")
         self.assertEqual(normalized.author_name, "ySupport")
         self.assertTrue(normalized.author_is_bot)
         self.assertEqual(normalized.content, "(attachment only)")
         self.assertEqual(normalized.attachments, ("https://cdn.example/test.png",))
 
-    def test_render_transcript_formats_messages_plainly(self) -> None:
+    def test_render_transcript_adds_speaker_roles_and_summary(self) -> None:
         transcript = render_transcript(
             [
                 TranscriptMessage(
                     id="1",
                     timestamp="2026-03-22T11:08:00.000000+00:00",
+                    author_id="100",
                     author_name="User",
                     author_is_bot=False,
                     content="hello",
@@ -57,16 +59,31 @@ class TicketTranscriptFetchTests(unittest.TestCase):
                 TranscriptMessage(
                     id="2",
                     timestamp="2026-03-22T11:09:00.000000+00:00",
+                    author_id="200",
                     author_name="ySupport",
                     author_is_bot=True,
                     content="(attachment only)",
                     attachments=("https://cdn.example/test.png",),
                 ),
+                TranscriptMessage(
+                    id="3",
+                    timestamp="2026-03-22T11:10:00.000000+00:00",
+                    author_id="300",
+                    author_name="Contributor",
+                    author_is_bot=False,
+                    content="looking into it",
+                    attachments=(),
+                ),
             ]
         )
 
-        self.assertIn("[2026-03-22T11:08:00+00:00] User: hello", transcript)
-        self.assertIn("[2026-03-22T11:09:00+00:00] ySupport [bot]: (attachment only)", transcript)
+        self.assertIn("Speakers:", transcript)
+        self.assertIn("- ticket_user: User", transcript)
+        self.assertIn("- support_bot: ySupport", transcript)
+        self.assertIn("- human_contributor: Contributor", transcript)
+        self.assertIn("[2026-03-22T11:08:00+00:00] ticket_user(User): hello", transcript)
+        self.assertIn("[2026-03-22T11:09:00+00:00] support_bot(ySupport): (attachment only)", transcript)
+        self.assertIn("[2026-03-22T11:10:00+00:00] human_contributor(Contributor): looking into it", transcript)
         self.assertIn("attachment: https://cdn.example/test.png", transcript)
 
     def test_main_emits_json_with_normalized_messages(self) -> None:
@@ -83,7 +100,7 @@ class TicketTranscriptFetchTests(unittest.TestCase):
                         "id": "1",
                         "timestamp": "2026-03-22T11:08:00.000000+00:00",
                         "content": "hello",
-                        "author": {"username": "User", "bot": False},
+                        "author": {"id": "100", "username": "User", "bot": False},
                         "attachments": [],
                     }
                 ],
@@ -97,7 +114,9 @@ class TicketTranscriptFetchTests(unittest.TestCase):
         self.assertEqual(payload["channel_id"], "1484802638158626887")
         self.assertEqual(payload["channel_name"], "ticket-json")
         self.assertEqual(payload["message_count"], 1)
+        self.assertEqual(payload["messages"][0]["author_id"], "100")
         self.assertEqual(payload["messages"][0]["author_name"], "User")
+        self.assertEqual(payload["messages"][0]["speaker_role"], "ticket_user")
 
     def test_main_returns_nonzero_on_invalid_input(self) -> None:
         stderr = io.StringIO()
