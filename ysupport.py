@@ -266,6 +266,7 @@ class TicketBot(discord.Client):
             public_run_context = BotRunContext(
                 channel_id=message.channel.id,
                 is_public_trigger=True,
+                conversation_owner_id=original_author_id,
                 project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
             )
 

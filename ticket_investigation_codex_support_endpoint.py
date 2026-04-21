@@ -314,6 +314,10 @@ def _build_codex_support_execution_bundle(
 def _conversation_key_for_request(
     request: TicketExecutionTransportRequest,
 ) -> str | None:
+    if request.run_context.get("is_public_trigger"):
+        conversation_owner_id = request.run_context.get("conversation_owner_id")
+        if conversation_owner_id is not None:
+            return f"public_user:{conversation_owner_id}"
     channel_id = request.run_context.get("channel_id")
     if channel_id is None:
         return None

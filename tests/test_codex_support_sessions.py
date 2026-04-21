@@ -69,6 +69,34 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             "ticket:123",
         )
 
+    def test_conversation_key_for_public_request_prefers_owner_id(self) -> None:
+        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
+        request = TicketExecutionTransportRequest(
+            aggregated_text="hello",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 123,
+                "is_public_trigger": True,
+                "conversation_owner_id": 777,
+                "project_context": "yearn",
+                "initial_button_intent": None,
+            },
+            investigation_job={
+                "channel_id": 123,
+                "requested_intent": None,
+                "mode": "idle",
+                "evidence": {},
+            },
+            workflow_name="tests.public_session_key",
+            wants_bug_review_status=False,
+        )
+
+        self.assertEqual(
+            manager.conversation_key_for_request(request),
+            "public_user:777",
+        )
+
     def test_summary_reports_active_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)

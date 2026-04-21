@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
@@ -32,6 +33,7 @@ class BotRunContext:
     channel_id: int
     category_id: Optional[int] = None
     is_public_trigger: bool = False
+    conversation_owner_id: Optional[int] = None
     project_context: Literal["yearn", "unknown"] = "unknown"
     initial_button_intent: Optional[str] = None
     repo_search_calls: int = 0
@@ -201,7 +203,8 @@ def hydrate_ticket_state(channel_id: int) -> None:
 
 
 def persist_ticket_state(channel_id: int) -> None:
-    _ensure_state_dirs()
+    if not _ensure_state_dirs():
+        return
     payload = {
         "channel_id": channel_id,
         "history": list(conversation_threads.get(channel_id, [])),
@@ -216,10 +219,7 @@ def persist_ticket_state(channel_id: int) -> None:
         "channel_intent_after_button": channel_intent_after_button.get(channel_id),
         "bug_report_debounce": channel_id in bug_report_debounce_channels,
     }
-    (_TICKET_STATE_DIR / f"{channel_id}.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    _write_json(_TICKET_STATE_DIR / f"{channel_id}.json", payload)
 
 
 def clear_ticket_channel_state(
@@ -244,7 +244,7 @@ def clear_ticket_channel_state(
         monitored_new_channels.discard(channel_id)
     reset_ticket_codex_session(channel_id)
     if delete_persisted:
-        (_TICKET_STATE_DIR / f"{channel_id}.json").unlink(missing_ok=True)
+        _safe_unlink(_TICKET_STATE_DIR / f"{channel_id}.json")
         return
     persist_ticket_state(channel_id)
 
@@ -269,32 +269,39 @@ def persist_public_conversation(author_id: int) -> None:
     conversation = public_conversations.get(author_id)
     if conversation is None:
         return
-    _ensure_state_dirs()
+    if not _ensure_state_dirs():
+        return
     payload = {
         "author_id": author_id,
         "history": list(conversation.history),
         "last_interaction_time": _format_datetime(conversation.last_interaction_time),
         "investigation_job": _serialize_investigation_job(conversation.investigation_job),
     }
-    (_PUBLIC_STATE_DIR / f"{author_id}.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    _write_json(_PUBLIC_STATE_DIR / f"{author_id}.json", payload)
 
 
 def clear_public_conversation(author_id: int) -> None:
     public_conversations.pop(author_id, None)
-    (_PUBLIC_STATE_DIR / f"{author_id}.json").unlink(missing_ok=True)
+    _safe_unlink(_PUBLIC_STATE_DIR / f"{author_id}.json")
+    reset_public_codex_session(author_id)
 
 
 def reset_ticket_codex_session(channel_id: int) -> None:
+    _reset_codex_session(f"ticket:{channel_id}")
+
+
+def reset_public_codex_session(author_id: int) -> None:
+    _reset_codex_session(f"public_user:{author_id}")
+
+
+def _reset_codex_session(conversation_key: str) -> None:
     if not config.TICKET_EXECUTION_CODEX_SESSION_DIR:
         return
     manager = CodexSupportSessionManager(
         config.TICKET_EXECUTION_CODEX_SESSION_DIR,
         max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
     )
-    manager.reset(f"ticket:{channel_id}")
+    manager.reset(conversation_key)
 
 
 def _ticket_state_is_loaded(channel_id: int) -> bool:
@@ -313,9 +320,14 @@ def _ticket_state_is_loaded(channel_id: int) -> bool:
     )
 
 
-def _ensure_state_dirs() -> None:
-    _TICKET_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _PUBLIC_STATE_DIR.mkdir(parents=True, exist_ok=True)
+def _ensure_state_dirs() -> bool:
+    try:
+        _TICKET_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _PUBLIC_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logging.error("Failed to create Discord state directories: %s", exc)
+        return False
+    return True
 
 
 def _serialize_investigation_job(job: TicketInvestigationJob | None) -> dict[str, Any] | None:
@@ -362,6 +374,28 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> bool:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        temp_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+    except OSError as exc:
+        logging.error("Failed to write Discord state file %s: %s", path, exc)
+        _safe_unlink(temp_path)
+        return False
+    return True
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logging.warning("Failed to remove Discord state file %s: %s", path, exc)
 
 
 def _format_datetime(value: datetime | None) -> str | None:
