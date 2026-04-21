@@ -52,11 +52,34 @@ def _parse_block_identifier(value: Optional[str]) -> Optional[Union[str, int]]:
     if value in (None, ""):
         return None
     normalized = value.strip().lower()
+    relative_latest_match = re.fullmatch(r"latest([+-]\d+)", normalized)
+    if relative_latest_match:
+        raise ValueError(
+            "Relative block identifiers like latest-50000 require a latest_block value."
+        )
     if normalized in {"latest", "earliest", "pending", "safe", "finalized"}:
         return normalized
     if normalized.startswith("0x"):
         return int(normalized, 16)
     return int(normalized)
+
+
+def _parse_block_identifier_with_latest(
+    value: Optional[str],
+    *,
+    latest_block: Optional[int],
+) -> Optional[Union[str, int]]:
+    if value in (None, ""):
+        return None
+    normalized = value.strip().lower()
+    relative_latest_match = re.fullmatch(r"latest([+-]\d+)", normalized)
+    if relative_latest_match:
+        if latest_block is None:
+            raise ValueError(
+                "Relative block identifiers like latest-50000 require a latest_block value."
+            )
+        return max(latest_block + int(relative_latest_match.group(1)), 0)
+    return _parse_block_identifier(value)
 
 
 def _parse_function_signature(signature: str) -> tuple[str, list[str]]:
@@ -744,9 +767,18 @@ async def core_inspect_onchain(
             parsed_topics = _json_loads_or_default(topics_json, [])
             if not isinstance(parsed_topics, list):
                 return "topics_json must be a JSON array."
+            latest_block = await asyncio.to_thread(lambda: web3_instance.eth.block_number)
             filter_params: dict[str, Any] = {
-                "fromBlock": _parse_block_identifier(from_block) or "latest",
-                "toBlock": _parse_block_identifier(to_block) or "latest",
+                "fromBlock": _parse_block_identifier_with_latest(
+                    from_block,
+                    latest_block=latest_block,
+                )
+                or "latest",
+                "toBlock": _parse_block_identifier_with_latest(
+                    to_block,
+                    latest_block=latest_block,
+                )
+                or "latest",
             }
             if parsed_topics:
                 filter_params["topics"] = parsed_topics
