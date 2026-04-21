@@ -247,7 +247,7 @@ TRIAGE_AGENT_INSTRUCTIONS = (
     "   - **IF `initial_button_intent` is 'other_free_form' or is not present:** This is a free-form user message. Proceed to Step 2.\n\n"
 
     "**Step 2: Free-Form Request Workflow (if no button intent from Step 1)**\n"
-    "   a. **BD/PR/Marketing/Listing/Contribute:** (These are handled by Guardrails or Buttons and should not reach you).\n"
+    "   a. **Outer Boundary Cases:** Business-boundary, security-process, and unrelated assistant requests are handled by the outer boundary classifier and should not normally reach you.\n"
     "   b. **Initial Address Handling:** If a user provides an address (0x...) in their first message without specifying its type: ASK them to clarify if it's their wallet or a vault address before proceeding.\n"
     "   c. **Data or Specific Withdrawal Request:** If the request is about finding vaults, checking deposits/balances, or asking how to withdraw from a specific vault, AND any required addresses are known/confirmed: **IMMEDIATELY use `transfer_to_yearn_data_specialist` handoff.**\n"
     "      - Example: if the user says 'How do I withdraw from vault 0xabc on Ethereum using wallet 0x123?' you must execute the data handoff, not reply that you are transferring them.\n"

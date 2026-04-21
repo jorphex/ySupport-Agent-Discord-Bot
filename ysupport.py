@@ -116,6 +116,49 @@ async def _outer_support_boundary_reply(text: str) -> str | None:
     return None
 
 
+def _boundary_reply_from_output(output_info: dict[str, Any]) -> str | None:
+    if output_info.get("tripwire_triggered") and output_info.get("message"):
+        return str(output_info["message"])
+    return None
+
+
+def _render_support_reply(raw_reply: str) -> str:
+    actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
+    return raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+
+
+def _build_turn_request(
+    *,
+    aggregated_text: str,
+    input_list: List[TResponseInputItem],
+    current_history: List[TResponseInputItem],
+    run_context: BotRunContext,
+    investigation_job: TicketInvestigationJob,
+    workflow_name: str,
+    precomputed_boundary: dict[str, Any] | None,
+) -> TicketTurnRequest:
+    return TicketTurnRequest(
+        aggregated_text=aggregated_text,
+        input_list=input_list,
+        current_history=current_history,
+        run_context=run_context,
+        investigation_job=investigation_job,
+        workflow_name=workflow_name,
+        precomputed_boundary=precomputed_boundary,
+    )
+
+
+def _public_workflow_name(channel_id: int) -> str:
+    return f"Public Stateful Trigger-{channel_id}"
+
+
+def _ticket_workflow_name(run_context: BotRunContext) -> str:
+    return (
+        f"Ticket Channel {run_context.channel_id} ({run_context.project_context}, "
+        f"Button Intent: {run_context.initial_button_intent})"
+    )
+
+
 # Discord Bot Implementation
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
@@ -283,11 +326,7 @@ class TicketBot(discord.Client):
             )
 
             boundary_output = await _outer_support_boundary_result(original_message.content)
-            boundary_reply = (
-                str(boundary_output["message"])
-                if boundary_output.get("tripwire_triggered") and boundary_output.get("message")
-                else None
-            )
+            boundary_reply = _boundary_reply_from_output(boundary_output)
             if boundary_reply is not None:
                 public_conversations.pop(original_author_id, None)
                 clear_public_conversation(original_author_id)
@@ -301,7 +340,7 @@ class TicketBot(discord.Client):
             async with message.channel.typing():
                 try:
                     worker_result = await self.investigation_executor.execute_turn(
-                        TicketTurnRequest(
+                        _build_turn_request(
                             aggregated_text=original_message.content,
                             input_list=current_history + [
                                 {"role": "user", "content": original_message.content}
@@ -309,7 +348,7 @@ class TicketBot(discord.Client):
                             current_history=current_history,
                             run_context=public_run_context,
                             investigation_job=public_investigation_job,
-                            workflow_name=f"Public Stateful Trigger-{message.channel.id}",
+                            workflow_name=_public_workflow_name(message.channel.id),
                             precomputed_boundary=boundary_output,
                         )
                     )
@@ -332,8 +371,7 @@ class TicketBot(discord.Client):
                         if flow_outcome.raw_final_reply
                         else "I could not determine a response."
                     )
-                    actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
-                    final_reply = raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+                    final_reply = _render_support_reply(raw_reply)
                     await send_long_message(message.channel, final_reply)
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(
@@ -626,11 +664,7 @@ class TicketBot(discord.Client):
                 should_stop_processing = False
 
                 boundary_output = await _outer_support_boundary_result(aggregated_text)
-                boundary_reply = (
-                    str(boundary_output["message"])
-                    if boundary_output.get("tripwire_triggered") and boundary_output.get("message")
-                    else None
-                )
+                boundary_reply = _boundary_reply_from_output(boundary_output)
                 if boundary_reply is not None:
                     final_reply = boundary_reply
                     should_stop_processing = True
@@ -641,18 +675,14 @@ class TicketBot(discord.Client):
                     )
                 else:
                     try:
-                        workflow_name = (
-                            f"Ticket Channel {channel_id} ({run_context.project_context}, "
-                            f"Button Intent: {run_context.initial_button_intent})"
-                        )
                         worker_result = await self.investigation_executor.execute_turn(
-                            TicketTurnRequest(
+                            _build_turn_request(
                                 aggregated_text=aggregated_text,
                                 input_list=input_list,
                                 current_history=current_history,
                                 run_context=run_context,
                                 investigation_job=investigation_job,
-                                workflow_name=workflow_name,
+                                workflow_name=_ticket_workflow_name(run_context),
                                 precomputed_boundary=boundary_output,
                             ),
                             hooks=TicketExecutionHooks(
@@ -664,8 +694,7 @@ class TicketBot(discord.Client):
                         conversation_threads[channel_id] = flow_outcome.conversation_history
 
                         raw_final_reply = flow_outcome.raw_final_reply
-                        actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
-                        final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+                        final_reply = _render_support_reply(raw_final_reply)
                         if flow_outcome.requires_human_handoff:
                             logging.info(
                                 "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",

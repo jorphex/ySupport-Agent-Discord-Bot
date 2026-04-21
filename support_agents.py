@@ -166,10 +166,9 @@ async def support_boundary_guardrail(
     input_data: Union[str, List[TResponseInputItem]]
 ) -> GuardrailFunctionOutput:
     """
-    Checks if the initial user input is BD/PR/Listing.
-    If it is, returns GuardrailFunctionOutput with tripwire_triggered=True
-    and the appropriate response message stored in output_info.
-    Otherwise, returns with tripwire_triggered=False.
+    Evaluates the unified outer support boundary for the current user input.
+    Returns a tripwire only when the runtime should stop normal support flow
+    and send a boundary message instead.
     """
     if isinstance(input_data, str):
         text_input = input_data
