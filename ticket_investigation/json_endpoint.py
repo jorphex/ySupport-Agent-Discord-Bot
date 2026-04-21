@@ -9,12 +9,8 @@ from typing import Protocol
 from uuid import uuid4
 
 import config
-from ticket_investigation.codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
-from ticket_investigation.codex_endpoint import (
-    CodexExecTicketExecutionJsonEndpoint,
-    build_codex_exec_allowed_prefixes,
-)
 from ticket_investigation.codex_support_endpoint import (
+    DEFAULT_CODEX_EXEC_COMMAND,
     CodexSupportTicketExecutionJsonEndpoint,
 )
 from ticket_investigation.executor import (
@@ -293,22 +289,6 @@ def _build_single_ticket_execution_json_endpoint(
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
-    if mode == "codex_exec":
-        command = list(_codex_command())
-        return CodexExecTicketExecutionJsonEndpoint(
-            repo_root=config.BASE_DIR,
-            codex_command=command,
-            model=config.TICKET_EXECUTION_CODEX_MODEL,
-            reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
-            allowed_command_prefixes=build_codex_exec_allowed_prefixes(
-                command,
-                config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES,
-            ),
-            cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
-            env=_codex_env(),
-            artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
-            run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
-        )
     if mode == "codex_support_exec":
         command = list(_codex_command())
         return CodexSupportTicketExecutionJsonEndpoint(
@@ -324,7 +304,7 @@ def _build_single_ticket_execution_json_endpoint(
             ysupport_mcp_container=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER,
             mcp_server_api_key=config.MCP_SERVER_API_KEY,
             web_search_mode=config.TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE,
-            allowed_command_prefixes=build_codex_exec_allowed_prefixes(
+            allowed_command_prefixes=_allowed_codex_prefixes(
                 command,
                 config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES,
             ),
@@ -351,9 +331,18 @@ def _codex_command() -> Sequence[str]:
 def resolve_ticket_execution_base_command(mode: str) -> list[str] | None:
     if mode == "subprocess":
         return list(_subprocess_command())
-    if mode in {"codex_exec", "codex_support_exec"}:
+    if mode == "codex_support_exec":
         return list(_codex_command())
     return None
+
+
+def _allowed_codex_prefixes(command: Sequence[str], extra_prefixes: Sequence[Sequence[str]]) -> list[list[str]]:
+    prefixes = [list(command)]
+    for prefix in extra_prefixes:
+        prefix_list = list(prefix)
+        if prefix_list not in prefixes:
+            prefixes.append(prefix_list)
+    return prefixes
 
 
 def _allowed_subprocess_prefixes(command: Sequence[str]) -> list[list[str]]:

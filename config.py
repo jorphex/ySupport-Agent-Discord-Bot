@@ -306,8 +306,8 @@ def ticket_execution_runtime_summary() -> str:
     if TICKET_EXECUTION_CANARY_ENDPOINT:
         parts.append(f"canary={TICKET_EXECUTION_CANARY_ENDPOINT}")
     if (
-        TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT in {"codex_exec", "codex_support_exec"}
+        TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
     ):
         parts.append(f"codex_model={TICKET_EXECUTION_CODEX_MODEL or 'default'}")
         parts.append(
@@ -329,10 +329,7 @@ def ticket_execution_runtime_summary() -> str:
 
 def ticket_execution_runtime_warnings() -> list[str]:
     warnings: list[str] = []
-    if (
-        TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
-        and not TICKET_EXECUTION_FALLBACK_ENDPOINT
-    ):
+    if TICKET_EXECUTION_ENDPOINT == "codex_support_exec" and not TICKET_EXECUTION_FALLBACK_ENDPOINT:
         warnings.append(
             f"primary {TICKET_EXECUTION_ENDPOINT} is enabled without a fallback endpoint"
         )
@@ -347,8 +344,8 @@ def ticket_execution_runtime_warnings() -> list[str]:
 
 def validate_ticket_execution_runtime_config() -> None:
     uses_codex = (
-        TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT in {"codex_exec", "codex_support_exec"}
+        TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
     )
     uses_codex_support = (
         TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
@@ -359,7 +356,7 @@ def validate_ticket_execution_runtime_config() -> None:
     )
     if uses_codex and not has_persistent_workspace:
         raise ValueError(
-            "codex_exec requires TICKET_EXECUTION_ARTIFACT_DIR or "
+            "codex_support_exec requires TICKET_EXECUTION_ARTIFACT_DIR or "
             "TICKET_EXECUTION_RUN_DIR_ROOT so each run has persistent workspace state."
         )
     if uses_codex_support and not TICKET_EXECUTION_CODEX_HOME:

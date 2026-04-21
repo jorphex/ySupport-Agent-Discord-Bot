@@ -14,11 +14,9 @@ from ticket_execution.status import (
     build_ticket_execution_status,
     main as ticket_execution_status_main,
 )
-from ticket_investigation.codex_bundle import (
-    DEFAULT_CODEX_EXEC_COMMAND,
-    build_codex_ticket_execution_bundle,
+from ticket_investigation.codex_support_endpoint import (
+    CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.codex_endpoint import CodexExecTicketExecutionJsonEndpoint
 from ticket_investigation.json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     FailoverTicketExecutionJsonEndpoint,
@@ -124,7 +122,7 @@ class ConfigSummaryTests(unittest.TestCase):
         original_reasoning = config.TICKET_EXECUTION_CODEX_REASONING_EFFORT
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
             config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
             config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = "medium"
@@ -138,7 +136,7 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = original_reasoning
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
 
-        self.assertIn("primary=codex_exec", summary)
+        self.assertIn("primary=codex_support_exec", summary)
         self.assertIn("fallback=local", summary)
         self.assertIn("codex_model=gpt-5.4", summary)
         self.assertIn("codex_reasoning=medium", summary)
@@ -150,7 +148,7 @@ class ConfigSummaryTests(unittest.TestCase):
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             warnings = config.ticket_execution_runtime_warnings()
         finally:
@@ -158,7 +156,7 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
 
         self.assertIn(
-            "primary codex_exec is enabled without a fallback endpoint",
+            "primary codex_support_exec is enabled without a fallback endpoint",
             warnings,
         )
 
@@ -168,7 +166,7 @@ class ConfigSummaryTests(unittest.TestCase):
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
             config.TICKET_EXECUTION_ARTIFACT_DIR = ""
             config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
@@ -322,7 +320,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_ARTIFACT_DIR = ""
             config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
@@ -379,7 +377,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
         original_command = config.TICKET_EXECUTION_CODEX_COMMAND
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
             config.TICKET_EXECUTION_CODEX_COMMAND = [sys.executable, "-c", "print('ok')"]
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
@@ -522,7 +520,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
             config.TICKET_EXECUTION_CODEX_COMMAND = original_codex_command
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
 
-    def test_build_endpoint_returns_codex_exec_endpoint(self) -> None:
+    def test_build_endpoint_returns_codex_support_endpoint(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_command = config.TICKET_EXECUTION_CODEX_COMMAND
@@ -530,7 +528,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
             config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
@@ -545,7 +543,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = original_prefixes
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
 
-        self.assertIsInstance(endpoint, CodexExecTicketExecutionJsonEndpoint)
+        self.assertIsInstance(endpoint, CodexSupportTicketExecutionJsonEndpoint)
         self.assertEqual(endpoint.codex_command[:2], ["codex", "exec"])
         self.assertEqual(endpoint.model, "gpt-5.4")
 
@@ -556,7 +554,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
         original_prefixes = config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
+            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
             config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
@@ -570,7 +568,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
 
         self.assertIsInstance(endpoint, FailoverTicketExecutionJsonEndpoint)
-        self.assertIsInstance(endpoint.primary, CodexExecTicketExecutionJsonEndpoint)
+        self.assertIsInstance(endpoint.primary, CodexSupportTicketExecutionJsonEndpoint)
         self.assertIsInstance(endpoint.fallback, ExecutorBackedTicketExecutionJsonEndpoint)
 
 
@@ -734,62 +732,6 @@ class TicketTransportTests(unittest.TestCase):
         self.assertEqual(updated_job.mode, "investigating")
         self.assertEqual(updated_job.current_specialty, "bug")
 
-
-class CodexBundleTests(unittest.TestCase):
-    def test_build_codex_ticket_execution_bundle_writes_expected_files(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bundle = build_codex_ticket_execution_bundle(
-                request_json='{"example":"request"}',
-                run_dir=temp_dir,
-                repo_root="/root/bots/discord/ysupport",
-            )
-
-            self.assertEqual(
-                bundle.command[: len(DEFAULT_CODEX_EXEC_COMMAND)],
-                DEFAULT_CODEX_EXEC_COMMAND,
-            )
-            self.assertTrue(bundle.request_path.exists())
-            self.assertTrue(bundle.response_schema_path.exists())
-            self.assertTrue(bundle.prompt_path.exists())
-            self.assertIn("request.json", bundle.prompt_text)
-            self.assertIn("response_schema.json", bundle.prompt_text)
-            self.assertIsNone(bundle.expected_response_path)
-            self.assertIn("--output-schema", bundle.command)
-            self.assertIn("--add-dir", bundle.command)
-
-    def test_build_codex_ticket_execution_bundle_appends_model_when_requested(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bundle = build_codex_ticket_execution_bundle(
-                request_json='{"example":"request"}',
-                run_dir=temp_dir,
-                repo_root="/root/bots/discord/ysupport",
-                model="gpt-5.4",
-                reasoning_effort="medium",
-            )
-
-            self.assertIn("-m", bundle.command)
-            self.assertIn("gpt-5.4", bundle.command)
-            self.assertIn("-c", bundle.command)
-            self.assertIn('model_reasoning_effort="medium"', bundle.command)
-
-    def test_build_codex_ticket_execution_bundle_writes_expected_response_for_smoke(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bundle = build_codex_ticket_execution_bundle(
-                request_json='{"example":"request"}',
-                run_dir=temp_dir,
-                repo_root="/root/bots/discord/ysupport",
-                response_json_override=(
-                    '{"flow_outcome":{"raw_final_reply":"ticket_execution_smoke_ok:codex_exec",'
-                    '"conversation_history":[],"completed_agent_key":null,'
-                    '"requires_human_handoff":false},"updated_job":{"channel_id":0,'
-                    '"mode":"idle","evidence":{"tx_hashes":[]}}}'
-                ),
-            )
-
-            self.assertIsNotNone(bundle.expected_response_path)
-            assert bundle.expected_response_path is not None
-            self.assertTrue(bundle.expected_response_path.exists())
-            self.assertIn("expected_response.json", bundle.prompt_text)
 
     def test_transport_result_json_round_trip_preserves_flow_and_job(self) -> None:
         job = TicketInvestigationJob(channel_id=98)

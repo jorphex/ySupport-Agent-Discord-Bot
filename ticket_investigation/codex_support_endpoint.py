@@ -24,12 +24,19 @@ from ticket_execution.subprocess_utils import (
     write_execution_artifacts,
 )
 from ticket_execution.workspace import TicketExecutionWorkspace
-from ticket_investigation.codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
 from ticket_investigation.executor import TicketExecutionHooks
 from ticket_investigation.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
 )
+
+DEFAULT_CODEX_EXEC_COMMAND = [
+    "codex",
+    "exec",
+    "--skip-git-repo-check",
+    "--color",
+    "never",
+]
 
 
 @dataclass

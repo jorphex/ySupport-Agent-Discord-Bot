@@ -25,12 +25,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("local", "subprocess", "codex_exec", "codex_support_exec"),
+        choices=("local", "subprocess", "codex_support_exec"),
         help="Override the primary ticket execution backend for this replay run.",
     )
     parser.add_argument(
         "--fallback-mode",
-        choices=("local", "subprocess", "codex_exec", "codex_support_exec"),
+        choices=("local", "subprocess", "codex_support_exec"),
         help="Override the fallback backend for this replay run.",
     )
     parser.add_argument(

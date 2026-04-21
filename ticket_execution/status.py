@@ -29,8 +29,8 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
 
     endpoint_build = _probe_endpoint_build()
     uses_codex = (
-        config.TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
-        or config.TICKET_EXECUTION_FALLBACK_ENDPOINT in {"codex_exec", "codex_support_exec"}
+        config.TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
+        or config.TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
     )
     status = {
         "runtime_environment": {
@@ -211,7 +211,7 @@ def _resolve_base_command(mode: str) -> list[str] | None:
     except ModuleNotFoundError:
         if mode == "subprocess":
             return [sys.executable, "-m", "ticket_investigation_worker_cli"]
-        if mode in {"codex_exec", "codex_support_exec"}:
+        if mode == "codex_support_exec":
             return [
                 "codex",
                 "exec",
