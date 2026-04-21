@@ -343,7 +343,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     def test_verify_support_turn_result_normalizes_and_passes(self) -> None:
         request = SupportTurnRequest(
-            current_user_message="help",
+            current_user_message="Can a human review this too?",
             recent_transcript=[],
             channel_type="ticket",
             channel_id=1,
@@ -376,6 +376,42 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified.handoff_reason, "needs strategist confirmation")
         self.assertEqual(verified.evidence_summary, "Checked the docs and repo.")
         self.assertEqual(verified.used_tools, ["shell", "ysupport_mcp.search_vaults"])
+
+    def test_verify_support_turn_result_downgrades_optional_handoff_offer(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="vault hasn't harvested after 10 days",
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="investigate_issue",
+            requested_intent="investigate_issue",
+            evidence={},
+            support_state={"human_handoff_active": False},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer=(
+                "Confirmed: the vault has not reported since April 8. "
+                "The dashboard looks fresh, so this does not look like stale UI data. "
+                "I can hand this off for strategist review to check why keeper activity paused."
+            ),
+            requires_human_handoff=True,
+            handoff_reason=(
+                "Public evidence confirms the missing harvests, but the specific reason "
+                "for no keeper calls needs human strategist review."
+            ),
+            evidence_summary="Checked vault harvest history.",
+            used_tools=["ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertFalse(verified.requires_human_handoff)
+        self.assertIsNone(verified.handoff_reason)
+        self.assertNotIn("hand this off", verified.answer.lower())
+        self.assertIn("dashboard looks fresh", verified.answer.lower())
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT

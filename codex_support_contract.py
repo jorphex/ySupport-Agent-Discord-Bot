@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from ticket_investigation_transport import TicketExecutionTransportRequest, TicketExecutionTransportResult
@@ -14,6 +15,48 @@ _FORBIDDEN_DISCORD_REDIRECT_PATTERNS = (
     "go to discord",
     "open a discord ticket",
     "open a ticket in discord",
+)
+_EXPLICIT_HANDOFF_REQUEST_PATTERNS = (
+    "need a human",
+    "want a human",
+    "can a human",
+    "could a human",
+    "need a person",
+    "want a person",
+    "can someone review",
+    "could someone review",
+    "need a moderator",
+    "need an admin",
+    "manual review",
+    "strategist review",
+)
+_HUMAN_ONLY_HANDOFF_REASON_PATTERNS = (
+    "moderator",
+    "admin access",
+    "server access",
+    "verification access",
+    "manual recovery",
+    "recovery",
+    "refund",
+    "wrong address",
+    "treasury",
+    "private internal",
+    "private context",
+    "account-specific",
+    "personal balance",
+    "eligibility",
+    "security process",
+    "sensitive report",
+    "receipt confirmation",
+)
+_OPTIONAL_HANDOFF_SENTENCE_PATTERNS = (
+    "hand this off",
+    "hand it off",
+    "human review",
+    "strategist review",
+    "team review",
+    "manual review",
+    "someone can review",
 )
 
 
@@ -230,13 +273,26 @@ def verify_support_turn_result(
             + ", ".join(unexpected_tools)
         )
 
-    return SupportTurnResult(
+    normalized_result = SupportTurnResult(
         answer=result.answer,
         requires_human_handoff=result.requires_human_handoff,
         handoff_reason=result.handoff_reason,
         evidence_summary=result.evidence_summary,
         used_tools=result.used_tools,
     )
+    if normalized_result.requires_human_handoff and not _handoff_is_allowed(
+        normalized_result,
+        request,
+    ):
+        normalized_result = SupportTurnResult(
+            answer=_strip_optional_handoff_language(normalized_result.answer),
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary=normalized_result.evidence_summary,
+            used_tools=normalized_result.used_tools,
+        )
+
+    return normalized_result
 
 
 def _normalize_optional_text(value: Any) -> str | None:
@@ -271,6 +327,40 @@ def _is_allowed_reported_tool(tool: str, allowed_tools: set[str]) -> bool:
             if tool == prefix or tool.startswith(prefix):
                 return True
     return False
+
+
+def _handoff_is_allowed(
+    result: SupportTurnResult,
+    request: SupportTurnRequest,
+) -> bool:
+    if request.support_state.get("human_handoff_active"):
+        return True
+    current_message = request.current_user_message.lower()
+    if any(pattern in current_message for pattern in _EXPLICIT_HANDOFF_REQUEST_PATTERNS):
+        return True
+    handoff_reason = (result.handoff_reason or "").lower()
+    return any(
+        pattern in handoff_reason for pattern in _HUMAN_ONLY_HANDOFF_REASON_PATTERNS
+    )
+
+
+def _strip_optional_handoff_language(answer: str) -> str:
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", answer.strip())
+        if sentence.strip()
+    ]
+    filtered = [
+        sentence
+        for sentence in sentences
+        if not any(
+            pattern in sentence.lower()
+            for pattern in _OPTIONAL_HANDOFF_SENTENCE_PATTERNS
+        )
+    ]
+    if not filtered:
+        return answer.strip()
+    return " ".join(filtered).strip()
 
 
 def _derive_guardrail_profile(
