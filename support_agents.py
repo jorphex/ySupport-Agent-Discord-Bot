@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Union, Literal
+from typing import Any, List, Optional, Union, Literal
 
 from pydantic import BaseModel, Field
 
@@ -146,6 +146,45 @@ def _looks_like_concrete_security_disclosure(text: str) -> bool:
     )
 
 
+def _looks_like_bd_priority_candidate(text: str) -> bool:
+    lowered = (text or "").lower()
+    candidate_terms = (
+        "list ",
+        "listing",
+        "exchange",
+        "partnership",
+        "partner ",
+        "collab",
+        "collaborat",
+        "marketing",
+        "business development",
+        "proposal",
+        "integration opportunity",
+        "vendor",
+        "phishing",
+        "takedown",
+        "brand protection",
+        "security service",
+        "security services",
+        "threat intelligence",
+        "trial",
+        "responsibly disclose",
+        "responsible disclosure",
+        "security issue",
+        "vulnerability",
+        "technical report",
+        "immunefi",
+        "security team",
+        "job",
+        "hiring",
+        "work for yearn",
+        "work with yearn",
+        "grant",
+        "bounty",
+    )
+    return any(term in lowered for term in candidate_terms)
+
+
 def _gpt5_model_settings(
     *,
     effort: str,
@@ -211,15 +250,32 @@ async def bd_priority_guardrail(
     if not text_input:
         return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
 
+    output_info = await evaluate_bd_priority_boundary(text_input)
+    if not output_info:
+        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+    return GuardrailFunctionOutput(
+        output_info=output_info,
+        tripwire_triggered=bool(output_info.get("tripwire_triggered")),
+    )
+
+
+async def evaluate_bd_priority_boundary(text_input: str) -> dict[str, Any]:
+    if not text_input.strip():
+        return {"tripwire_triggered": False}
+    if not _looks_like_bd_priority_candidate(text_input):
+        return {"tripwire_triggered": False}
     logging.info(f"[Guardrail:BD/Priority] Analyzing input: '{text_input[:100]}...'")
 
     try:
         guardrail_runner = Runner()
-        run_config_guardrail = RunConfig(workflow_name="BD/Priority Guardrail Check", tracing_disabled=True)
+        run_config_guardrail = RunConfig(
+            workflow_name="BD/Priority Guardrail Check",
+            tracing_disabled=True,
+        )
         result = await guardrail_runner.run(
             starting_agent=bd_priority_guardrail_agent,
             input=text_input,
-            run_config=run_config_guardrail
+            run_config=run_config_guardrail,
         )
         check_output = result.final_output_as(BDPriorityCheckOutput)
         effective_request_type = check_output.request_type
@@ -242,44 +298,26 @@ async def bd_priority_guardrail(
         )
 
         message_to_send = None
-        should_trigger = False
-
         if effective_request_type == "listing":
             message_to_send = LISTING_DENIAL_MESSAGE
-            should_trigger = True
         elif effective_request_type == "vendor_security":
             message_to_send = SECURITY_VENDOR_BOUNDARY_MESSAGE
-            should_trigger = True
         elif effective_request_type in ["partnership", "marketing", "other_bd"]:
             message_to_send = STANDARD_REDIRECT_MESSAGE
-            should_trigger = True
         elif effective_request_type == "job_inquiry":
             message_to_send = JOB_INQUIRY_REDIRECT_MESSAGE
-            should_trigger = True
 
-        output_info_dict = {
+        output_info: dict[str, Any] = {
             "classification": check_output.model_dump(),
             "effective_request_type": effective_request_type,
+            "tripwire_triggered": bool(message_to_send),
         }
-        if should_trigger and message_to_send:
-            output_info_dict["message"] = message_to_send
-            logging.info(
-                "[Guardrail:BD/Priority] Returning tripwire=True. Type: %s.",
-                effective_request_type,
-            )
-            return GuardrailFunctionOutput(
-                output_info=output_info_dict,
-                tripwire_triggered=True
-            )
-        logging.info("[Guardrail:BD/Priority] Returning tripwire=False.")
-        return GuardrailFunctionOutput(
-            output_info=output_info_dict,
-            tripwire_triggered=False
-        )
-
+        if message_to_send:
+            output_info["message"] = message_to_send
+        return output_info
     except Exception as e:
         logging.error(f"[Guardrail:BD/Priority] Error during check: {e}", exc_info=True)
-        return GuardrailFunctionOutput(output_info={"error": str(e)}, tripwire_triggered=False)
+        return {"error": str(e), "tripwire_triggered": False}
 
 
 yearn_data_agent = Agent[BotRunContext](

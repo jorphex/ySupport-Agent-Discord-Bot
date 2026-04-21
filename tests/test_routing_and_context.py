@@ -27,6 +27,7 @@ from support_agents import (
     BDPriorityCheckOutput,
     _looks_like_concrete_security_disclosure,
     bd_priority_guardrail,
+    evaluate_bd_priority_boundary,
     TicketTriageDecision,
     ticket_triage_router_agent,
     triage_agent,
@@ -36,7 +37,6 @@ from support_agents import (
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
-    _bug_bounty_intake_boundary_reply,
     _build_specialist_turn_input,
     TicketAgentFlowOutcome,
     _looks_like_bug_bounty_intake_boundary_case,
@@ -45,6 +45,7 @@ from ticket_investigation_runtime import (
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
     _select_ticket_starting_agent,
+    bug_bounty_intake_boundary_reply,
     resolve_freeform_starting_agent,
     TicketInvestigationRuntime,
     TicketTurnRequest,
@@ -53,6 +54,7 @@ from ysupport import (
     TicketBot,
     _canonicalize_current_user_message,
     _guardrail_tripwire_reply,
+    _outer_support_boundary_reply,
 )
 
 
@@ -201,7 +203,7 @@ class RoutingTests(unittest.TestCase):
         self.assertTrue(_looks_like_bug_bounty_intake_boundary_case(text))
 
     def test_bug_bounty_intake_boundary_reply_points_to_security_process(self) -> None:
-        reply = _bug_bounty_intake_boundary_reply(
+        reply = bug_bounty_intake_boundary_reply(
             "Good day team, me and my team discovered an issue that should be addressed "
             "and hope to be rewarded for our efforts"
         )
@@ -378,6 +380,33 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             SECURITY_VENDOR_BOUNDARY_MESSAGE,
         )
 
+    async def test_evaluate_bd_priority_boundary_returns_reusable_tripwire_payload(self) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return BDPriorityCheckOutput(
+                    request_type="job_inquiry",
+                    reasoning="asks how to work for yearn",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_bd_priority_boundary("How can I work for Yearn?")
+
+        self.assertTrue(result["tripwire_triggered"])
+        self.assertEqual(result["effective_request_type"], "job_inquiry")
+        self.assertIn("message", result)
+
+    async def test_evaluate_bd_priority_boundary_skips_non_candidate_support_text(self) -> None:
+        async def fake_run(self, *, starting_agent, input, run_config):
+            raise AssertionError("Non-candidate support text should not invoke the guardrail model.")
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_bd_priority_boundary("How is stYFI APY calculated?")
+
+        self.assertFalse(result["tripwire_triggered"])
+
     async def test_concrete_security_disclosure_overrides_vendor_security_false_positive(
         self,
     ) -> None:
@@ -410,6 +439,29 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.tripwire_triggered)
         self.assertEqual(result.output_info["classification"]["request_type"], "vendor_security")
         self.assertEqual(result.output_info["effective_request_type"], "not_bd_pr")
+
+    async def test_outer_support_boundary_reply_prefers_bug_bounty_boundary(self) -> None:
+        reply = await _outer_support_boundary_reply(
+            "Good day team, me and my team discovered an issue that should be addressed "
+            "and hope to be rewarded for our efforts"
+        )
+
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("docs.yearn.fi/developers/security", reply)
+
+    async def test_outer_support_boundary_reply_uses_bd_guardrail_message(self) -> None:
+        async def fake_boundary(_text: str):
+            return {
+                "tripwire_triggered": True,
+                "message": "Boundary reply",
+                "effective_request_type": "marketing",
+            }
+
+        with patch("ysupport.evaluate_bd_priority_boundary", new=fake_boundary):
+            reply = await _outer_support_boundary_reply("We want a marketing partnership")
+
+        self.assertEqual(reply, "Boundary reply")
 
 
 class InvestigationJobTests(unittest.TestCase):
@@ -779,6 +831,48 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(observed_last_wallet, resolved_wallet)
 
+    async def test_process_ticket_message_applies_outer_boundary_before_executor(self) -> None:
+        channel_id = 65
+        fake_channel = _FakeDiscordChannel(channel_id)
+
+        class _FailingExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                raise AssertionError("Boundary reply should stop before executor runs.")
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FailingExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="other_free_form",
+        )
+
+        pending_messages[channel_id] = "We want a marketing partnership with Yearn"
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        async def fake_boundary(_text: str) -> str | None:
+            return "Boundary reply"
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with patch("ysupport._outer_support_boundary_reply", new=fake_boundary):
+                with patch("ysupport.send_long_message", new=fake_send_long_message):
+                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                        await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(fake_channel.sent_messages, ["Boundary reply"])
+
 
 @dataclass
 class _FakeResult:
@@ -822,6 +916,37 @@ class _FakeInvestigationExecutor:
 
 
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_trigger_applies_outer_boundary_before_executor(self) -> None:
+        original_author_id = 70
+        channel_id = 71
+        original_message = _FakeOriginalMessage(
+            author_id=original_author_id,
+            content="We want a marketing partnership with Yearn",
+        )
+        trigger_channel = _FakePublicChannel(channel_id, original_message)
+        trigger_message = _FakeTriggerMessage(
+            trigger_channel,
+            reference_message_id=12345,
+        )
+
+        class _FailingExecutor:
+            async def execute_turn(self, request, hooks=None):
+                raise AssertionError("Boundary reply should stop before executor runs.")
+
+        async def fake_boundary(_text: str) -> str | None:
+            return "Boundary reply"
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.investigation_executor = _FailingExecutor()
+
+        with patch("ysupport._outer_support_boundary_reply", new=fake_boundary):
+            handled = await bot._handle_public_trigger_message(trigger_message, "y")
+
+        self.assertTrue(handled)
+        self.assertEqual(len(original_message.replies), 1)
+        self.assertEqual(original_message.replies[0][0], "Boundary reply")
+        self.assertFalse(original_message.replies[0][1]["mention_author"])
+
     async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(self) -> None:
         original_author_id = 73
         channel_id = 74

@@ -209,7 +209,7 @@ def _looks_like_bug_bounty_intake_boundary_case(text: str) -> bool:
     return True
 
 
-def _bug_bounty_intake_boundary_reply(text: str) -> str | None:
+def bug_bounty_intake_boundary_reply(text: str) -> str | None:
     if not _looks_like_bug_bounty_intake_boundary_case(text):
         return None
     return (
@@ -452,7 +452,7 @@ class TicketInvestigationRuntime:
         # Safety boundary: do not let bounty-seeking security openings fall into
         # generic bug-intake prompts before the reporter reaches the official
         # security path.
-        direct_boundary_reply = _bug_bounty_intake_boundary_reply(
+        direct_boundary_reply = bug_bounty_intake_boundary_reply(
             request.aggregated_text
         )
         if direct_boundary_reply is not None:

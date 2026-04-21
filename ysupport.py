@@ -21,6 +21,7 @@ from router import (
     is_wallet_confirmation,
     is_wallet_rejection,
 )
+from support_agents import evaluate_bd_priority_boundary
 from state import (
     BotRunContext,
     PublicConversation,
@@ -57,6 +58,7 @@ from ticket_investigation_executor import (
 from ticket_investigation_runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
+    bug_bounty_intake_boundary_reply,
 )
 from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
@@ -102,6 +104,16 @@ def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
     if isinstance(guardrail_info, dict) and "message" in guardrail_info:
         return guardrail_info["message"]
     return "Your request could not be processed due to input checks."
+
+
+async def _outer_support_boundary_reply(text: str) -> str | None:
+    boundary_reply = bug_bounty_intake_boundary_reply(text)
+    if boundary_reply is not None:
+        return boundary_reply
+    output_info = await evaluate_bd_priority_boundary(text)
+    if output_info.get("tripwire_triggered") and output_info.get("message"):
+        return str(output_info["message"])
+    return None
 
 
 # Discord Bot Implementation
@@ -269,6 +281,17 @@ class TicketBot(discord.Client):
                 conversation_owner_id=original_author_id,
                 project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
             )
+
+            boundary_reply = await _outer_support_boundary_reply(original_message.content)
+            if boundary_reply is not None:
+                public_conversations.pop(original_author_id, None)
+                clear_public_conversation(original_author_id)
+                await original_message.reply(
+                    boundary_reply,
+                    mention_author=False,
+                    suppress_embeds=True,
+                )
+                return True
 
             async with message.channel.typing():
                 try:
@@ -596,66 +619,76 @@ class TicketBot(discord.Client):
                 final_reply = "An unexpected error occurred."
                 should_stop_processing = False
 
-                try:
-                    workflow_name = (
-                        f"Ticket Channel {channel_id} ({run_context.project_context}, "
-                        f"Button Intent: {run_context.initial_button_intent})"
+                boundary_reply = await _outer_support_boundary_reply(aggregated_text)
+                if boundary_reply is not None:
+                    final_reply = boundary_reply
+                    should_stop_processing = True
+                    clear_ticket_channel_state(
+                        channel_id,
+                        keep_stopped=False,
+                        delete_persisted=True,
                     )
-                    worker_result = await self.investigation_executor.execute_turn(
-                        TicketTurnRequest(
-                            aggregated_text=aggregated_text,
-                            input_list=input_list,
-                            current_history=current_history,
-                            run_context=run_context,
-                            investigation_job=investigation_job,
-                            workflow_name=workflow_name,
-                        ),
-                        hooks=TicketExecutionHooks(
-                            send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
-                        ),
-                    )
-                    investigation_job.apply_snapshot(worker_result.updated_job)
-                    flow_outcome = worker_result.flow_outcome
-                    conversation_threads[channel_id] = flow_outcome.conversation_history
+                else:
+                    try:
+                        workflow_name = (
+                            f"Ticket Channel {channel_id} ({run_context.project_context}, "
+                            f"Button Intent: {run_context.initial_button_intent})"
+                        )
+                        worker_result = await self.investigation_executor.execute_turn(
+                            TicketTurnRequest(
+                                aggregated_text=aggregated_text,
+                                input_list=input_list,
+                                current_history=current_history,
+                                run_context=run_context,
+                                investigation_job=investigation_job,
+                                workflow_name=workflow_name,
+                            ),
+                            hooks=TicketExecutionHooks(
+                                send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
+                            ),
+                        )
+                        investigation_job.apply_snapshot(worker_result.updated_job)
+                        flow_outcome = worker_result.flow_outcome
+                        conversation_threads[channel_id] = flow_outcome.conversation_history
 
-                    raw_final_reply = flow_outcome.raw_final_reply
-                    actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
-                    final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
-                    if flow_outcome.requires_human_handoff:
-                        logging.info(
-                            "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
-                            channel_id,
-                        )
-                    persist_ticket_state(channel_id)
-                except InputGuardrailTripwireTriggered as e:
-                    logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
-                    final_reply = _guardrail_tripwire_reply(e)
-                    should_stop_processing = True
-                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
-                except MaxTurnsExceeded:
-                    logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                    if run_context.repo_search_calls:
-                        final_reply = (
-                            "I hit an internal analysis limit while reviewing repo evidence for this report. "
-                            f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
-                        )
-                    else:
-                        final_reply = (
-                            f"This conversation has reached its maximum length. "
-                            f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
-                        )
-                    should_stop_processing = True
-                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
-                except AgentsException as e:
-                    logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                    final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
-                    should_stop_processing = True
-                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
-                except Exception as e:
-                    logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                    final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
-                    should_stop_processing = True
-                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                        raw_final_reply = flow_outcome.raw_final_reply
+                        actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
+                        final_reply = raw_final_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
+                        if flow_outcome.requires_human_handoff:
+                            logging.info(
+                                "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
+                                channel_id,
+                            )
+                        persist_ticket_state(channel_id)
+                    except InputGuardrailTripwireTriggered as e:
+                        logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
+                        final_reply = _guardrail_tripwire_reply(e)
+                        should_stop_processing = True
+                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                    except MaxTurnsExceeded:
+                        logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
+                        if run_context.repo_search_calls:
+                            final_reply = (
+                                "I hit an internal analysis limit while reviewing repo evidence for this report. "
+                                f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                            )
+                        else:
+                            final_reply = (
+                                f"This conversation has reached its maximum length. "
+                                f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                            )
+                        should_stop_processing = True
+                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                    except AgentsException as e:
+                        logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
+                        final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                        should_stop_processing = True
+                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                    except Exception as e:
+                        logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
+                        final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                        should_stop_processing = True
+                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
