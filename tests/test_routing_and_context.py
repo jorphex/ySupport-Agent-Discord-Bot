@@ -6,7 +6,7 @@ from unittest.mock import patch
 from agents import MaxTurnsExceeded, RunContextWrapper, Runner
 import discord
 
-from bot_behavior import SECURITY_VENDOR_BOUNDARY_MESSAGE
+from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE, SECURITY_VENDOR_BOUNDARY_MESSAGE
 import config
 from router import select_starting_agent
 from state import (
@@ -462,6 +462,20 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             reply = await _outer_support_boundary_reply("We want a marketing partnership")
 
         self.assertEqual(reply, "Boundary reply")
+
+    async def test_outer_support_boundary_reply_blocks_off_topic_coding_help(self) -> None:
+        reply = await _outer_support_boundary_reply(
+            "Can you write a Python script to parse a CSV for me?"
+        )
+
+        self.assertEqual(reply, OUT_OF_SCOPE_SUPPORT_MESSAGE)
+
+    async def test_outer_support_boundary_reply_allows_normal_yearn_support(self) -> None:
+        reply = await _outer_support_boundary_reply(
+            "Where can I monitor stYFI rewards?"
+        )
+
+        self.assertIsNone(reply)
 
 
 class InvestigationJobTests(unittest.TestCase):

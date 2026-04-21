@@ -407,6 +407,8 @@ def _codex_support_prompt(
         "that should not be handled like normal support.\n"
         "If a boundary-topic message still reaches you, keep the reply short and boundary-oriented instead of "
         "doing normal troubleshooting.\n"
+        "If a message is unrelated to Yearn support and instead asks for generic coding help or other general "
+        "assistant work, decline briefly and steer back to Yearn support scope.\n"
         "If a message is mainly asking for bounty, reward, or disclosure-process handling without concrete "
         "Yearn-specific technical evidence, direct it to Yearn's official security process instead of generic "
         "support triage.\n"

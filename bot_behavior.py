@@ -25,3 +25,9 @@ JOB_INQUIRY_REDIRECT_MESSAGE = (
     "You may also work on open issues, report bugs, suggest improvements, write documentation, and more by visiting our [GitHub repository](https://github.com/yearn), where anyone is welcome to contribute.\n\n"
     "No follow up inquiries or responses necessary."
 )
+
+OUT_OF_SCOPE_SUPPORT_MESSAGE = (
+    "This bot only handles Yearn support. Keep the request limited to Yearn vaults, deposits or withdrawals, "
+    "transactions, rewards, docs, bugs, or other Yearn product behavior.\n\n"
+    "No follow up inquiries or responses necessary."
+)
