@@ -140,13 +140,21 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 request,
                 ysupport_mcp_enabled=ysupport_mcp_enabled,
             )
+            workflow_context = support_request.support_state.get("workflow_context", {})
             conversation_key = (
                 self.session_manager.conversation_key_for_request(request)
                 if self.session_manager is not None
                 else None
             )
             session_record = (
-                self.session_manager.load(conversation_key)
+                self.session_manager.load_for_turn(
+                    conversation_key=conversation_key,
+                    requested_intent=support_request.requested_intent,
+                    guardrail_profile=workflow_context.get("guardrail_profile"),
+                    human_handoff_active=bool(
+                        support_request.support_state.get("human_handoff_active")
+                    ),
+                )
                 if self.session_manager is not None and conversation_key is not None
                 else None
             )
@@ -209,6 +217,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         conversation_key=conversation_key,
                         session_id=session_id,
                         artifact_dir=str(exported_run_dir) if exported_run_dir else None,
+                        requested_intent=support_request.requested_intent,
+                        guardrail_profile=workflow_context.get("guardrail_profile"),
+                        human_handoff_active=bool(
+                            support_request.support_state.get("human_handoff_active")
+                        ),
                     )
             support_result = verify_support_turn_result(
                 SupportTurnResult.from_json(response_text),

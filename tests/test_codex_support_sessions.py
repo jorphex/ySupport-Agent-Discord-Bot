@@ -76,6 +76,8 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
                 conversation_key="ticket:123",
                 session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
                 artifact_dir="/tmp/run-1",
+                requested_intent="investigate_issue",
+                guardrail_profile="ticket_support",
             )
 
             summary = manager.summary()
@@ -87,6 +89,74 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             summary["records"][0]["conversation_key"],
             "ticket:123",
         )
+
+    def test_load_for_turn_resets_after_repeated_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+            manager.record_success(
+                conversation_key="ticket:123",
+                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+                requested_intent="investigate_issue",
+                guardrail_profile="ticket_support",
+            )
+            manager.record_failure(
+                conversation_key="ticket:123",
+                error_text="first failure",
+            )
+            manager.record_failure(
+                conversation_key="ticket:123",
+                error_text="second failure",
+            )
+
+            record = manager.load_for_turn(
+                conversation_key="ticket:123",
+                requested_intent="investigate_issue",
+                guardrail_profile="ticket_support",
+                human_handoff_active=False,
+            )
+
+        self.assertIsNone(record)
+        self.assertFalse((Path(temp_dir) / "ticket_123.json").exists())
+
+    def test_load_for_turn_resets_when_guardrail_profile_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+            manager.record_success(
+                conversation_key="ticket:123",
+                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+                requested_intent="investigate_issue",
+                guardrail_profile="ticket_support",
+            )
+
+            record = manager.load_for_turn(
+                conversation_key="ticket:123",
+                requested_intent="investigate_issue",
+                guardrail_profile="public_support",
+                human_handoff_active=False,
+            )
+
+        self.assertIsNone(record)
+        self.assertFalse((Path(temp_dir) / "ticket_123.json").exists())
+
+    def test_load_for_turn_resets_when_handoff_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+            manager.record_success(
+                conversation_key="ticket:123",
+                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+                requested_intent="investigate_issue",
+                guardrail_profile="ticket_support",
+            )
+
+            record = manager.load_for_turn(
+                conversation_key="ticket:123",
+                requested_intent="investigate_issue",
+                guardrail_profile="ticket_support",
+                human_handoff_active=True,
+            )
+
+        self.assertIsNone(record)
+        self.assertFalse((Path(temp_dir) / "ticket_123.json").exists())
 
     def test_prune_expired_removes_old_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

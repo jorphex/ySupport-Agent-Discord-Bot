@@ -21,9 +21,13 @@ class CodexSupportSessionRecord:
     created_at_utc: str
     updated_at_utc: str
     run_count: int
+    consecutive_failures: int = 0
     last_artifact_dir: str | None = None
     last_error: str | None = None
     last_error_at_utc: str | None = None
+    last_requested_intent: str | None = None
+    last_guardrail_profile: str | None = None
+    last_human_handoff_active: bool = False
 
 
 class CodexSupportSessionManager:
@@ -65,12 +69,36 @@ class CodexSupportSessionManager:
             records.append(record)
         return records
 
+    def load_for_turn(
+        self,
+        *,
+        conversation_key: str,
+        requested_intent: str | None,
+        guardrail_profile: str | None,
+        human_handoff_active: bool,
+    ) -> CodexSupportSessionRecord | None:
+        record = self.load(conversation_key)
+        if record is None:
+            return None
+        if self._should_reset_for_turn(
+            record,
+            requested_intent=requested_intent,
+            guardrail_profile=guardrail_profile,
+            human_handoff_active=human_handoff_active,
+        ):
+            self.reset(conversation_key)
+            return None
+        return record
+
     def record_success(
         self,
         *,
         conversation_key: str,
         session_id: str,
         artifact_dir: str | None = None,
+        requested_intent: str | None = None,
+        guardrail_profile: str | None = None,
+        human_handoff_active: bool = False,
     ) -> CodexSupportSessionRecord:
         now = _utc_now_iso()
         existing = self.load(conversation_key)
@@ -81,7 +109,11 @@ class CodexSupportSessionManager:
                 created_at_utc=now,
                 updated_at_utc=now,
                 run_count=1,
+                consecutive_failures=0,
                 last_artifact_dir=artifact_dir,
+                last_requested_intent=requested_intent,
+                last_guardrail_profile=guardrail_profile,
+                last_human_handoff_active=human_handoff_active,
             )
         else:
             record = CodexSupportSessionRecord(
@@ -90,9 +122,13 @@ class CodexSupportSessionManager:
                 created_at_utc=existing.created_at_utc,
                 updated_at_utc=now,
                 run_count=existing.run_count + 1,
+                consecutive_failures=0,
                 last_artifact_dir=artifact_dir or existing.last_artifact_dir,
                 last_error=None,
                 last_error_at_utc=None,
+                last_requested_intent=requested_intent,
+                last_guardrail_profile=guardrail_profile,
+                last_human_handoff_active=human_handoff_active,
             )
         self._write(record)
         return record
@@ -113,9 +149,13 @@ class CodexSupportSessionManager:
             created_at_utc=existing.created_at_utc,
             updated_at_utc=existing.updated_at_utc,
             run_count=existing.run_count,
+            consecutive_failures=existing.consecutive_failures + 1,
             last_artifact_dir=artifact_dir or existing.last_artifact_dir,
             last_error=error_text,
             last_error_at_utc=_utc_now_iso(),
+            last_requested_intent=existing.last_requested_intent,
+            last_guardrail_profile=existing.last_guardrail_profile,
+            last_human_handoff_active=existing.last_human_handoff_active,
         )
         self._write(failed)
         return failed
@@ -192,6 +232,32 @@ class CodexSupportSessionManager:
         except ValueError:
             return False
         return datetime.now(timezone.utc) - updated_at > self.max_age
+
+    def _should_reset_for_turn(
+        self,
+        record: CodexSupportSessionRecord,
+        *,
+        requested_intent: str | None,
+        guardrail_profile: str | None,
+        human_handoff_active: bool,
+    ) -> bool:
+        if human_handoff_active:
+            return True
+        if record.consecutive_failures >= 2:
+            return True
+        if (
+            record.last_requested_intent
+            and requested_intent
+            and record.last_requested_intent != requested_intent
+        ):
+            return True
+        if (
+            record.last_guardrail_profile
+            and guardrail_profile
+            and record.last_guardrail_profile != guardrail_profile
+        ):
+            return True
+        return False
 
 
 def _utc_now_iso() -> str:
