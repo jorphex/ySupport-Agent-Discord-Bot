@@ -401,7 +401,10 @@ def _one_shot_hooks(hooks: TicketExecutionHooks | None) -> TicketExecutionHooks 
     if hooks is None or hooks.send_bug_review_status is None:
         return hooks
     sender = _OneShotHookSender(hooks.send_bug_review_status)
-    return TicketExecutionHooks(send_bug_review_status=sender.send)
+    return TicketExecutionHooks(
+        send_bug_review_status=sender.send,
+        send_progress_update=hooks.send_progress_update,
+    )
 
 
 class _OneShotHookSender:

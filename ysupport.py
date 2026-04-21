@@ -76,6 +76,80 @@ logging.basicConfig(level=logging.INFO,
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+class _DiscordProgressReporter:
+    def __init__(self, channel: discord.abc.Messageable, channel_id: int) -> None:
+        self.channel = channel
+        self.channel_id = channel_id
+        self._message: discord.Message | None = None
+        self._lines: list[str] = []
+        self._last_line: str | None = None
+        self._last_rendered: str | None = None
+        self._last_sent_at = 0.0
+        self._flush_task: asyncio.Task[None] | None = None
+
+    async def update(self, line: str) -> None:
+        normalized = line.strip()
+        if not normalized or normalized == self._last_line:
+            return
+        self._last_line = normalized
+        self._lines.append(normalized)
+        self._lines = self._lines[-4:]
+        await self._flush()
+
+    async def close(self) -> None:
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            self._flush_task = None
+        if self._message is None:
+            return
+        try:
+            await self._message.delete()
+        except Exception:
+            return
+        finally:
+            self._message = None
+
+    async def _flush(self) -> None:
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._message is not None and now - self._last_sent_at < 1.5:
+            if self._flush_task is None or self._flush_task.done():
+                delay = 1.5 - (now - self._last_sent_at)
+                self._flush_task = asyncio.create_task(self._flush_later(delay))
+            return
+        content = self._render()
+        if not content or content == self._last_rendered:
+            return
+        try:
+            if self._message is None:
+                self._message = await self.channel.send(content, suppress_embeds=True)
+            else:
+                await self._message.edit(content=content)
+            self._last_rendered = content
+            self._last_sent_at = loop.time()
+            last_bot_reply_ts_by_channel[self.channel_id] = datetime.now(timezone.utc)
+        except Exception as exc:
+            logging.debug(
+                "Failed to update progress message for channel %s: %s",
+                self.channel_id,
+                exc,
+            )
+
+    async def _flush_later(self, delay_seconds: float) -> None:
+        try:
+            await asyncio.sleep(max(delay_seconds, 0))
+            await self._flush()
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._flush_task = None
+
+    def _render(self) -> str:
+        if not self._lines:
+            return ""
+        return "Working...\n" + "\n".join(f"- {line}" for line in self._lines)
+
+
 def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int:
     if run_context.initial_button_intent == "bug_report" or channel_id in bug_report_debounce_channels:
         return config.BUG_REPORT_COOLDOWN_SECONDS
@@ -292,18 +366,6 @@ class TicketBot(discord.Client):
         for warning in config.ticket_execution_runtime_warnings():
             logging.warning("Ticket execution rollout warning: %s", warning)
 
-    async def _send_bug_review_status(self, channel: discord.TextChannel, channel_id: int) -> None:
-        message = (
-            "Reviewing your report against Yearn contracts, tests, and docs. "
-            "This can take a couple of minutes."
-        )
-        try:
-            await channel.send(message, suppress_embeds=True)
-            last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-            logging.info("Sent bug-review status message to channel %s", channel_id)
-        except Exception as e:
-            logging.warning("Failed to send bug-review status message to channel %s: %s", channel_id, e)
-
     async def on_ready(self):
         logging.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Monitoring Yearn Ticket Category ID: {config.YEARN_TICKET_CATEGORY_ID}")
@@ -452,6 +514,10 @@ class TicketBot(discord.Client):
                 return True
 
             async with message.channel.typing():
+                progress_reporter = _DiscordProgressReporter(
+                    message.channel,
+                    message.channel.id,
+                )
                 try:
                     worker_result = await self.investigation_executor.execute_turn(
                         _build_turn_request(
@@ -464,7 +530,10 @@ class TicketBot(discord.Client):
                             investigation_job=public_investigation_job,
                             workflow_name=_public_workflow_name(message.channel.id),
                             precomputed_boundary=boundary_output,
-                        )
+                        ),
+                        hooks=TicketExecutionHooks(
+                            send_progress_update=progress_reporter.update,
+                        ),
                     )
                     flow_outcome = worker_result.flow_outcome
                     new_history = flow_outcome.conversation_history
@@ -486,8 +555,10 @@ class TicketBot(discord.Client):
                         else "I could not determine a response."
                     )
                     final_reply = _render_support_reply(raw_reply)
+                    await progress_reporter.close()
                     await send_long_message(message.channel, final_reply)
                 except InputGuardrailTripwireTriggered as e:
+                    await progress_reporter.close()
                     logging.warning(
                         "Input Guardrail triggered in public channel %s for user %s.",
                         message.channel.id,
@@ -501,6 +572,7 @@ class TicketBot(discord.Client):
                         suppress_embeds=True,
                     )
                 except MaxTurnsExceeded:
+                    await progress_reporter.close()
                     logging.warning(
                         "Max turns (%s) exceeded during public trigger run for user %s in channel %s.",
                         config.MAX_PUBLIC_TRIGGER_TURNS,
@@ -525,6 +597,7 @@ class TicketBot(discord.Client):
                         suppress_embeds=True,
                     )
                 except Exception as e:
+                    await progress_reporter.close()
                     logging.error(
                         "Error during public trigger agent run for user %s: %s",
                         original_author_id,
@@ -772,6 +845,7 @@ class TicketBot(discord.Client):
             logging.info(f"Processing for ticket {channel_id} (Context: {run_context.project_context}, Initial Button Intent: {run_context.initial_button_intent}): '{aggregated_text[:100]}...'")
 
             async with channel.typing():
+                progress_reporter = _DiscordProgressReporter(channel, channel_id)
                 final_reply = "An unexpected error occurred."
                 should_stop_processing = False
 
@@ -800,7 +874,7 @@ class TicketBot(discord.Client):
                                     precomputed_boundary=boundary_output,
                                 ),
                                 hooks=TicketExecutionHooks(
-                                    send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
+                                    send_progress_update=progress_reporter.update,
                                 ),
                             )
                             investigation_job.apply_snapshot(worker_result.updated_job)
@@ -843,6 +917,8 @@ class TicketBot(discord.Client):
                             logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                             final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                             should_stop_processing = True
+                        finally:
+                            await progress_reporter.close()
                             reset_ticket_channel_for_terminal_reply(channel_id)
 
                 try:

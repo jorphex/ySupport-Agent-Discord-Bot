@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 @dataclass
 class TicketExecutionHooks:
     send_bug_review_status: Callable[[], Awaitable[None]] | None = None
+    send_progress_update: Callable[[str], Awaitable[None]] | None = None
 
 
 @dataclass

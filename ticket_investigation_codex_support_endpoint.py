@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -18,9 +19,9 @@ from codex_support_contract import (
 from codex_support_sessions import CodexSupportSessionManager
 from ticket_execution_subprocess_utils import (
     build_effective_execution_env,
-    run_bounded_subprocess,
     safe_export_workspace_copy,
     validate_allowed_command_prefix,
+    write_execution_artifacts,
 )
 from ticket_execution_workspace import TicketExecutionWorkspace
 from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
@@ -190,7 +191,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 )
                 exported_run_dir: Path | None = None
                 try:
-                    response_text = await run_bounded_subprocess(
+                    response_text = await _run_codex_support_json_subprocess(
                         command=bundle.command,
                         stdin_text=bundle.prompt_text,
                         cwd=self.cwd or str(run_dir),
@@ -213,6 +214,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             "cwd": self.cwd or str(run_dir),
                         },
                         artifact_run_dir=run_dir,
+                        progress_callback=(
+                            hooks.send_progress_update
+                            if hooks is not None
+                            else None
+                        ),
                     )
                 except Exception as exc:
                     if (
@@ -354,6 +360,7 @@ def _build_codex_support_command(
         command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
     command.extend(
         [
+            "--json",
             "--output-schema",
             str(response_schema_path),
             "-C",
@@ -384,6 +391,7 @@ def _build_codex_resume_command(
         command.extend(["-m", model])
     if reasoning_effort:
         command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+    command.append("--json")
     return command
 
 
@@ -414,3 +422,200 @@ def _codex_support_prompt(
         "Routine support: concise.\n"
         "Investigations and report triage: enough prose to explain conclusion, evidence, and remaining limit.\n"
     )
+
+
+async def _run_codex_support_json_subprocess(
+    *,
+    command: Sequence[str],
+    stdin_text: str,
+    cwd: str | None,
+    env: dict[str, str],
+    timeout_seconds: float,
+    max_output_chars: int,
+    max_error_chars: int,
+    timeout_message: str,
+    empty_stdout_message: str,
+    oversized_stdout_message: str,
+    metadata: dict[str, object],
+    artifact_run_dir: Path | None,
+    progress_callback,
+) -> str:
+    creation_kwargs = (
+        {"creationflags": 0}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        **creation_kwargs,
+    )
+    stdout_lines: list[str] = []
+    stderr_chunks: list[str] = []
+    final_response_text: str | None = None
+
+    async def _feed_stdin() -> None:
+        if process.stdin is None:
+            return
+        process.stdin.write(stdin_text.encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+        try:
+            await process.stdin.wait_closed()
+        except Exception:
+            return
+
+    async def _read_stdout() -> None:
+        nonlocal final_response_text
+        if process.stdout is None:
+            return
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").rstrip("\n")
+            if not text:
+                continue
+            stdout_lines.append(text)
+            event = _parse_json_event(text)
+            if event is None:
+                continue
+            progress_text = _progress_update_from_codex_event(event)
+            if progress_text and progress_callback is not None:
+                await progress_callback(progress_text)
+            response_text = _final_response_from_codex_event(event)
+            if response_text:
+                final_response_text = response_text
+
+    async def _read_stderr() -> None:
+        if process.stderr is None:
+            return
+        while True:
+            chunk = await process.stderr.read(4096)
+            if not chunk:
+                break
+            stderr_chunks.append(chunk.decode("utf-8", errors="replace"))
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                _feed_stdin(),
+                _read_stdout(),
+                _read_stderr(),
+            ),
+            timeout=timeout_seconds,
+        )
+        await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        await _terminate_streamed_subprocess(process)
+        write_execution_artifacts(
+            artifact_run_dir,
+            stdout_text="\n".join(stdout_lines),
+            stderr_text="".join(stderr_chunks).strip(),
+            metadata={**metadata, "timed_out": True},
+        )
+        raise RuntimeError(timeout_message) from exc
+
+    stdout_text = "\n".join(stdout_lines).strip()
+    stderr_text = "".join(stderr_chunks).strip()
+    write_execution_artifacts(
+        artifact_run_dir,
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+        metadata={**metadata, "returncode": process.returncode, "timed_out": False},
+    )
+    if process.returncode != 0:
+        error_text = stderr_text or "Codex support execution exited without stderr output."
+        raise RuntimeError(error_text[:max_error_chars])
+    if final_response_text is None:
+        if not stdout_text:
+            raise RuntimeError(empty_stdout_message)
+        raise RuntimeError("Codex support execution returned JSON events without a final agent message.")
+    if len(final_response_text) > max_output_chars:
+        raise RuntimeError(oversized_stdout_message)
+    return final_response_text
+
+
+def _parse_json_event(text: str) -> dict[str, object] | None:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _final_response_from_codex_event(event: dict[str, object]) -> str | None:
+    if event.get("type") != "item.completed":
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    if item.get("type") != "agent_message":
+        return None
+    text = item.get("text")
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def _progress_update_from_codex_event(event: dict[str, object]) -> str | None:
+    if event.get("type") != "item.started":
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    item_type = str(item.get("type") or "").strip().lower()
+    if not item_type or item_type in {"agent_message", "todo_list", "file_change"}:
+        return None
+    if item_type == "command_execution":
+        return _progress_from_command_execution(str(item.get("command") or ""))
+    if "web" in item_type or "search" in item_type:
+        return "Checking external references"
+    if "mcp" in item_type or item.get("tool_name") or item.get("server") or item.get("name"):
+        return _progress_from_tool_item(item)
+    return None
+
+
+def _progress_from_command_execution(command: str) -> str | None:
+    normalized = command.lower()
+    if (
+        "notes.md" in normalized
+        or "support_request.json" in normalized
+        or "support_response_schema.json" in normalized
+    ):
+        return None
+    if "http" in normalized or "curl " in normalized or "wget " in normalized:
+        return "Reading linked references"
+    return "Running a local check"
+
+
+def _progress_from_tool_item(item: dict[str, object]) -> str:
+    raw_name = " ".join(
+        str(item.get(key) or "")
+        for key in ("tool_name", "name", "server", "title")
+    ).lower()
+    if "harvest" in raw_name or "report" in raw_name:
+        return "Checking recent harvests"
+    if "search_vaults" in raw_name or "discover" in raw_name or "vault" in raw_name:
+        return "Checking vault state"
+    if "repo" in raw_name or "artifact" in raw_name:
+        return "Checking repo context"
+    if "document" in raw_name or "doc" in raw_name:
+        return "Checking Yearn docs"
+    return "Checking Yearn support data"
+
+
+async def _terminate_streamed_subprocess(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(os.getpgid(process.pid), 9)
+    except ProcessLookupError:
+        pass
+    finally:
+        await process.wait()

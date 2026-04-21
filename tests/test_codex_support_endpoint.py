@@ -18,6 +18,7 @@ from ticket_investigation_codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
     _codex_support_prompt,
 )
+from ticket_investigation_executor import TicketExecutionHooks
 from ticket_investigation_json_endpoint import build_ticket_execution_json_endpoint
 from ticket_investigation_transport import (
     TicketExecutionTransportRequest,
@@ -520,12 +521,13 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "cwd=pathlib.Path(os.getcwd()); "
             "request=json.loads((cwd/'support_request.json').read_text()); "
             "response={"
-            "'answer':'support-ok:{}:{}:{}:{}:{}:{}:{}'.format("
+            "'answer':'support-ok:{}:{}:{}:{}:{}:{}:{}:{}'.format("
             "request['channel_type'],"
             "request['constraints']['no_file_writes'],"
             "'-m' in sys.argv,"
             "'gpt-5.4' in sys.argv,"
             "'model_reasoning_effort=\"medium\"' in ' '.join(sys.argv),"
+            "'--json' in sys.argv,"
             "'--output-schema' in sys.argv,"
             "(cwd/'support_response_schema.json').exists(),"
             "'Read the support turn request from support_request.json.' in prompt"
@@ -535,13 +537,20 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "'evidence_summary':'checked',"
             "'used_tools':['shell','ysupport_mcp']"
             "}; "
-            "sys.stdout.write(json.dumps(response))"
+            "sys.stdout.write(json.dumps({'type':'thread.started','thread_id':'t1'}) + '\\n'); "
+            "sys.stdout.write(json.dumps({'type':'item.started','item':{'id':'item_1','type':'mcp_tool_call','tool_name':'support_dashboard_harvests'}}) + '\\n'); "
+            "sys.stdout.write(json.dumps({'type':'item.completed','item':{'id':'item_2','type':'agent_message','text':json.dumps(response)}}))"
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             with tempfile.TemporaryDirectory() as codex_home_dir:
                 auth_source = Path(codex_home_dir) / "source-auth.json"
                 auth_source.write_text('{"auth_mode":"chatgpt"}', encoding="utf-8")
                 bot_home = Path(codex_home_dir) / "bot-home"
+                progress_updates: list[str] = []
+
+                async def record_progress(text: str) -> None:
+                    progress_updates.append(text)
+
                 with mock.patch(
                     "codex_support_home._choose_ysupport_stdio_launcher",
                     return_value={
@@ -588,7 +597,12 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                         wants_bug_review_status=False,
                     )
 
-                    response_json = await endpoint.execute_json_turn(request.to_json())
+                    response_json = await endpoint.execute_json_turn(
+                        request.to_json(),
+                        hooks=TicketExecutionHooks(
+                            send_progress_update=record_progress,
+                        ),
+                    )
 
                     artifact_entries = os.listdir(artifact_dir)
                     self.assertEqual(len(artifact_entries), 1)
@@ -631,10 +645,11 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         updated_job = transport_result.updated_job
         self.assertEqual(
             flow_outcome["raw_final_reply"],
-            "support-ok:ticket:True:True:True:True:True:True",
+            "support-ok:ticket:True:True:True:True:True:True:True",
         )
         self.assertEqual(updated_job["mode"], "waiting_for_user")
         self.assertIsNone(updated_job["current_specialty"])
+        self.assertIn("Checking recent harvests", progress_updates)
 
     async def test_codex_support_json_endpoint_uses_codex_support_smoke_reply(self) -> None:
         endpoint = CodexSupportTicketExecutionJsonEndpoint(
@@ -685,7 +700,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         second_started = asyncio.Event()
         call_count = 0
 
-        async def fake_run_bounded_subprocess(**kwargs):
+        async def fake_run_streaming_subprocess(**kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -720,8 +735,8 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with mock.patch(
-            "ticket_investigation_codex_support_endpoint.run_bounded_subprocess",
-            side_effect=fake_run_bounded_subprocess,
+            "ticket_investigation_codex_support_endpoint._run_codex_support_json_subprocess",
+            side_effect=fake_run_streaming_subprocess,
         ):
             task_one = asyncio.create_task(endpoint.execute_json_turn(request.to_json()))
             await first_started.wait()
