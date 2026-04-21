@@ -414,6 +414,43 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("hand this off", verified.answer.lower())
         self.assertIn("dashboard looks fresh", verified.answer.lower())
 
+    def test_verify_support_turn_result_strips_human_ops_review_hint(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="vault hasn't harvested after 10 days",
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="investigate_issue",
+            requested_intent="investigate_issue",
+            evidence={},
+            support_state={"human_handoff_active": False},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer=(
+                "Confirmed: the vault has not reported since April 8. "
+                "This looks like real report inactivity, not just stale frontend data, "
+                "so this should get a human ops review."
+            ),
+            requires_human_handoff=True,
+            handoff_reason=(
+                "The inactivity is confirmed, but determining why the vault has not "
+                "been reported and whether intervention is needed requires human operator review."
+            ),
+            evidence_summary="Checked vault harvest history.",
+            used_tools=["ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertFalse(verified.requires_human_handoff)
+        self.assertIsNone(verified.handoff_reason)
+        self.assertNotIn("human ops review", verified.answer.lower())
+        self.assertNotIn("should get a human", verified.answer.lower())
+        self.assertIn("real report inactivity", verified.answer.lower())
+
     def test_codex_support_prompt_requests_fuller_prose_for_investigations(self) -> None:
         prompt_text = _codex_support_prompt(
             support_request_path=Path("support_request.json"),

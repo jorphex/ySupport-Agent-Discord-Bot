@@ -53,10 +53,21 @@ _OPTIONAL_HANDOFF_SENTENCE_PATTERNS = (
     "hand this off",
     "hand it off",
     "human review",
+    "human ops review",
     "strategist review",
     "team review",
     "manual review",
+    "ops review",
+    "operator review",
+    "should get a human",
     "someone can review",
+)
+_OPTIONAL_HANDOFF_CLAUSE_PATTERNS = (
+    r",?\s*so this should get a human ops review\.?$",
+    r",?\s*so this should get an ops review\.?$",
+    r",?\s*so this should get a human review\.?$",
+    r",?\s*so this should get operator review\.?$",
+    r",?\s*so this should get a human operator review\.?$",
 )
 
 
@@ -350,14 +361,24 @@ def _strip_optional_handoff_language(answer: str) -> str:
         for sentence in re.split(r"(?<=[.!?])\s+", answer.strip())
         if sentence.strip()
     ]
-    filtered = [
-        sentence
-        for sentence in sentences
-        if not any(
-            pattern in sentence.lower()
+    filtered: list[str] = []
+    for sentence in sentences:
+        stripped_sentence = sentence
+        for pattern in _OPTIONAL_HANDOFF_CLAUSE_PATTERNS:
+            stripped_sentence = re.sub(
+                pattern,
+                ".",
+                stripped_sentence,
+                flags=re.IGNORECASE,
+            ).strip()
+        if not stripped_sentence:
+            continue
+        if any(
+            pattern in stripped_sentence.lower()
             for pattern in _OPTIONAL_HANDOFF_SENTENCE_PATTERNS
-        )
-    ]
+        ):
+            continue
+        filtered.append(stripped_sentence)
     if not filtered:
         return answer.strip()
     return " ".join(filtered).strip()
