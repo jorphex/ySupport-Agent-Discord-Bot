@@ -167,6 +167,36 @@ def get_or_create_ticket_investigation_job(channel_id: int) -> TicketInvestigati
     return job
 
 
+def mark_ticket_awaiting_initial_button(channel_id: int) -> None:
+    channels_awaiting_initial_button_press.add(channel_id)
+    persist_ticket_state(channel_id)
+
+
+def apply_initial_button_intent(
+    channel_id: int,
+    intent_category: str,
+    *,
+    investigation_mode: InvestigationMode,
+    bug_report_debounce: bool = False,
+) -> TicketInvestigationJob:
+    channels_awaiting_initial_button_press.discard(channel_id)
+    channel_intent_after_button[channel_id] = intent_category
+    job = get_or_create_ticket_investigation_job(channel_id)
+    job.record_requested_intent(intent_category)
+    if investigation_mode == "collecting":
+        job.begin_collecting()
+    elif investigation_mode == "waiting_for_user":
+        job.mark_waiting_for_user()
+    elif investigation_mode == "escalated_to_human":
+        job.mark_escalated_to_human()
+    if bug_report_debounce:
+        bug_report_debounce_channels.add(channel_id)
+    else:
+        bug_report_debounce_channels.discard(channel_id)
+    persist_ticket_state(channel_id)
+    return job
+
+
 def clear_ticket_investigation_job(channel_id: int) -> None:
     ticket_investigation_jobs.pop(channel_id, None)
 

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import state
 from state import (
+    apply_initial_button_intent,
     PublicConversation,
     TicketInvestigationJob,
     bug_report_debounce_channels,
@@ -21,6 +22,7 @@ from state import (
     last_bot_reply_ts_by_channel,
     last_wallet_by_channel,
     mark_ticket_channel_stopped,
+    mark_ticket_awaiting_initial_button,
     pending_wallet_confirmation_by_channel,
     persist_public_conversation,
     persist_ticket_state,
@@ -120,6 +122,40 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
                 self.assertEqual(payload["history"], [])
+
+    def test_apply_initial_button_intent_updates_waiting_flags_and_job(self) -> None:
+        channel_id = 105
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+            ):
+                mark_ticket_awaiting_initial_button(channel_id)
+
+                job = apply_initial_button_intent(
+                    channel_id,
+                    "investigate_issue",
+                    investigation_mode="collecting",
+                    bug_report_debounce=True,
+                )
+
+                self.assertEqual(job.requested_intent, "investigate_issue")
+                self.assertEqual(job.mode, "collecting")
+                self.assertNotIn(channel_id, channels_awaiting_initial_button_press)
+                self.assertEqual(
+                    channel_intent_after_button[channel_id],
+                    "investigate_issue",
+                )
+                self.assertIn(channel_id, bug_report_debounce_channels)
+
+                payload = state._read_json(ticket_dir / f"{channel_id}.json")
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertEqual(payload["channel_intent_after_button"], "investigate_issue")
+                self.assertFalse(payload["awaiting_initial_button_press"])
+                self.assertTrue(payload["bug_report_debounce"])
 
     def test_reset_ticket_channel_for_terminal_reply_deletes_persisted_state(self) -> None:
         channel_id = 103

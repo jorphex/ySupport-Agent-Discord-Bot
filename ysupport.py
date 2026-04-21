@@ -38,6 +38,7 @@ from state import (
     last_wallet_by_channel,
     last_bot_reply_ts_by_channel,
     mark_ticket_channel_stopped,
+    mark_ticket_awaiting_initial_button,
     monitored_new_channels,
     pending_messages,
     pending_tasks,
@@ -342,9 +343,8 @@ class TicketBot(discord.Client):
                 )
                 try:
                     await channel.send(welcome_message, view=InitialInquiryView(), suppress_embeds=True)
-                    channels_awaiting_initial_button_press.add(channel.id)
                     last_bot_reply_ts_by_channel[channel.id] = datetime.now(timezone.utc)
-                    persist_ticket_state(channel.id)
+                    mark_ticket_awaiting_initial_button(channel.id)
                     logging.info(f"Sent initial inquiry buttons to channel {channel.id}")
                 except discord.Forbidden:
                     logging.error(f"Missing permissions to send initial message with buttons in {channel.id}")

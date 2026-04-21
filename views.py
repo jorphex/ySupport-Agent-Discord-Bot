@@ -6,12 +6,9 @@ from discord.ui import View, Button, button
 import config
 from bot_behavior import STANDARD_REDIRECT_MESSAGE
 from state import (
+    apply_initial_button_intent,
     channels_awaiting_initial_button_press,
-    channel_intent_after_button,
-    bug_report_debounce_channels,
-    get_or_create_ticket_investigation_job,
     mark_ticket_channel_stopped,
-    persist_ticket_state,
     pending_tasks,
     stop_ticket_channel,
 )
@@ -34,15 +31,16 @@ class InitialInquiryView(View):
         except Exception as e:
             logging.warning(f"Could not disable initial inquiry buttons in {interaction.channel_id} on message {interaction.message.id if interaction.message else 'Unknown'}: {e}")
 
-        channels_awaiting_initial_button_press.discard(interaction.channel.id)
-        channel_intent_after_button[interaction.channel.id] = intent_category
-        investigation_job = get_or_create_ticket_investigation_job(interaction.channel.id)
-        investigation_job.record_requested_intent(intent_category)
-        if intent_category == "investigate_issue":
-            investigation_job.begin_collecting()
-        else:
-            investigation_job.mark_waiting_for_user()
-        persist_ticket_state(interaction.channel.id)
+        apply_initial_button_intent(
+            interaction.channel.id,
+            intent_category,
+            investigation_mode=(
+                "collecting"
+                if intent_category == "investigate_issue"
+                else "waiting_for_user"
+            ),
+            bug_report_debounce=intent_category == "investigate_issue",
+        )
 
         if interaction.channel:
             await interaction.channel.send(prompt_message, suppress_embeds=True)
@@ -76,7 +74,6 @@ class InitialInquiryView(View):
             "any error text, any tx hash, and your browser/device or wallet if that matters."
         )
         await self.handle_button_click_and_prompt(interaction, button.custom_id, prompt, "investigate_issue")
-        bug_report_debounce_channels.add(interaction.channel.id)
         logging.info(f"Issue investigation initiated in {interaction.channel.id}. Awaiting issue details.")
 
     @button(label="🤝 BD / Partnerships / Listings", style=discord.ButtonStyle.secondary, custom_id="initial_bd_partner", row=2)
@@ -97,11 +94,12 @@ class InitialInquiryView(View):
             await interaction.channel.send(prompt, suppress_embeds=True)
         else:
             await interaction.followup.send(prompt, ephemeral=False, suppress_embeds=True)
-        channel_intent_after_button[interaction.channel.id] = "other_free_form"
-        investigation_job = get_or_create_ticket_investigation_job(interaction.channel.id)
-        investigation_job.record_requested_intent("other_free_form")
-        investigation_job.mark_waiting_for_user()
-        persist_ticket_state(interaction.channel.id)
+        apply_initial_button_intent(
+            interaction.channel.id,
+            "other_free_form",
+            investigation_mode="waiting_for_user",
+            bug_report_debounce=False,
+        )
         logging.info(f"User selected 'Other' in {interaction.channel.id}. Awaiting free-form input.")
 
     async def handle_button_click(self, interaction: discord.Interaction, button_custom_id: str):
