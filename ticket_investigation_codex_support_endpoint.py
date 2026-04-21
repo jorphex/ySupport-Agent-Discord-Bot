@@ -13,6 +13,7 @@ from codex_support_contract import (
     support_result_to_transport_result,
     verify_support_turn_result,
 )
+from codex_support_sessions import CodexSupportSessionManager
 from ticket_execution_subprocess_utils import (
     build_effective_execution_env,
     run_bounded_subprocess,
@@ -35,6 +36,7 @@ class CodexSupportExecutionBundle:
     prompt_path: Path
     support_request_path: Path
     response_schema_path: Path
+    resumed_session_id: str | None
 
 
 class CodexSupportTicketExecutionJsonEndpoint:
@@ -47,6 +49,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
         repo_root: str | Path | None = None,
         codex_home: str | Path | None = None,
         codex_auth_source: str | Path | None = None,
+        session_dir: str | Path | None = None,
+        session_max_age_hours: int | None = None,
         ysupport_mcp_url: str | None = None,
         ysupport_mcp_container: str | None = None,
         mcp_server_api_key: str | None = None,
@@ -70,6 +74,14 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.repo_root = Path(repo_root) if repo_root else None
         self.codex_home = Path(codex_home) if codex_home else None
         self.codex_auth_source = Path(codex_auth_source) if codex_auth_source else None
+        self.session_manager = (
+            CodexSupportSessionManager(
+                session_dir,
+                max_age_hours=session_max_age_hours,
+            )
+            if session_dir
+            else None
+        )
         self.ysupport_mcp_url = ysupport_mcp_url
         self.ysupport_mcp_container = ysupport_mcp_container
         self.mcp_server_api_key = mcp_server_api_key
@@ -128,13 +140,25 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 request,
                 ysupport_mcp_enabled=ysupport_mcp_enabled,
             )
+            conversation_key = (
+                self.session_manager.conversation_key_for_request(request)
+                if self.session_manager is not None
+                else None
+            )
+            session_record = (
+                self.session_manager.load(conversation_key)
+                if self.session_manager is not None and conversation_key is not None
+                else None
+            )
             bundle = _build_codex_support_execution_bundle(
                 support_request=support_request,
                 run_dir=run_dir,
                 codex_command=self.codex_command,
                 model=self.model,
                 reasoning_effort=self.reasoning_effort,
+                resume_session_id=session_record.session_id if session_record else None,
             )
+            exported_run_dir: Path | None = None
             try:
                 response_text = await run_bounded_subprocess(
                     command=bundle.command,
@@ -160,18 +184,51 @@ class CodexSupportTicketExecutionJsonEndpoint:
                     },
                     artifact_run_dir=run_dir,
                 )
+            except Exception as exc:
+                if (
+                    self.session_manager is not None
+                    and conversation_key is not None
+                    and session_record is not None
+                ):
+                    self.session_manager.record_failure(
+                        conversation_key=conversation_key,
+                        error_text=str(exc),
+                    )
+                raise
             finally:
-                safe_export_workspace_copy(
+                exported_run_dir = safe_export_workspace_copy(
                     workspace,
                     logger_name=__name__,
                     context="codex support execution",
                 )
 
+            if self.session_manager is not None and conversation_key is not None:
+                session_id = self._extract_session_id_from_run_dir(run_dir)
+                if session_id is not None:
+                    self.session_manager.record_success(
+                        conversation_key=conversation_key,
+                        session_id=session_id,
+                        artifact_dir=str(exported_run_dir) if exported_run_dir else None,
+                    )
             support_result = verify_support_turn_result(
                 SupportTurnResult.from_json(response_text),
                 support_request,
             )
             return support_result_to_transport_result(support_result, request).to_json()
+
+    def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:
+        stderr_path = run_dir / "stderr.txt"
+        if not stderr_path.exists():
+            return None
+        try:
+            stderr_text = stderr_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return (
+            self.session_manager.extract_session_id(stderr_text)
+            if self.session_manager is not None
+            else None
+        )
 
 
 def _build_codex_support_execution_bundle(
@@ -181,6 +238,7 @@ def _build_codex_support_execution_bundle(
     codex_command: Sequence[str],
     model: str | None,
     reasoning_effort: str | None,
+    resume_session_id: str | None = None,
 ) -> CodexSupportExecutionBundle:
     run_dir_path = Path(run_dir)
     run_dir_path.mkdir(parents=True, exist_ok=True)
@@ -200,7 +258,47 @@ def _build_codex_support_execution_bundle(
     )
     prompt_path.write_text(prompt_text, encoding="utf-8")
 
-    command = list(codex_command)
+    command = _build_codex_support_command(
+        codex_command=codex_command,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        response_schema_path=response_schema_path,
+        run_dir_path=run_dir_path,
+        resume_session_id=resume_session_id,
+    )
+    return CodexSupportExecutionBundle(
+        command=command,
+        prompt_text=prompt_text,
+        prompt_path=prompt_path,
+        support_request_path=support_request_path,
+        response_schema_path=response_schema_path,
+        resumed_session_id=resume_session_id,
+    )
+
+
+def _build_codex_support_command(
+    *,
+    codex_command: Sequence[str],
+    model: str | None,
+    reasoning_effort: str | None,
+    response_schema_path: Path,
+    run_dir_path: Path,
+    resume_session_id: str | None,
+) -> list[str]:
+    if resume_session_id:
+        command = _build_codex_resume_command(
+            codex_command=codex_command,
+            session_id=resume_session_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+        command.append("-")
+        return command
+
+    command = [
+        arg for arg in codex_command
+        if arg != "--ephemeral"
+    ]
     if model:
         command.extend(["-m", model])
     if reasoning_effort:
@@ -214,13 +312,30 @@ def _build_codex_support_execution_bundle(
             "-",
         ]
     )
-    return CodexSupportExecutionBundle(
-        command=command,
-        prompt_text=prompt_text,
-        prompt_path=prompt_path,
-        support_request_path=support_request_path,
-        response_schema_path=response_schema_path,
+    return command
+
+
+def _build_codex_resume_command(
+    *,
+    codex_command: Sequence[str],
+    session_id: str,
+    model: str | None,
+    reasoning_effort: str | None,
+) -> list[str]:
+    exec_index = next(
+        (index for index, token in enumerate(codex_command) if token == "exec"),
+        None,
     )
+    if exec_index is None:
+        raise ValueError("Codex support command must include an exec subcommand.")
+    command = list(codex_command[:exec_index]) + ["exec", "resume", session_id]
+    if "--skip-git-repo-check" in codex_command[exec_index + 1 :]:
+        command.append("--skip-git-repo-check")
+    if model:
+        command.extend(["-m", model])
+    if reasoning_effort:
+        command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+    return command
 
 
 def _codex_support_prompt(

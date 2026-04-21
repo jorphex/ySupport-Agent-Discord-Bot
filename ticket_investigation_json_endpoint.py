@@ -318,6 +318,8 @@ def _build_single_ticket_execution_json_endpoint(
             repo_root=config.BASE_DIR,
             codex_home=config.TICKET_EXECUTION_CODEX_HOME,
             codex_auth_source=config.TICKET_EXECUTION_CODEX_AUTH_SOURCE,
+            session_dir=config.TICKET_EXECUTION_CODEX_SESSION_DIR,
+            session_max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
             ysupport_mcp_url=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL,
             ysupport_mcp_container=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER,
             mcp_server_api_key=config.MCP_SERVER_API_KEY,

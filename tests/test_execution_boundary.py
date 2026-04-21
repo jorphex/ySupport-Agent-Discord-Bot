@@ -57,6 +57,10 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR,
             "/var/lib/ysupport-codex/shadow",
         )
+        self.assertEqual(
+            config.TICKET_EXECUTION_CODEX_SESSION_DIR,
+            "/var/lib/ysupport-codex/sessions",
+        )
 
     def test_build_rpc_urls_prefers_explicit_per_chain_env(self) -> None:
         rpc_urls = config.build_rpc_urls(
@@ -139,6 +143,7 @@ class ConfigSummaryTests(unittest.TestCase):
         self.assertIn("codex_model=gpt-5.4", summary)
         self.assertIn("codex_reasoning=medium", summary)
         self.assertIn("state_root=/var/lib/ysupport-codex", summary)
+        self.assertIn("codex_session_dir=/var/lib/ysupport-codex/sessions", summary)
         self.assertIn("artifact_dir=/tmp/ticket-artifacts", summary)
 
     def test_ticket_execution_runtime_warnings_flag_primary_codex_without_fallback(self) -> None:

@@ -43,6 +43,8 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
             "uses_codex": uses_codex,
             "artifact_dir": config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             "run_dir_root": config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
+            "codex_session_dir": config.TICKET_EXECUTION_CODEX_SESSION_DIR or None,
+            "codex_session_max_age_hours": config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
             "sandbox_policy": {
                 "workspace_mode": "temporary_per_turn",
                 "export_mode": (

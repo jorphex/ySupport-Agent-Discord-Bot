@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from pathlib import Path
+import tempfile
+import unittest
+
+from codex_support_sessions import CodexSupportSessionManager
+from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
+from ticket_investigation_codex_support_endpoint import (
+    _build_codex_support_command,
+)
+from ticket_investigation_transport import TicketExecutionTransportRequest
+
+
+class CodexSupportSessionManagerTests(unittest.TestCase):
+    def test_record_success_and_load_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+            manager.record_success(
+                conversation_key="ticket:123",
+                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+                artifact_dir="/tmp/run-1",
+            )
+
+            record = manager.load("ticket:123")
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.session_id, "019dade1-5acf-70e2-9c61-f5ba37862a78")
+        self.assertEqual(record.run_count, 1)
+        self.assertEqual(record.last_artifact_dir, "/tmp/run-1")
+
+    def test_extract_session_id_from_stderr(self) -> None:
+        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
+        stderr_text = (
+            "OpenAI Codex v0.117.0\n"
+            "session id: 019dade1-5acf-70e2-9c61-f5ba37862a78\n"
+        )
+        self.assertEqual(
+            manager.extract_session_id(stderr_text),
+            "019dade1-5acf-70e2-9c61-f5ba37862a78",
+        )
+
+    def test_conversation_key_for_ticket_request(self) -> None:
+        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
+        request = TicketExecutionTransportRequest(
+            aggregated_text="hello",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 123,
+                "is_public_trigger": False,
+                "project_context": "yearn",
+                "initial_button_intent": "investigate_issue",
+            },
+            investigation_job={
+                "channel_id": 123,
+                "requested_intent": "investigate_issue",
+                "mode": "collecting",
+                "evidence": {},
+            },
+            workflow_name="tests.session_key",
+            wants_bug_review_status=False,
+        )
+
+        self.assertEqual(
+            manager.conversation_key_for_request(request),
+            "ticket:123",
+        )
+
+
+class CodexSupportCommandBuilderTests(unittest.TestCase):
+    def test_fresh_command_drops_ephemeral_and_keeps_schema(self) -> None:
+        command = _build_codex_support_command(
+            codex_command=DEFAULT_CODEX_EXEC_COMMAND,
+            model="gpt-5.4",
+            reasoning_effort="medium",
+            response_schema_path=Path("/tmp/schema.json"),
+            run_dir_path=Path("/tmp/run"),
+            resume_session_id=None,
+        )
+
+        self.assertNotIn("--ephemeral", command)
+        self.assertIn("--output-schema", command)
+        self.assertIn("-C", command)
+
+    def test_resume_command_uses_exec_resume_without_schema(self) -> None:
+        command = _build_codex_support_command(
+            codex_command=DEFAULT_CODEX_EXEC_COMMAND,
+            model="gpt-5.4",
+            reasoning_effort="medium",
+            response_schema_path=Path("/tmp/schema.json"),
+            run_dir_path=Path("/tmp/run"),
+            resume_session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+        )
+
+        self.assertEqual(command[:4], ["codex", "exec", "resume", "019dade1-5acf-70e2-9c61-f5ba37862a78"])
+        self.assertNotIn("--ephemeral", command)
+        self.assertNotIn("--output-schema", command)
+        self.assertEqual(command[-1], "-")
