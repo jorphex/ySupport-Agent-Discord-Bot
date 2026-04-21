@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -67,6 +68,48 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             manager.conversation_key_for_request(request),
             "ticket:123",
         )
+
+    def test_summary_reports_active_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+            manager.record_success(
+                conversation_key="ticket:123",
+                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+                artifact_dir="/tmp/run-1",
+            )
+
+            summary = manager.summary()
+
+        self.assertEqual(summary["root_dir"], temp_dir)
+        self.assertEqual(summary["active_sessions"], 1)
+        self.assertEqual(len(summary["records"]), 1)
+        self.assertEqual(
+            summary["records"][0]["conversation_key"],
+            "ticket:123",
+        )
+
+    def test_prune_expired_removes_old_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=1)
+            record_path = Path(temp_dir) / "ticket_123.json"
+            record_path.write_text(
+                json.dumps(
+                    {
+                        "conversation_key": "ticket:123",
+                        "session_id": "019dade1-5acf-70e2-9c61-f5ba37862a78",
+                        "created_at_utc": "2026-04-19T00:00:00+00:00",
+                        "updated_at_utc": "2026-04-19T00:00:00+00:00",
+                        "run_count": 1,
+                        "last_artifact_dir": "/tmp/run-1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            removed = manager.prune_expired()
+
+        self.assertEqual(removed, 1)
+        self.assertFalse(record_path.exists())
 
 
 class CodexSupportCommandBuilderTests(unittest.TestCase):

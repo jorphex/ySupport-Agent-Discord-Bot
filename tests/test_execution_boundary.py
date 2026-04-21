@@ -275,6 +275,9 @@ class TicketExecutionStatusTests(unittest.TestCase):
         with patch(
             "ticket_execution_status.get_repo_context_status",
             return_value={"state": "ready", "fresh": True},
+        ), patch(
+            "ticket_execution_status._build_codex_session_summary",
+            return_value={"root_dir": "/tmp/sessions", "active_sessions": 2},
         ):
             status = build_ticket_execution_status()
 
@@ -287,6 +290,10 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertEqual(
             status["ticket_execution"]["sandbox_policy"]["workspace_mode"],
             "temporary_per_turn",
+        )
+        self.assertEqual(
+            status["ticket_execution"]["codex_session_summary"],
+            {"root_dir": "/tmp/sessions", "active_sessions": 2},
         )
         self.assertEqual(status["repo_context"]["state"], "ready")
 

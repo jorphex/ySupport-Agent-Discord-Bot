@@ -45,15 +45,25 @@ class CodexSupportSessionManager:
         path = self._record_path(conversation_key)
         if not path.exists():
             return None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        record = self._read_record(path)
+        if record is None:
             return None
-        record = CodexSupportSessionRecord(**payload)
         if self._is_expired(record):
             self.reset(conversation_key)
             return None
         return record
+
+    def list_records(self) -> list[CodexSupportSessionRecord]:
+        records: list[CodexSupportSessionRecord] = []
+        for path in sorted(self.root_dir.glob("*.json")):
+            record = self._read_record(path)
+            if record is None:
+                continue
+            if self._is_expired(record):
+                path.unlink(missing_ok=True)
+                continue
+            records.append(record)
+        return records
 
     def record_success(
         self,
@@ -122,6 +132,25 @@ class CodexSupportSessionManager:
             "record": asdict(record) if record is not None else None,
         }
 
+    def summary(self) -> dict[str, Any]:
+        records = self.list_records()
+        return {
+            "root_dir": str(self.root_dir),
+            "active_sessions": len(records),
+            "records": [asdict(record) for record in records],
+        }
+
+    def prune_expired(self) -> int:
+        removed = 0
+        for path in sorted(self.root_dir.glob("*.json")):
+            record = self._read_record(path)
+            if record is None:
+                continue
+            if self._is_expired(record):
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
     def conversation_key_for_request(self, request) -> str:
         channel_type = "public" if request.run_context.get("is_public_trigger") else "ticket"
         channel_id = request.run_context.get("channel_id")
@@ -144,6 +173,16 @@ class CodexSupportSessionManager:
             json.dumps(asdict(record), indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+    def _read_record(self, path: Path) -> CodexSupportSessionRecord | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        try:
+            return CodexSupportSessionRecord(**payload)
+        except TypeError:
+            return None
 
     def _is_expired(self, record: CodexSupportSessionRecord) -> bool:
         if self.max_age is None:

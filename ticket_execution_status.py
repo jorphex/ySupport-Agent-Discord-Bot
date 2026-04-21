@@ -6,6 +6,7 @@ import sys
 from typing import Any
 
 import config
+from codex_support_sessions import CodexSupportSessionManager
 from repo_context import get_repo_context_status
 
 
@@ -45,6 +46,7 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
             "run_dir_root": config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
             "codex_session_dir": config.TICKET_EXECUTION_CODEX_SESSION_DIR or None,
             "codex_session_max_age_hours": config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+            "codex_session_summary": _build_codex_session_summary(),
             "sandbox_policy": {
                 "workspace_mode": "temporary_per_turn",
                 "export_mode": (
@@ -117,6 +119,21 @@ def _probe_command(mode: str) -> dict[str, Any] | None:
         "command": command,
         "available": resolved_path is not None,
         "resolved_path": resolved_path,
+    }
+
+
+def _build_codex_session_summary() -> dict[str, Any] | None:
+    session_dir = config.TICKET_EXECUTION_CODEX_SESSION_DIR
+    if not session_dir:
+        return None
+    manager = CodexSupportSessionManager(
+        session_dir,
+        max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+    )
+    summary = manager.summary()
+    return {
+        "root_dir": summary["root_dir"],
+        "active_sessions": summary["active_sessions"],
     }
 
 
