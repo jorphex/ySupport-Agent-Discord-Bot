@@ -159,8 +159,8 @@ support_boundary_guardrail_agent = Agent[BotRunContext](
 )
 
 
-@input_guardrail(name="BD/PR/Listing/Job Guardrail")
-async def bd_priority_guardrail(
+@input_guardrail(name="Support Boundary Guardrail")
+async def support_boundary_guardrail(
     ctx: RunContextWrapper[BotRunContext],
     agent: Agent,
     input_data: Union[str, List[TResponseInputItem]]
@@ -310,7 +310,7 @@ triage_agent = Agent[BotRunContext](
         handoff(yearn_docs_qa_agent, tool_name_override="transfer_to_yearn_docs_qa_specialist", tool_description_override="Handoff for general questions about YEARN concepts, documentation, risks."),
         handoff(yearn_bug_triage_agent, tool_name_override="transfer_to_yearn_bug_triage_specialist", tool_description_override="Handoff for YEARN bug reports, UI issues, migration issues, and protocol behavior claims that should be checked against docs and repo context before human escalation."),
     ],
-    input_guardrails=[bd_priority_guardrail],
+    input_guardrails=[support_boundary_guardrail],
     model=config.LLM_TRIAGE_AGENT_MODEL,
     model_settings=_gpt5_model_settings(
         effort=config.LLM_TRIAGE_AGENT_REASONING_EFFORT,
@@ -321,7 +321,7 @@ triage_agent = Agent[BotRunContext](
 ticket_triage_router_agent = Agent[BotRunContext](
     name="Ticket Triage Router",
     instructions=_with_runtime_context(TICKET_TRIAGE_ROUTER_INSTRUCTIONS),
-    input_guardrails=[bd_priority_guardrail],
+    input_guardrails=[support_boundary_guardrail],
     output_type=TicketTriageDecision,
     model=config.LLM_TRIAGE_AGENT_MODEL,
     model_settings=_gpt5_model_settings(

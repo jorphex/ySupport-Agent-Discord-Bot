@@ -25,8 +25,8 @@ from state import (
 from ticket_investigation_worker import TicketInvestigationWorker
 from support_agents import (
     SupportBoundaryCheckOutput,
-    bd_priority_guardrail,
     evaluate_support_boundary,
+    support_boundary_guardrail,
     TicketTriageDecision,
     ticket_triage_router_agent,
     triage_agent,
@@ -336,7 +336,7 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             return FakeResult()
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await bd_priority_guardrail.guardrail_function(
+            result = await support_boundary_guardrail.guardrail_function(
                 None,
                 None,
                 "phishing vendor outreach",
@@ -409,7 +409,7 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await bd_priority_guardrail.guardrail_function(
+            result = await support_boundary_guardrail.guardrail_function(
                 None,
                 None,
                 disclosure,

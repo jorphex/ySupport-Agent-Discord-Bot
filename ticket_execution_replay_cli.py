@@ -8,8 +8,10 @@ import sys
 from typing import Iterator
 
 import config
+from codex_support_sessions import CodexSupportSessionManager
 from ticket_execution_runtime_factory import build_local_ticket_investigation_executor
 from ticket_investigation_json_endpoint import build_ticket_execution_json_endpoint
+from ticket_investigation_transport import TicketExecutionTransportRequest
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -40,6 +42,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--pretty",
         action="store_true",
         help="Pretty-print the result JSON.",
+    )
+    parser.add_argument(
+        "--fresh-session",
+        action="store_true",
+        help="Reset any persisted Codex support session for this request before replaying it.",
     )
     return parser
 
@@ -74,7 +81,10 @@ async def execute_request_json(
     *,
     mode: str | None = None,
     fallback_mode: str | None = None,
+    fresh_session: bool = False,
 ) -> str:
+    if fresh_session:
+        _reset_replay_session(request_json)
     with temporary_ticket_execution_modes(mode, fallback_mode):
         delegate = _build_replay_delegate(
             primary_mode=config.TICKET_EXECUTION_ENDPOINT,
@@ -93,6 +103,15 @@ def _build_replay_delegate(*, primary_mode: str, fallback_mode: str) -> object:
 class _NoopExecutor:
     async def execute_turn(self, request, hooks=None):
         raise AssertionError("Replay delegate should not execute for non-local backends.")
+
+
+def _reset_replay_session(request_json: str) -> None:
+    request = TicketExecutionTransportRequest.from_json(request_json)
+    manager = CodexSupportSessionManager(
+        config.TICKET_EXECUTION_CODEX_SESSION_DIR,
+        max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+    )
+    manager.reset(manager.conversation_key_for_request(request))
 
 
 async def _main(argv: list[str] | None = None) -> int:
@@ -122,6 +141,7 @@ async def _main(argv: list[str] | None = None) -> int:
         request_json,
         mode=args.mode,
         fallback_mode=effective_fallback_mode if args.no_fallback or args.fallback_mode is not None else None,
+        fresh_session=args.fresh_session,
     )
     if args.pretty:
         sys.stdout.write(json.dumps(json.loads(response_json), indent=2, sort_keys=True))
