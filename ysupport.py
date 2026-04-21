@@ -14,7 +14,6 @@ from agents import (
 
 import config
 import tools_lib
-from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE
 from router import (
     is_message_primarily_address,
     is_bug_report_query,
@@ -22,7 +21,7 @@ from router import (
     is_wallet_confirmation,
     is_wallet_rejection,
 )
-from support_agents import evaluate_bd_priority_boundary, evaluate_support_scope_boundary
+from support_agents import evaluate_support_boundary
 from state import (
     BotRunContext,
     PublicConversation,
@@ -59,7 +58,6 @@ from ticket_investigation_executor import (
 from ticket_investigation_runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
-    bug_bounty_intake_boundary_reply,
 )
 from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
@@ -108,15 +106,9 @@ def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
 
 
 async def _outer_support_boundary_reply(text: str) -> str | None:
-    boundary_reply = bug_bounty_intake_boundary_reply(text)
-    if boundary_reply is not None:
-        return boundary_reply
-    output_info = await evaluate_bd_priority_boundary(text)
+    output_info = await evaluate_support_boundary(text)
     if output_info.get("tripwire_triggered") and output_info.get("message"):
         return str(output_info["message"])
-    scope_output = await evaluate_support_scope_boundary(text)
-    if scope_output.get("tripwire_triggered"):
-        return OUT_OF_SCOPE_SUPPORT_MESSAGE
     return None
 
 

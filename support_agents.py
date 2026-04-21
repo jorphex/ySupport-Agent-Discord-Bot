@@ -18,12 +18,12 @@ from agent_prompts import (
     YEARn_DATA_AGENT_INSTRUCTIONS,
     YEARn_DOCS_QA_AGENT_INSTRUCTIONS,
     YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
-    BD_PRIORITY_GUARDRAIL_INSTRUCTIONS,
-    SUPPORT_SCOPE_GUARDRAIL_INSTRUCTIONS,
+    SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS,
     TRIAGE_AGENT_INSTRUCTIONS,
     TICKET_TRIAGE_ROUTER_INSTRUCTIONS,
 )
 from bot_behavior import (
+    OUT_OF_SCOPE_SUPPORT_MESSAGE,
     LISTING_DENIAL_MESSAGE,
     STANDARD_REDIRECT_MESSAGE,
     SECURITY_VENDOR_BOUNDARY_MESSAGE,
@@ -46,10 +46,23 @@ from support_tools import (
 
 _SUPPORT_SCOPE_TX_HASH_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{64}")
 _SUPPORT_SCOPE_ADDRESS_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{40}")
+_SECURITY_PROCESS_URL = "https://docs.yearn.fi/developers/security"
 
 
-class BDPriorityCheckOutput(BaseModel):
-    request_type: Literal["listing", "partnership", "marketing", "vendor_security", "other_bd", "job_inquiry", "not_bd_pr"] = Field(..., description="Classify the user's primary intent: 'listing' (requesting Yearn list their token), 'partnership' (proposing integration/collaboration), 'marketing' (joint marketing/promotion), 'vendor_security' (security or phishing vendor/service outreach), 'other_bd' (other business development), 'job_inquiry' (asking to work for/contribute to Yearn, grant requests), or 'not_bd_pr' (standard support request or unrelated).")
+class SupportBoundaryCheckOutput(BaseModel):
+    classification: Literal[
+        "yearn_support",
+        "business_boundary",
+        "security_process_boundary",
+        "non_support_assistant",
+        "uncertain",
+    ] = Field(..., description="Top-level outer boundary classification for the user message.")
+    business_subtype: Optional[
+        Literal["listing", "general_bd", "vendor_security", "job_inquiry"]
+    ] = Field(
+        default=None,
+        description="Subtype only when classification is business_boundary.",
+    )
     reasoning: str = Field(..., description="Brief explanation for the classification.")
 
 
@@ -69,136 +82,6 @@ class TicketTriageDecision(BaseModel):
     reasoning: str = Field(..., description="Brief explanation for the routing decision.")
 
 
-class SupportScopeCheckOutput(BaseModel):
-    scope: Literal["yearn_support", "non_support_assistant", "uncertain"] = Field(
-        ...,
-        description="Whether the message is in scope for Yearn support or is unrelated assistant use.",
-    )
-    reasoning: str = Field(..., description="Brief explanation for the scope classification.")
-
-
-def _looks_like_vendor_security_outreach(text: str) -> bool:
-    lowered = (text or "").lower()
-    vendor_terms = (
-        "threat intelligence",
-        "analysts",
-        "vendor",
-        "service",
-        "services",
-        "monitoring",
-        "scan",
-        "scans",
-        "broader scan",
-        "trial",
-        "free trial",
-        "takedown",
-        "takedowns",
-        "brand protection",
-        "impersonation",
-        "fake domains",
-        "malicious domains",
-        "phishing domains",
-        "free of charge",
-    )
-    return any(term in lowered for term in vendor_terms)
-
-
-def _looks_like_concrete_security_disclosure(text: str) -> bool:
-    lowered = (text or "").lower()
-    disclosure_terms = (
-        "vulnerability",
-        "security issue",
-        "security report",
-        "bug report",
-        "exploit",
-        "responsibly disclose",
-        "responsible disclosure",
-        "proof of concept",
-        "poc",
-        "full technical report",
-        "technical report",
-    )
-    component_terms = (
-        "contract",
-        "strategy",
-        "vault",
-        "router",
-        "styfi",
-        "veyfi",
-        "_withdraw",
-        "_unstake",
-        "component:",
-        "issue:",
-    )
-    impact_terms = (
-        "impact:",
-        "severity",
-        "loss of funds",
-        "fund loss",
-        "freezing of user funds",
-        "freeze of user funds",
-        "permanent user fund loss",
-        "permanent freezing",
-        "permanent loss",
-    )
-    submission_blocker_terms = (
-        "immunefi",
-        "zkpassport",
-        "identity verification",
-        "secure way to submit",
-        "preferred secure way",
-        "submit the full report",
-    )
-
-    has_disclosure_term = any(term in lowered for term in disclosure_terms)
-    has_component_term = any(term in lowered for term in component_terms)
-    has_impact_term = any(term in lowered for term in impact_terms)
-    has_submission_blocker = any(term in lowered for term in submission_blocker_terms)
-
-    return has_disclosure_term and (
-        has_submission_blocker or (has_component_term and has_impact_term)
-    )
-
-
-def _looks_like_bd_priority_candidate(text: str) -> bool:
-    lowered = (text or "").lower()
-    candidate_terms = (
-        "list ",
-        "listing",
-        "exchange",
-        "partnership",
-        "partner ",
-        "collab",
-        "collaborat",
-        "marketing",
-        "business development",
-        "proposal",
-        "integration opportunity",
-        "vendor",
-        "phishing",
-        "takedown",
-        "brand protection",
-        "security service",
-        "security services",
-        "threat intelligence",
-        "trial",
-        "responsibly disclose",
-        "responsible disclosure",
-        "security issue",
-        "vulnerability",
-        "technical report",
-        "immunefi",
-        "security team",
-        "job",
-        "hiring",
-        "work for yearn",
-        "work with yearn",
-        "grant",
-        "bounty",
-    )
-    return any(term in lowered for term in candidate_terms)
-
-
 def _looks_like_support_scope_primitive(text: str) -> bool:
     stripped = (text or "").strip()
     if not stripped:
@@ -207,6 +90,33 @@ def _looks_like_support_scope_primitive(text: str) -> bool:
         _SUPPORT_SCOPE_TX_HASH_RE.fullmatch(stripped)
         or _SUPPORT_SCOPE_ADDRESS_RE.fullmatch(stripped)
     )
+
+
+def _security_process_boundary_message() -> str:
+    return (
+        "If you are reporting a Yearn security issue and want bounty or disclosure handling, "
+        f"use Yearn's official security process at {_SECURITY_PROCESS_URL}. "
+        "Human help is required beyond that path."
+    )
+
+
+def _message_for_support_boundary(
+    classification: str,
+    business_subtype: str | None,
+) -> str | None:
+    if classification == "business_boundary":
+        if business_subtype == "listing":
+            return LISTING_DENIAL_MESSAGE
+        if business_subtype == "vendor_security":
+            return SECURITY_VENDOR_BOUNDARY_MESSAGE
+        if business_subtype == "job_inquiry":
+            return JOB_INQUIRY_REDIRECT_MESSAGE
+        return STANDARD_REDIRECT_MESSAGE
+    if classification == "security_process_boundary":
+        return _security_process_boundary_message()
+    if classification == "non_support_assistant":
+        return OUT_OF_SCOPE_SUPPORT_MESSAGE
+    return None
 
 
 def _gpt5_model_settings(
@@ -237,21 +147,10 @@ def _with_runtime_context(base_instructions: str):
     return _instructions
 
 
-bd_priority_guardrail_agent = Agent[BotRunContext](
-    name="BD/PR/Listing Guardrail Check",
-    instructions=BD_PRIORITY_GUARDRAIL_INSTRUCTIONS,
-    output_type=BDPriorityCheckOutput,
-    model=config.LLM_GUARDRAIL_MODEL,
-    model_settings=_gpt5_model_settings(
-        effort=config.LLM_GUARDRAIL_REASONING_EFFORT,
-        verbosity=config.LLM_GUARDRAIL_VERBOSITY,
-    ),
-)
-
-support_scope_guardrail_agent = Agent[BotRunContext](
-    name="Yearn Support Scope Guardrail Check",
-    instructions=SUPPORT_SCOPE_GUARDRAIL_INSTRUCTIONS,
-    output_type=SupportScopeCheckOutput,
+support_boundary_guardrail_agent = Agent[BotRunContext](
+    name="Support Boundary Guardrail Check",
+    instructions=SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS,
+    output_type=SupportBoundaryCheckOutput,
     model=config.LLM_GUARDRAIL_MODEL,
     model_settings=_gpt5_model_settings(
         effort=config.LLM_GUARDRAIL_REASONING_EFFORT,
@@ -285,7 +184,7 @@ async def bd_priority_guardrail(
     if not text_input:
         return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
 
-    output_info = await evaluate_bd_priority_boundary(text_input)
+    output_info = await evaluate_support_boundary(text_input)
     if not output_info:
         return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
     return GuardrailFunctionOutput(
@@ -294,104 +193,58 @@ async def bd_priority_guardrail(
     )
 
 
-async def evaluate_bd_priority_boundary(text_input: str) -> dict[str, Any]:
+async def evaluate_support_boundary(text_input: str) -> dict[str, Any]:
     if not text_input.strip():
-        return {"tripwire_triggered": False}
-    if not _looks_like_bd_priority_candidate(text_input):
-        return {"tripwire_triggered": False}
-    logging.info(f"[Guardrail:BD/Priority] Analyzing input: '{text_input[:100]}...'")
+        return {
+            "classification": "yearn_support",
+            "business_subtype": None,
+            "tripwire_triggered": False,
+        }
+    if _looks_like_support_scope_primitive(text_input):
+        return {
+            "classification": "yearn_support",
+            "business_subtype": None,
+            "reasoning": "Explicit support primitive such as a bare address or tx hash.",
+            "tripwire_triggered": False,
+        }
+    logging.info(f"[Guardrail:Boundary] Analyzing input: '{text_input[:100]}...'")
 
     try:
         guardrail_runner = Runner()
         run_config_guardrail = RunConfig(
-            workflow_name="BD/Priority Guardrail Check",
+            workflow_name="Yearn Support Boundary Guardrail Check",
             tracing_disabled=True,
         )
         result = await guardrail_runner.run(
-            starting_agent=bd_priority_guardrail_agent,
+            starting_agent=support_boundary_guardrail_agent,
             input=text_input,
             run_config=run_config_guardrail,
         )
-        check_output = result.final_output_as(BDPriorityCheckOutput)
-        effective_request_type = check_output.request_type
-
-        if (
-            effective_request_type == "vendor_security"
-            and _looks_like_concrete_security_disclosure(text_input)
-            and not _looks_like_vendor_security_outreach(text_input)
-        ):
-            logging.info(
-                "[Guardrail:BD/Priority] Overriding vendor_security to not_bd_pr for concrete security disclosure."
-            )
-            effective_request_type = "not_bd_pr"
-
+        check_output = result.final_output_as(SupportBoundaryCheckOutput)
+        message_to_send = _message_for_support_boundary(
+            check_output.classification,
+            check_output.business_subtype,
+        )
         logging.info(
-            "[Guardrail:BD/Priority] Check result: raw_type=%s effective_type=%s Reasoning: %s",
-            check_output.request_type,
-            effective_request_type,
+            "[Guardrail:Boundary] Check result: classification=%s subtype=%s reasoning=%s",
+            check_output.classification,
+            check_output.business_subtype,
             check_output.reasoning,
         )
-
-        message_to_send = None
-        if effective_request_type == "listing":
-            message_to_send = LISTING_DENIAL_MESSAGE
-        elif effective_request_type == "vendor_security":
-            message_to_send = SECURITY_VENDOR_BOUNDARY_MESSAGE
-        elif effective_request_type in ["partnership", "marketing", "other_bd"]:
-            message_to_send = STANDARD_REDIRECT_MESSAGE
-        elif effective_request_type == "job_inquiry":
-            message_to_send = JOB_INQUIRY_REDIRECT_MESSAGE
-
         output_info: dict[str, Any] = {
-            "classification": check_output.model_dump(),
-            "effective_request_type": effective_request_type,
+            "classification": check_output.classification,
+            "business_subtype": check_output.business_subtype,
+            "reasoning": check_output.reasoning,
             "tripwire_triggered": bool(message_to_send),
         }
         if message_to_send:
             output_info["message"] = message_to_send
         return output_info
     except Exception as e:
-        logging.error(f"[Guardrail:BD/Priority] Error during check: {e}", exc_info=True)
-        return {"error": str(e), "tripwire_triggered": False}
-
-
-async def evaluate_support_scope_boundary(text_input: str) -> dict[str, Any]:
-    if not text_input.strip():
-        return {"scope": "yearn_support", "tripwire_triggered": False}
-    if _looks_like_support_scope_primitive(text_input):
+        logging.error(f"[Guardrail:Boundary] Error during check: {e}", exc_info=True)
         return {
-            "scope": "yearn_support",
-            "reasoning": "Explicit support primitive such as a bare address or tx hash.",
-            "tripwire_triggered": False,
-        }
-    logging.info(f"[Guardrail:Scope] Analyzing input: '{text_input[:100]}...'")
-
-    try:
-        guardrail_runner = Runner()
-        run_config_guardrail = RunConfig(
-            workflow_name="Yearn Support Scope Guardrail Check",
-            tracing_disabled=True,
-        )
-        result = await guardrail_runner.run(
-            starting_agent=support_scope_guardrail_agent,
-            input=text_input,
-            run_config=run_config_guardrail,
-        )
-        check_output = result.final_output_as(SupportScopeCheckOutput)
-        logging.info(
-            "[Guardrail:Scope] Check result: scope=%s reasoning=%s",
-            check_output.scope,
-            check_output.reasoning,
-        )
-        return {
-            "scope": check_output.scope,
-            "reasoning": check_output.reasoning,
-            "tripwire_triggered": check_output.scope == "non_support_assistant",
-        }
-    except Exception as e:
-        logging.error(f"[Guardrail:Scope] Error during check: {e}", exc_info=True)
-        return {
-            "scope": "yearn_support",
+            "classification": "yearn_support",
+            "business_subtype": None,
             "error": str(e),
             "tripwire_triggered": False,
         }

@@ -24,12 +24,9 @@ from state import (
 )
 from ticket_investigation_worker import TicketInvestigationWorker
 from support_agents import (
-    BDPriorityCheckOutput,
-    SupportScopeCheckOutput,
-    _looks_like_concrete_security_disclosure,
+    SupportBoundaryCheckOutput,
     bd_priority_guardrail,
-    evaluate_bd_priority_boundary,
-    evaluate_support_scope_boundary,
+    evaluate_support_boundary,
     TicketTriageDecision,
     ticket_triage_router_agent,
     triage_agent,
@@ -347,22 +344,12 @@ class RoutingTests(unittest.TestCase):
 
 
 class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
-    def test_concrete_security_disclosure_helper_detects_immunefi_blocked_report(self) -> None:
-        text = (
-            "Hello Yearn Finance Security Team, I would like to responsibly disclose a critical "
-            "vulnerability affecting the stYFI contract. Immunefi identity verification is blocked "
-            "because zkPassport is not working. Please let me know the preferred secure way to "
-            "submit the full technical report. Impact: permanent user fund loss. Component: "
-            "stYFI contract (_withdraw / _unstake interaction)."
-        )
-
-        self.assertTrue(_looks_like_concrete_security_disclosure(text))
-
     async def test_vendor_security_boundary_uses_firm_message(self) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
-                return BDPriorityCheckOutput(
-                    request_type="vendor_security",
+                return SupportBoundaryCheckOutput(
+                    classification="business_boundary",
+                    business_subtype="vendor_security",
                     reasoning="security vendor outreach",
                 )
 
@@ -382,11 +369,12 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             SECURITY_VENDOR_BOUNDARY_MESSAGE,
         )
 
-    async def test_evaluate_bd_priority_boundary_returns_reusable_tripwire_payload(self) -> None:
+    async def test_evaluate_support_boundary_returns_reusable_business_tripwire_payload(self) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
-                return BDPriorityCheckOutput(
-                    request_type="job_inquiry",
+                return SupportBoundaryCheckOutput(
+                    classification="business_boundary",
+                    business_subtype="job_inquiry",
                     reasoning="asks how to work for yearn",
                 )
 
@@ -394,28 +382,38 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             return FakeResult()
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_bd_priority_boundary("How can I work for Yearn?")
+            result = await evaluate_support_boundary("How can I work for Yearn?")
 
         self.assertTrue(result["tripwire_triggered"])
-        self.assertEqual(result["effective_request_type"], "job_inquiry")
+        self.assertEqual(result["business_subtype"], "job_inquiry")
         self.assertIn("message", result)
 
-    async def test_evaluate_bd_priority_boundary_skips_non_candidate_support_text(self) -> None:
+    async def test_evaluate_support_boundary_defaults_to_yearn_support_when_model_says_so(self) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return SupportBoundaryCheckOutput(
+                    classification="yearn_support",
+                    business_subtype=None,
+                    reasoning="normal yearn support",
+                )
+
         async def fake_run(self, *, starting_agent, input, run_config):
-            raise AssertionError("Non-candidate support text should not invoke the guardrail model.")
+            return FakeResult()
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_bd_priority_boundary("How is stYFI APY calculated?")
+            result = await evaluate_support_boundary("How is stYFI APY calculated?")
 
         self.assertFalse(result["tripwire_triggered"])
+        self.assertEqual(result["classification"], "yearn_support")
 
     async def test_concrete_security_disclosure_overrides_vendor_security_false_positive(
         self,
     ) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
-                return BDPriorityCheckOutput(
-                    request_type="vendor_security",
+                return SupportBoundaryCheckOutput(
+                    classification="security_process_boundary",
+                    business_subtype=None,
                     reasoning="mentions security team and secure report path",
                 )
 
@@ -438,29 +436,39 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
                 disclosure,
             )
 
-        self.assertFalse(result.tripwire_triggered)
-        self.assertEqual(result.output_info["classification"]["request_type"], "vendor_security")
-        self.assertEqual(result.output_info["effective_request_type"], "not_bd_pr")
-
-    async def test_outer_support_boundary_reply_prefers_bug_bounty_boundary(self) -> None:
-        reply = await _outer_support_boundary_reply(
-            "Good day team, me and my team discovered an issue that should be addressed "
-            "and hope to be rewarded for our efforts"
+        self.assertTrue(result.tripwire_triggered)
+        self.assertEqual(
+            result.output_info["classification"],
+            "security_process_boundary",
         )
 
+    async def test_outer_support_boundary_reply_prefers_bug_bounty_boundary(self) -> None:
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "security_process_boundary",
+                "tripwire_triggered": True,
+                "message": "Security process reply",
+            }
+
+        with patch("ysupport.evaluate_support_boundary", new=fake_boundary):
+            reply = await _outer_support_boundary_reply(
+                "Good day team, me and my team discovered an issue that should be addressed "
+                "and hope to be rewarded for our efforts"
+            )
+
         self.assertIsNotNone(reply)
-        assert reply is not None
-        self.assertIn("docs.yearn.fi/developers/security", reply)
+        self.assertEqual(reply, "Security process reply")
 
     async def test_outer_support_boundary_reply_uses_bd_guardrail_message(self) -> None:
         async def fake_boundary(_text: str):
             return {
-                "tripwire_triggered": True,
+                "classification": "business_boundary",
+                "business_subtype": "general_bd",
                 "message": "Boundary reply",
-                "effective_request_type": "marketing",
+                "tripwire_triggered": True,
             }
 
-        with patch("ysupport.evaluate_bd_priority_boundary", new=fake_boundary):
+        with patch("ysupport.evaluate_support_boundary", new=fake_boundary):
             reply = await _outer_support_boundary_reply("We want a marketing partnership")
 
         self.assertEqual(reply, "Boundary reply")
@@ -468,11 +476,12 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
     async def test_outer_support_boundary_reply_blocks_off_topic_coding_help(self) -> None:
         async def fake_scope(_text: str):
             return {
-                "scope": "non_support_assistant",
+                "classification": "non_support_assistant",
                 "tripwire_triggered": True,
+                "message": OUT_OF_SCOPE_SUPPORT_MESSAGE,
             }
 
-        with patch("ysupport.evaluate_support_scope_boundary", new=fake_scope):
+        with patch("ysupport.evaluate_support_boundary", new=fake_scope):
             reply = await _outer_support_boundary_reply(
                 "Can you write a Python script to parse a CSV for me?"
             )
@@ -482,22 +491,23 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
     async def test_outer_support_boundary_reply_allows_normal_yearn_support(self) -> None:
         async def fake_scope(_text: str):
             return {
-                "scope": "yearn_support",
+                "classification": "yearn_support",
                 "tripwire_triggered": False,
             }
 
-        with patch("ysupport.evaluate_support_scope_boundary", new=fake_scope):
+        with patch("ysupport.evaluate_support_boundary", new=fake_scope):
             reply = await _outer_support_boundary_reply(
                 "Where can I monitor stYFI rewards?"
             )
 
         self.assertIsNone(reply)
 
-    async def test_evaluate_support_scope_boundary_returns_non_support_tripwire(self) -> None:
+    async def test_evaluate_support_boundary_returns_non_support_tripwire(self) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
-                return SupportScopeCheckOutput(
-                    scope="non_support_assistant",
+                return SupportBoundaryCheckOutput(
+                    classification="non_support_assistant",
+                    business_subtype=None,
                     reasoning="generic coding help unrelated to Yearn",
                 )
 
@@ -505,18 +515,19 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             return FakeResult()
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_scope_boundary(
+            result = await evaluate_support_boundary(
                 "Can you write a Python script to parse a CSV for me?"
             )
 
         self.assertTrue(result["tripwire_triggered"])
-        self.assertEqual(result["scope"], "non_support_assistant")
+        self.assertEqual(result["classification"], "non_support_assistant")
 
-    async def test_evaluate_support_scope_boundary_keeps_yearn_dev_question_in_scope(self) -> None:
+    async def test_evaluate_support_boundary_keeps_yearn_dev_question_in_scope(self) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
-                return SupportScopeCheckOutput(
-                    scope="yearn_support",
+                return SupportBoundaryCheckOutput(
+                    classification="yearn_support",
+                    business_subtype=None,
                     reasoning="question is about Yearn contract behavior",
                 )
 
@@ -524,36 +535,36 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             return FakeResult()
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_scope_boundary(
+            result = await evaluate_support_boundary(
                 "Can you explain Yearn VaultV3 process_report behavior?"
             )
 
         self.assertFalse(result["tripwire_triggered"])
-        self.assertEqual(result["scope"], "yearn_support")
+        self.assertEqual(result["classification"], "yearn_support")
 
-    async def test_evaluate_support_scope_boundary_skips_model_for_bare_address(self) -> None:
+    async def test_evaluate_support_boundary_skips_model_for_bare_address(self) -> None:
         async def fake_run(self, *, starting_agent, input, run_config):
             raise AssertionError("Bare address support primitives should not invoke the scope model.")
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_scope_boundary(
+            result = await evaluate_support_boundary(
                 "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
             )
 
         self.assertFalse(result["tripwire_triggered"])
-        self.assertEqual(result["scope"], "yearn_support")
+        self.assertEqual(result["classification"], "yearn_support")
 
-    async def test_evaluate_support_scope_boundary_skips_model_for_bare_tx_hash(self) -> None:
+    async def test_evaluate_support_boundary_skips_model_for_bare_tx_hash(self) -> None:
         async def fake_run(self, *, starting_agent, input, run_config):
             raise AssertionError("Bare tx-hash support primitives should not invoke the scope model.")
 
         with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_scope_boundary(
+            result = await evaluate_support_boundary(
                 "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
             )
 
         self.assertFalse(result["tripwire_triggered"])
-        self.assertEqual(result["scope"], "yearn_support")
+        self.assertEqual(result["classification"], "yearn_support")
 
 
 class InvestigationJobTests(unittest.TestCase):
