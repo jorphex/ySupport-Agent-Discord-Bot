@@ -7,17 +7,14 @@ import discord
 from dotenv import load_dotenv
 
 from agents import (
-    Runner, RunResult,
-    TResponseInputItem,
+    Runner, TResponseInputItem,
     InputGuardrailTripwireTriggered, MaxTurnsExceeded, AgentsException,
-    RunConfig,
     set_default_openai_key,
 )
 
 import config
 import tools_lib
 from router import (
-    select_starting_agent,
     is_message_primarily_address,
     is_bug_report_query,
     is_probable_wallet_address,
@@ -27,6 +24,7 @@ from router import (
 from state import (
     BotRunContext,
     PublicConversation,
+    TicketInvestigationJob,
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
     bug_report_debounce_channels,
@@ -54,8 +52,6 @@ from ticket_investigation_executor import (
 from ticket_investigation_runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
-    _resolve_agent,
-    resolve_freeform_starting_agent,
 )
 from ticket_investigation_worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
@@ -233,6 +229,7 @@ class TicketBot(discord.Client):
 
             original_author_id = original_message.author.id
             current_history: List[TResponseInputItem] = []
+            public_investigation_job = None
 
             conversation = public_conversations.get(original_author_id)
             if conversation:
@@ -244,6 +241,7 @@ class TicketBot(discord.Client):
                         time_since_last.total_seconds(),
                     )
                     current_history = conversation.history
+                    public_investigation_job = conversation.investigation_job
                 else:
                     logging.info(
                         "Public conversation for user %s expired (%.1fs ago). Starting new context.",
@@ -252,7 +250,10 @@ class TicketBot(discord.Client):
                     )
                     public_conversations.pop(original_author_id, None)
 
-            input_list = current_history + [{"role": "user", "content": original_message.content}]
+            if public_investigation_job is None:
+                public_investigation_job = TicketInvestigationJob(
+                    channel_id=message.channel.id
+                )
             public_run_context = BotRunContext(
                 channel_id=message.channel.id,
                 is_public_trigger=True,
@@ -261,32 +262,24 @@ class TicketBot(discord.Client):
 
             async with message.channel.typing():
                 try:
-                    run_config = RunConfig(
-                        workflow_name=f"Public Stateful Trigger-{message.channel.id}",
-                        group_id=str(original_author_id)
-                    )
-                    agent_key = select_starting_agent(
-                        input_list[-1].get("content", "") if input_list else "",
-                        public_run_context
-                    )
-                    if agent_key == "triage":
-                        agent_key = await resolve_freeform_starting_agent(
-                            runner=self.runner,
-                            input_list=input_list,
+                    worker_result = await self.investigation_executor.execute_turn(
+                        TicketTurnRequest(
+                            aggregated_text=original_message.content,
+                            input_list=current_history + [
+                                {"role": "user", "content": original_message.content}
+                            ],
+                            current_history=current_history,
                             run_context=public_run_context,
+                            investigation_job=public_investigation_job,
                             workflow_name=f"Public Stateful Trigger-{message.channel.id}",
                         )
-                    result: RunResult = await self.runner.run(
-                        starting_agent=_resolve_agent(agent_key),
-                        input=input_list,
-                        max_turns=config.MAX_PUBLIC_TRIGGER_TURNS,
-                        run_config=run_config,
-                        context=public_run_context
                     )
-                    new_history = result.to_input_list()
+                    flow_outcome = worker_result.flow_outcome
+                    new_history = flow_outcome.conversation_history
                     public_conversations[original_author_id] = PublicConversation(
                         history=new_history,
-                        last_interaction_time=datetime.now(timezone.utc)
+                        last_interaction_time=datetime.now(timezone.utc),
+                        investigation_job=worker_result.updated_job,
                     )
                     logging.info(
                         "Saved updated public conversation context for user %s. History length: %s items.",
@@ -294,10 +287,14 @@ class TicketBot(discord.Client):
                         len(new_history),
                     )
 
-                    raw_reply = result.final_output if result.final_output else "I could not determine a response."
+                    raw_reply = (
+                        flow_outcome.raw_final_reply
+                        if flow_outcome.raw_final_reply
+                        else "I could not determine a response."
+                    )
                     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
                     final_reply = raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
-                    await send_long_message(original_message, final_reply)
+                    await send_long_message(message.channel, final_reply)
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(
                         "Input Guardrail triggered in public channel %s for user %s.",
@@ -340,6 +337,7 @@ class TicketBot(discord.Client):
                         e,
                         exc_info=True,
                     )
+                    public_conversations.pop(original_author_id, None)
                     await original_message.reply(
                         f"Sorry, an error occurred while processing that request. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>.",
                         mention_author=False,

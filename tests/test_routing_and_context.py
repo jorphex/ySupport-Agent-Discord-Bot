@@ -808,6 +808,19 @@ class _FakeRunner:
         return self._results.pop(0)
 
 
+class _FakeInvestigationExecutor:
+    def __init__(self, *, result=None, exc: Exception | None = None):
+        self.result = result
+        self.exc = exc
+        self.calls = []
+
+    async def execute_turn(self, request, hooks=None):
+        self.calls.append({"request": request, "hooks": hooks})
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(self) -> None:
         original_author_id = 73
@@ -822,17 +835,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             reference_message_id=12345,
         )
 
-        class _FailingPublicRunner:
-            def __init__(self):
-                self.calls: list[dict] = []
-
-            async def run(self, **kwargs):
-                self.calls.append(kwargs)
-                raise MaxTurnsExceeded("Max turns exceeded")
-
-        fake_runner = _FailingPublicRunner()
+        fake_executor = _FakeInvestigationExecutor(exc=MaxTurnsExceeded("Max turns exceeded"))
         bot = TicketBot(intents=discord.Intents.none())
-        bot.runner = fake_runner
+        bot.investigation_executor = fake_executor
 
         public_conversations[original_author_id] = PublicConversation(
             history=[{"role": "assistant", "content": "Earlier context"}],
@@ -840,9 +845,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with (
-                patch.object(config, "MAX_PUBLIC_TRIGGER_TURNS", 9),
                 patch.object(config, "HUMAN_HANDOFF_TARGET_USER_ID", "999"),
-                patch("ysupport.select_starting_agent", return_value="docs"),
             ):
                 handled = await bot._handle_public_trigger_message(trigger_message, "y")
         finally:
@@ -850,14 +853,69 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertTrue(trigger_message.deleted)
-        self.assertEqual(len(fake_runner.calls), 1)
-        self.assertEqual(fake_runner.calls[0]["max_turns"], 9)
+        self.assertEqual(len(fake_executor.calls), 1)
+        self.assertEqual(
+            fake_executor.calls[0]["request"].current_history,
+            [{"role": "assistant", "content": "Earlier context"}],
+        )
         self.assertNotIn(original_author_id, public_conversations)
         self.assertEqual(len(original_message.replies), 1)
         self.assertIn("internal analysis limit", original_message.replies[0][0].lower())
         self.assertIn("<@999>", original_message.replies[0][0])
         self.assertFalse(original_message.replies[0][1]["mention_author"])
         self.assertTrue(original_message.replies[0][1]["suppress_embeds"])
+
+    async def test_public_trigger_uses_transport_executor_and_persists_public_state(self) -> None:
+        original_author_id = 91
+        channel_id = 92
+        original_message = _FakeOriginalMessage(
+            author_id=original_author_id,
+            content="Where can I monitor stYFI rewards?",
+        )
+        trigger_channel = _FakePublicChannel(channel_id, original_message)
+        trigger_message = _FakeTriggerMessage(
+            trigger_channel,
+            reference_message_id=12345,
+        )
+        updated_job = TicketInvestigationJob(channel_id=channel_id)
+        updated_job.mark_waiting_for_user()
+        fake_executor = _FakeInvestigationExecutor(
+            result=type(
+                "_Result",
+                (),
+                {
+                    "flow_outcome": TicketAgentFlowOutcome(
+                        raw_final_reply="Use the stYFI dashboard.",
+                        conversation_history=[
+                            {"role": "user", "content": "Where can I monitor stYFI rewards?"},
+                            {"role": "assistant", "content": "Use the stYFI dashboard."},
+                        ],
+                        completed_agent_key=None,
+                        requires_human_handoff=False,
+                    ),
+                    "updated_job": updated_job,
+                },
+            )()
+        )
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.investigation_executor = fake_executor
+
+        try:
+            handled = await bot._handle_public_trigger_message(trigger_message, "y")
+
+            self.assertTrue(handled)
+            self.assertEqual(len(fake_executor.calls), 1)
+            stored_conversation = public_conversations.get(original_author_id)
+            self.assertIsNotNone(stored_conversation)
+            assert stored_conversation is not None
+            self.assertEqual(
+                stored_conversation.history[-1]["content"],
+                "Use the stYFI dashboard.",
+            )
+            self.assertIs(stored_conversation.investigation_job, updated_job)
+            self.assertEqual(trigger_channel.sent_messages, ["Use the stYFI dashboard."])
+        finally:
+            public_conversations.pop(original_author_id, None)
 
     async def test_resolve_freeform_starting_agent_reuses_ticket_router_for_public_lane_selection(self) -> None:
         fake_runner = _FakeRunner(

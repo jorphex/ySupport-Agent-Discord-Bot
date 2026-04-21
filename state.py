@@ -42,6 +42,7 @@ class PublicConversation:
     """Stores the state for a temporary public conversation."""
     history: List[TResponseInputItem]
     last_interaction_time: datetime
+    investigation_job: "TicketInvestigationJob | None" = None
 
 
 @dataclass
