@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, List, Optional, Union, Literal
 
 from pydantic import BaseModel, Field
@@ -41,6 +42,10 @@ from support_tools import (
     fetch_report_artifact_tool,
     repo_context_status_tool,
 )
+
+
+_SUPPORT_SCOPE_TX_HASH_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{64}")
+_SUPPORT_SCOPE_ADDRESS_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{40}")
 
 
 class BDPriorityCheckOutput(BaseModel):
@@ -194,6 +199,16 @@ def _looks_like_bd_priority_candidate(text: str) -> bool:
     return any(term in lowered for term in candidate_terms)
 
 
+def _looks_like_support_scope_primitive(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return bool(
+        _SUPPORT_SCOPE_TX_HASH_RE.fullmatch(stripped)
+        or _SUPPORT_SCOPE_ADDRESS_RE.fullmatch(stripped)
+    )
+
+
 def _gpt5_model_settings(
     *,
     effort: str,
@@ -343,6 +358,12 @@ async def evaluate_bd_priority_boundary(text_input: str) -> dict[str, Any]:
 async def evaluate_support_scope_boundary(text_input: str) -> dict[str, Any]:
     if not text_input.strip():
         return {"scope": "yearn_support", "tripwire_triggered": False}
+    if _looks_like_support_scope_primitive(text_input):
+        return {
+            "scope": "yearn_support",
+            "reasoning": "Explicit support primitive such as a bare address or tx hash.",
+            "tripwire_triggered": False,
+        }
     logging.info(f"[Guardrail:Scope] Analyzing input: '{text_input[:100]}...'")
 
     try:

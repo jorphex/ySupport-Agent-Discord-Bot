@@ -531,6 +531,30 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["tripwire_triggered"])
         self.assertEqual(result["scope"], "yearn_support")
 
+    async def test_evaluate_support_scope_boundary_skips_model_for_bare_address(self) -> None:
+        async def fake_run(self, *, starting_agent, input, run_config):
+            raise AssertionError("Bare address support primitives should not invoke the scope model.")
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_scope_boundary(
+                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
+            )
+
+        self.assertFalse(result["tripwire_triggered"])
+        self.assertEqual(result["scope"], "yearn_support")
+
+    async def test_evaluate_support_scope_boundary_skips_model_for_bare_tx_hash(self) -> None:
+        async def fake_run(self, *, starting_agent, input, run_config):
+            raise AssertionError("Bare tx-hash support primitives should not invoke the scope model.")
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_scope_boundary(
+                "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+            )
+
+        self.assertFalse(result["tripwire_triggered"])
+        self.assertEqual(result["scope"], "yearn_support")
+
 
 class InvestigationJobTests(unittest.TestCase):
     def test_job_tracks_lifecycle_and_evidence(self) -> None:
