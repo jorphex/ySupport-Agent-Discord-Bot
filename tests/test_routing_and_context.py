@@ -385,6 +385,27 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["tripwire_triggered"])
         self.assertEqual(result["classification"], "yearn_support")
 
+    async def test_evaluate_support_boundary_clears_business_subtype_outside_business_class(
+        self,
+    ) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return SupportBoundaryCheckOutput(
+                    classification="yearn_support",
+                    business_subtype="general_bd",
+                    reasoning="normal yearn support",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_boundary("Where can I monitor stYFI rewards?")
+
+        self.assertFalse(result["tripwire_triggered"])
+        self.assertEqual(result["classification"], "yearn_support")
+        self.assertIsNone(result["business_subtype"])
+
     async def test_concrete_security_disclosure_overrides_vendor_security_false_positive(
         self,
     ) -> None:

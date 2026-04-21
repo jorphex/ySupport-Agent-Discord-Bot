@@ -159,6 +159,56 @@ def _ticket_workflow_name(run_context: BotRunContext) -> str:
     )
 
 
+def _project_context_for_category(category_id: int | None) -> str:
+    if category_id is None:
+        return "unknown"
+    return config.CATEGORY_CONTEXT_MAP.get(category_id, "unknown")
+
+
+def _build_public_run_context(
+    *,
+    channel_id: int,
+    conversation_owner_id: int,
+    trigger_char_used: str,
+) -> BotRunContext:
+    return BotRunContext(
+        channel_id=channel_id,
+        is_public_trigger=True,
+        conversation_owner_id=conversation_owner_id,
+        project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown"),
+    )
+
+
+def _record_button_requested_intent(
+    *,
+    channel_id: int,
+    investigation_job: TicketInvestigationJob,
+) -> str | None:
+    current_intent = channel_intent_after_button.pop(channel_id, None)
+    if current_intent:
+        logging.info(
+            "Message in %s is a follow-up to button intent: %s",
+            channel_id,
+            current_intent,
+        )
+        investigation_job.record_requested_intent(current_intent)
+    return current_intent
+
+
+def _build_ticket_run_context(
+    *,
+    channel_id: int,
+    category_id: int | None,
+    initial_button_intent: str | None,
+) -> BotRunContext:
+    return BotRunContext(
+        channel_id=channel_id,
+        category_id=category_id,
+        project_context=_project_context_for_category(category_id),
+        initial_button_intent=initial_button_intent,
+    )
+
+
 # Discord Bot Implementation
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
@@ -254,12 +304,10 @@ class TicketBot(discord.Client):
         logging.info(f"Processing synthetic button input for ticket {channel_id}. Intent: '{intent_category}', Text: '{synthetic_text}'")
 
         category_id = channel.category.id if channel.category else None
-        project_ctx = config.CATEGORY_CONTEXT_MAP.get(category_id, "unknown")
-        run_context = BotRunContext(
+        run_context = _build_ticket_run_context(
             channel_id=channel_id,
             category_id=category_id,
-            project_context=project_ctx,
-            initial_button_intent=intent_category
+            initial_button_intent=intent_category,
         )
 
         if channel_id in pending_tasks:
@@ -318,11 +366,10 @@ class TicketBot(discord.Client):
                 public_investigation_job = TicketInvestigationJob(
                     channel_id=message.channel.id
                 )
-            public_run_context = BotRunContext(
+            public_run_context = _build_public_run_context(
                 channel_id=message.channel.id,
-                is_public_trigger=True,
                 conversation_owner_id=original_author_id,
-                project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
+                trigger_char_used=trigger_char_used,
             )
 
             boundary_output = await _outer_support_boundary_result(original_message.content)
@@ -590,17 +637,15 @@ class TicketBot(discord.Client):
                 pass
             return
 
-        current_intent_from_map = channel_intent_after_button.pop(channel_id, None)
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
-        if current_intent_from_map:
-            logging.info(f"Message in {channel_id} is a follow-up to button intent: {current_intent_from_map}")
-            investigation_job.record_requested_intent(current_intent_from_map)
-
-        ticket_run_context = BotRunContext(
+        current_intent_from_map = _record_button_requested_intent(
+            channel_id=channel_id,
+            investigation_job=investigation_job,
+        )
+        ticket_run_context = _build_ticket_run_context(
             channel_id=channel_id,
             category_id=message.channel.category.id,
-            project_context=config.CATEGORY_CONTEXT_MAP.get(message.channel.category.id, "unknown"),
-            initial_button_intent=current_intent_from_map
+            initial_button_intent=current_intent_from_map,
         )
 
         if ticket_run_context.project_context == "unknown":

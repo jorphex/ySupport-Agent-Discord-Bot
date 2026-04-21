@@ -220,19 +220,24 @@ async def evaluate_support_boundary(text_input: str) -> dict[str, Any]:
             run_config=run_config_guardrail,
         )
         check_output = result.final_output_as(SupportBoundaryCheckOutput)
+        business_subtype = (
+            check_output.business_subtype
+            if check_output.classification == "business_boundary"
+            else None
+        )
         message_to_send = _message_for_support_boundary(
             check_output.classification,
-            check_output.business_subtype,
+            business_subtype,
         )
         logging.info(
             "[Guardrail:Boundary] Check result: classification=%s subtype=%s reasoning=%s",
             check_output.classification,
-            check_output.business_subtype,
+            business_subtype,
             check_output.reasoning,
         )
         output_info: dict[str, Any] = {
             "classification": check_output.classification,
-            "business_subtype": check_output.business_subtype,
+            "business_subtype": business_subtype,
             "reasoning": check_output.reasoning,
             "tripwire_triggered": bool(message_to_send),
         }
