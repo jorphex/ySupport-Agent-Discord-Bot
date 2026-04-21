@@ -1,7 +1,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 
 from agents import RunConfig, RunResult, TResponseInputItem
 
@@ -46,6 +46,7 @@ class TicketTurnRequest:
     run_context: BotRunContext
     investigation_job: TicketInvestigationJob
     workflow_name: str
+    precomputed_boundary: dict[str, Any] | None = None
     send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None
 
 
@@ -390,7 +391,9 @@ class TicketInvestigationRuntime:
     async def run_turn(self, request: TicketTurnRequest) -> TicketAgentFlowOutcome:
         # Backend safety fallback: replay/direct runtime entry should still apply
         # the same unified outer support boundary used by the live Discord shell.
-        boundary_output = await evaluate_support_boundary(request.aggregated_text)
+        boundary_output = request.precomputed_boundary
+        if boundary_output is None:
+            boundary_output = await evaluate_support_boundary(request.aggregated_text)
         if boundary_output.get("tripwire_triggered") and boundary_output.get("message"):
             direct_boundary_reply = str(boundary_output["message"])
             return TicketAgentFlowOutcome(
@@ -401,7 +404,10 @@ class TicketInvestigationRuntime:
                     direct_boundary_reply,
                 ),
                 completed_agent_key=None,
-                requires_human_handoff=True,
+                requires_human_handoff=(
+                    boundary_output.get("classification")
+                    == "security_process_boundary"
+                ),
             )
 
         agent_key = _select_ticket_starting_agent(

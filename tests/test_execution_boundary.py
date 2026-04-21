@@ -598,6 +598,11 @@ class TicketTransportTests(unittest.TestCase):
             ),
             investigation_job=TicketInvestigationJob(channel_id=94),
             workflow_name="tests.transport",
+            precomputed_boundary={
+                "classification": "yearn_support",
+                "business_subtype": None,
+                "tripwire_triggered": False,
+            },
         )
         request.investigation_job.begin_collecting("investigate_issue")
         request.investigation_job.remember_chain("katana")
@@ -620,6 +625,14 @@ class TicketTransportTests(unittest.TestCase):
             hydrated.investigation_job.evidence.tx_hashes,
             ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
         )
+        self.assertEqual(
+            hydrated.precomputed_boundary,
+            {
+                "classification": "yearn_support",
+                "business_subtype": None,
+                "tripwire_triggered": False,
+            },
+        )
 
     def test_transport_request_json_round_trip_preserves_job_and_context(self) -> None:
         request = TicketTurnRequest(
@@ -634,6 +647,12 @@ class TicketTransportTests(unittest.TestCase):
             ),
             investigation_job=TicketInvestigationJob(channel_id=97),
             workflow_name="tests.transport.json",
+            precomputed_boundary={
+                "classification": "business_boundary",
+                "business_subtype": "job_inquiry",
+                "tripwire_triggered": True,
+                "message": "Boundary reply",
+            },
         )
         request.investigation_job.begin_collecting("investigate_issue")
         request.investigation_job.remember_chain("katana")
@@ -649,6 +668,15 @@ class TicketTransportTests(unittest.TestCase):
         self.assertEqual(hydrated.run_context.channel_id, 97)
         self.assertEqual(hydrated.investigation_job.mode, "collecting")
         self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
+        self.assertEqual(
+            hydrated.precomputed_boundary,
+            {
+                "classification": "business_boundary",
+                "business_subtype": "job_inquiry",
+                "tripwire_triggered": True,
+                "message": "Boundary reply",
+            },
+        )
         self.assertIsNone(
             TicketExecutionTransportRequest.from_json(transport.to_json()).smoke_mode
         )

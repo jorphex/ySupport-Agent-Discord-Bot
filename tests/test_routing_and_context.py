@@ -936,14 +936,18 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         last_bot_reply_ts_by_channel.pop(channel_id, None)
         clear_ticket_investigation_job(channel_id)
 
-        async def fake_boundary(_text: str) -> str | None:
-            return "Boundary reply"
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "business_boundary",
+                "tripwire_triggered": True,
+                "message": "Boundary reply",
+            }
 
         async def fake_send_long_message(channel, message, **kwargs):
             await channel.send(message, **kwargs)
 
         try:
-            with patch("ysupport._outer_support_boundary_reply", new=fake_boundary):
+            with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
                 with patch("ysupport.send_long_message", new=fake_send_long_message):
                     with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
                         await bot.process_ticket_message(channel_id, run_context)
@@ -1015,13 +1019,17 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             async def execute_turn(self, request, hooks=None):
                 raise AssertionError("Boundary reply should stop before executor runs.")
 
-        async def fake_boundary(_text: str) -> str | None:
-            return "Boundary reply"
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "business_boundary",
+                "tripwire_triggered": True,
+                "message": "Boundary reply",
+            }
 
         bot = TicketBot(intents=discord.Intents.none())
         bot.investigation_executor = _FailingExecutor()
 
-        with patch("ysupport._outer_support_boundary_reply", new=fake_boundary):
+        with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
             handled = await bot._handle_public_trigger_message(trigger_message, "y")
 
         self.assertTrue(handled)
@@ -1348,6 +1356,48 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
         self.assertNotIn("browser", lowered)
         self.assertNotIn("device", lowered)
+
+    async def test_ticket_agent_flow_uses_precomputed_boundary_without_second_model_call(self) -> None:
+        channel_id = 371
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner([])
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+
+        async def fail_boundary(_text: str):
+            raise AssertionError("Precomputed boundary should bypass runtime boundary evaluation.")
+
+        try:
+            with patch(
+                "ticket_investigation_runtime.evaluate_support_boundary",
+                new=fail_boundary,
+            ):
+                runtime = TicketInvestigationRuntime(fake_runner)
+                outcome = await runtime.run_turn(
+                    TicketTurnRequest(
+                        aggregated_text="Can you write a Python script to parse a CSV for me?",
+                        input_list=[
+                            {
+                                "role": "user",
+                                "content": "Can you write a Python script to parse a CSV for me?",
+                            }
+                        ],
+                        current_history=[],
+                        run_context=context,
+                        investigation_job=investigation_job,
+                        workflow_name="tests.ticket_flow",
+                        precomputed_boundary={
+                            "classification": "non_support_assistant",
+                            "tripwire_triggered": True,
+                            "message": OUT_OF_SCOPE_SUPPORT_MESSAGE,
+                        },
+                    )
+                )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 0)
+        self.assertEqual(outcome.raw_final_reply, OUT_OF_SCOPE_SUPPORT_MESSAGE)
+        self.assertFalse(outcome.requires_human_handoff)
 
     async def test_ticket_agent_flow_marks_specialist_reply_handoff_explicitly(self) -> None:
         channel_id = 33

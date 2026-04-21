@@ -34,6 +34,7 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "investigation_job": {"type": "object"},
         "workflow_name": {"type": "string"},
         "wants_bug_review_status": {"type": "boolean"},
+        "precomputed_boundary": {"type": ["object", "null"]},
         "smoke_mode": {"type": ["string", "null"]},
     },
     "additionalProperties": False,
@@ -199,6 +200,7 @@ def build_smoke_transport_request() -> "TicketExecutionTransportRequest":
         },
         workflow_name="ticket_execution_status.smoke_probe",
         wants_bug_review_status=False,
+        precomputed_boundary=None,
         smoke_mode="ping",
     )
 
@@ -212,6 +214,7 @@ class TicketExecutionTransportRequest:
     investigation_job: dict[str, Any]
     workflow_name: str
     wants_bug_review_status: bool = False
+    precomputed_boundary: dict[str, Any] | None = None
     smoke_mode: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
@@ -223,6 +226,11 @@ class TicketExecutionTransportRequest:
             "investigation_job": dict(self.investigation_job),
             "workflow_name": self.workflow_name,
             "wants_bug_review_status": self.wants_bug_review_status,
+            "precomputed_boundary": (
+                dict(self.precomputed_boundary)
+                if self.precomputed_boundary is not None
+                else None
+            ),
             "smoke_mode": self.smoke_mode,
         }
 
@@ -239,6 +247,11 @@ class TicketExecutionTransportRequest:
             investigation_job=dict(payload.get("investigation_job", {})),
             workflow_name=payload["workflow_name"],
             wants_bug_review_status=payload.get("wants_bug_review_status", False),
+            precomputed_boundary=(
+                dict(payload["precomputed_boundary"])
+                if payload.get("precomputed_boundary") is not None
+                else None
+            ),
             smoke_mode=payload.get("smoke_mode"),
         )
 
@@ -264,6 +277,11 @@ class TicketExecutionTransportRequest:
             investigation_job=serialize_investigation_job(request.investigation_job),
             workflow_name=request.workflow_name,
             wants_bug_review_status=wants_bug_review_status,
+            precomputed_boundary=(
+                dict(request.precomputed_boundary)
+                if request.precomputed_boundary is not None
+                else None
+            ),
             smoke_mode=None,
         )
 
@@ -277,6 +295,11 @@ class TicketExecutionTransportRequest:
             run_context=deserialize_run_context(self.run_context),
             investigation_job=deserialize_investigation_job(self.investigation_job),
             workflow_name=self.workflow_name,
+            precomputed_boundary=(
+                dict(self.precomputed_boundary)
+                if self.precomputed_boundary is not None
+                else None
+            ),
         )
 
 

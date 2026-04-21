@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import Any, List
 
 import discord
 from dotenv import load_dotenv
@@ -105,8 +105,12 @@ def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
     return "Your request could not be processed due to input checks."
 
 
+async def _outer_support_boundary_result(text: str) -> dict[str, Any]:
+    return await evaluate_support_boundary(text)
+
+
 async def _outer_support_boundary_reply(text: str) -> str | None:
-    output_info = await evaluate_support_boundary(text)
+    output_info = await _outer_support_boundary_result(text)
     if output_info.get("tripwire_triggered") and output_info.get("message"):
         return str(output_info["message"])
     return None
@@ -278,7 +282,12 @@ class TicketBot(discord.Client):
                 project_context=config.TRIGGER_CONTEXT_MAP.get(trigger_char_used, "unknown")
             )
 
-            boundary_reply = await _outer_support_boundary_reply(original_message.content)
+            boundary_output = await _outer_support_boundary_result(original_message.content)
+            boundary_reply = (
+                str(boundary_output["message"])
+                if boundary_output.get("tripwire_triggered") and boundary_output.get("message")
+                else None
+            )
             if boundary_reply is not None:
                 public_conversations.pop(original_author_id, None)
                 clear_public_conversation(original_author_id)
@@ -301,6 +310,7 @@ class TicketBot(discord.Client):
                             run_context=public_run_context,
                             investigation_job=public_investigation_job,
                             workflow_name=f"Public Stateful Trigger-{message.channel.id}",
+                            precomputed_boundary=boundary_output,
                         )
                     )
                     flow_outcome = worker_result.flow_outcome
@@ -615,7 +625,12 @@ class TicketBot(discord.Client):
                 final_reply = "An unexpected error occurred."
                 should_stop_processing = False
 
-                boundary_reply = await _outer_support_boundary_reply(aggregated_text)
+                boundary_output = await _outer_support_boundary_result(aggregated_text)
+                boundary_reply = (
+                    str(boundary_output["message"])
+                    if boundary_output.get("tripwire_triggered") and boundary_output.get("message")
+                    else None
+                )
                 if boundary_reply is not None:
                     final_reply = boundary_reply
                     should_stop_processing = True
@@ -638,6 +653,7 @@ class TicketBot(discord.Client):
                                 run_context=run_context,
                                 investigation_job=investigation_job,
                                 workflow_name=workflow_name,
+                                precomputed_boundary=boundary_output,
                             ),
                             hooks=TicketExecutionHooks(
                                 send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
