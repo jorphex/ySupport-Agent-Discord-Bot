@@ -211,6 +211,60 @@ def _build_ticket_run_context(
     )
 
 
+def _outer_moderator_access_reply(text: str) -> str | None:
+    lowered = (text or "").lower()
+    if not lowered:
+        return None
+
+    mentions_access_surface = any(
+        token in lowered
+        for token in (
+            "discord",
+            "#general",
+            "general channel",
+            "public help channel",
+            "server permission",
+            "server-permission",
+            "channel access",
+        )
+    )
+    mentions_human_access_help = (
+        ("moderator" in lowered or "admin" in lowered)
+        and any(token in lowered for token in ("need", "help", "check", "review"))
+    )
+    mentions_blocked_access = any(
+        token in lowered
+        for token in (
+            "cannot access",
+            "can't access",
+            "cant access",
+            "cannot view",
+            "can't view",
+            "cant view",
+            "cannot see",
+            "can't see",
+            "cant see",
+            "locked out",
+        )
+    )
+    mentions_verification_access_issue = (
+        any(token in lowered for token in ("verification", "verified"))
+        and any(token in lowered for token in ("still", "after", "finished"))
+    )
+
+    if not mentions_access_surface:
+        return None
+    if not (
+        mentions_human_access_help
+        or mentions_blocked_access
+        or mentions_verification_access_issue
+    ):
+        return None
+    return _render_support_reply(
+        f"A moderator needs to check this. {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+    )
+
+
 # Discord Bot Implementation
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
@@ -373,6 +427,17 @@ class TicketBot(discord.Client):
                 conversation_owner_id=original_author_id,
                 trigger_char_used=trigger_char_used,
             )
+
+            moderator_access_reply = _outer_moderator_access_reply(original_message.content)
+            if moderator_access_reply is not None:
+                public_conversations.pop(original_author_id, None)
+                clear_public_conversation(original_author_id)
+                await original_message.reply(
+                    moderator_access_reply,
+                    mention_author=False,
+                    suppress_embeds=True,
+                )
+                return True
 
             boundary_output = await _outer_support_boundary_result(original_message.content)
             boundary_reply = _boundary_reply_from_output(boundary_output)
@@ -710,69 +775,75 @@ class TicketBot(discord.Client):
                 final_reply = "An unexpected error occurred."
                 should_stop_processing = False
 
-                boundary_output = await _outer_support_boundary_result(aggregated_text)
-                boundary_reply = _boundary_reply_from_output(boundary_output)
-                if boundary_reply is not None:
-                    final_reply = boundary_reply
+                moderator_access_reply = _outer_moderator_access_reply(aggregated_text)
+                if moderator_access_reply is not None:
+                    final_reply = moderator_access_reply
                     should_stop_processing = True
                     reset_ticket_channel_for_terminal_reply(channel_id)
                 else:
-                    try:
-                        worker_result = await self.investigation_executor.execute_turn(
-                            _build_turn_request(
-                                aggregated_text=aggregated_text,
-                                input_list=input_list,
-                                current_history=current_history,
-                                run_context=run_context,
-                                investigation_job=investigation_job,
-                                workflow_name=_ticket_workflow_name(run_context),
-                                precomputed_boundary=boundary_output,
-                            ),
-                            hooks=TicketExecutionHooks(
-                                send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
-                            ),
-                        )
-                        investigation_job.apply_snapshot(worker_result.updated_job)
-                        flow_outcome = worker_result.flow_outcome
-                        conversation_threads[channel_id] = flow_outcome.conversation_history
+                    boundary_output = await _outer_support_boundary_result(aggregated_text)
+                    boundary_reply = _boundary_reply_from_output(boundary_output)
+                    if boundary_reply is not None:
+                        final_reply = boundary_reply
+                        should_stop_processing = True
+                        reset_ticket_channel_for_terminal_reply(channel_id)
+                    else:
+                        try:
+                            worker_result = await self.investigation_executor.execute_turn(
+                                _build_turn_request(
+                                    aggregated_text=aggregated_text,
+                                    input_list=input_list,
+                                    current_history=current_history,
+                                    run_context=run_context,
+                                    investigation_job=investigation_job,
+                                    workflow_name=_ticket_workflow_name(run_context),
+                                    precomputed_boundary=boundary_output,
+                                ),
+                                hooks=TicketExecutionHooks(
+                                    send_bug_review_status=lambda: self._send_bug_review_status(channel, channel_id),
+                                ),
+                            )
+                            investigation_job.apply_snapshot(worker_result.updated_job)
+                            flow_outcome = worker_result.flow_outcome
+                            conversation_threads[channel_id] = flow_outcome.conversation_history
 
-                        raw_final_reply = flow_outcome.raw_final_reply
-                        final_reply = _render_support_reply(raw_final_reply)
-                        if flow_outcome.requires_human_handoff:
-                            logging.info(
-                                "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
-                                channel_id,
-                            )
-                        persist_ticket_state(channel_id)
-                    except InputGuardrailTripwireTriggered as e:
-                        logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
-                        final_reply = _guardrail_tripwire_reply(e)
-                        should_stop_processing = True
-                        reset_ticket_channel_for_terminal_reply(channel_id)
-                    except MaxTurnsExceeded:
-                        logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                        if run_context.repo_search_calls:
-                            final_reply = (
-                                "I hit an internal analysis limit while reviewing repo evidence for this report. "
-                                f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
-                            )
-                        else:
-                            final_reply = (
-                                f"This conversation has reached its maximum length. "
-                                f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
-                            )
-                        should_stop_processing = True
-                        reset_ticket_channel_for_terminal_reply(channel_id)
-                    except AgentsException as e:
-                        logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                        final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
-                        should_stop_processing = True
-                        reset_ticket_channel_for_terminal_reply(channel_id)
-                    except Exception as e:
-                        logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                        final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
-                        should_stop_processing = True
-                        reset_ticket_channel_for_terminal_reply(channel_id)
+                            raw_final_reply = flow_outcome.raw_final_reply
+                            final_reply = _render_support_reply(raw_final_reply)
+                            if flow_outcome.requires_human_handoff:
+                                logging.info(
+                                    "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
+                                    channel_id,
+                                )
+                            persist_ticket_state(channel_id)
+                        except InputGuardrailTripwireTriggered as e:
+                            logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
+                            final_reply = _guardrail_tripwire_reply(e)
+                            should_stop_processing = True
+                            reset_ticket_channel_for_terminal_reply(channel_id)
+                        except MaxTurnsExceeded:
+                            logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
+                            if run_context.repo_search_calls:
+                                final_reply = (
+                                    "I hit an internal analysis limit while reviewing repo evidence for this report. "
+                                    f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                                )
+                            else:
+                                final_reply = (
+                                    f"This conversation has reached its maximum length. "
+                                    f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
+                                )
+                            should_stop_processing = True
+                            reset_ticket_channel_for_terminal_reply(channel_id)
+                        except AgentsException as e:
+                            logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
+                            final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                            should_stop_processing = True
+                            reset_ticket_channel_for_terminal_reply(channel_id)
+                        except Exception as e:
+                            logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
+                            final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                            should_stop_processing = True
+                            reset_ticket_channel_for_terminal_reply(channel_id)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None

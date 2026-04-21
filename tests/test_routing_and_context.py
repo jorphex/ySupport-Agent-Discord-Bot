@@ -51,6 +51,7 @@ from ysupport import (
     TicketBot,
     _canonicalize_current_user_message,
     _guardrail_tripwire_reply,
+    _outer_moderator_access_reply,
     _outer_support_boundary_reply,
 )
 
@@ -103,6 +104,15 @@ class RoutingTests(unittest.TestCase):
             _guardrail_tripwire_reply(exc),
             "Your request could not be processed due to input checks.",
         )
+
+    def test_outer_moderator_access_reply_detects_discord_access_issue(self) -> None:
+        reply = _outer_moderator_access_reply(
+            "I finished verification but still cannot access the Discord."
+        )
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertIn("A moderator needs to check this.", reply)
+        self.assertIn("<@", reply)
 
     def test_select_starting_agent_uses_data_button_intent(self) -> None:
         context = BotRunContext(
@@ -980,6 +990,45 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fake_channel.sent_messages, ["Boundary reply"])
 
+    async def test_process_ticket_message_short_circuits_moderator_access_before_executor(self) -> None:
+        channel_id = 66
+        fake_channel = _FakeDiscordChannel(channel_id)
+
+        class _FailingExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                raise AssertionError("Moderator access reply should stop before executor runs.")
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FailingExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="other_free_form",
+        )
+
+        pending_messages[channel_id] = "I finished verification but still cannot access the Discord."
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with patch("ysupport.send_long_message", new=fake_send_long_message):
+                with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_channel.sent_messages), 1)
+        self.assertIn("A moderator needs to check this.", fake_channel.sent_messages[0])
+
 
 @dataclass
 class _FakeResult:
@@ -1056,6 +1105,33 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertEqual(len(original_message.replies), 1)
         self.assertEqual(original_message.replies[0][0], "Boundary reply")
+        self.assertFalse(original_message.replies[0][1]["mention_author"])
+
+    async def test_public_trigger_short_circuits_moderator_access_before_executor(self) -> None:
+        original_author_id = 72
+        channel_id = 73
+        original_message = _FakeOriginalMessage(
+            author_id=original_author_id,
+            content="I finished verification but still cannot access the Discord.",
+        )
+        trigger_channel = _FakePublicChannel(channel_id, original_message)
+        trigger_message = _FakeTriggerMessage(
+            trigger_channel,
+            reference_message_id=12345,
+        )
+
+        class _FailingExecutor:
+            async def execute_turn(self, request, hooks=None):
+                raise AssertionError("Moderator access reply should stop before executor runs.")
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.investigation_executor = _FailingExecutor()
+
+        handled = await bot._handle_public_trigger_message(trigger_message, "y")
+
+        self.assertTrue(handled)
+        self.assertEqual(len(original_message.replies), 1)
+        self.assertIn("A moderator needs to check this.", original_message.replies[0][0])
         self.assertFalse(original_message.replies[0][1]["mention_author"])
 
     async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(self) -> None:
