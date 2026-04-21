@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
+
+import config
+from codex_support_sessions import CodexSupportSessionManager
 
 try:
     from agents import TResponseInputItem
@@ -147,6 +152,10 @@ pending_wallet_confirmation_by_channel: Dict[int, str] = {}
 # Timestamp of the last bot reply per channel
 last_bot_reply_ts_by_channel: Dict[int, datetime] = {}
 
+_DISCORD_STATE_ROOT = Path(config.TICKET_EXECUTION_STATE_ROOT) / "discord_state"
+_TICKET_STATE_DIR = _DISCORD_STATE_ROOT / "tickets"
+_PUBLIC_STATE_DIR = _DISCORD_STATE_ROOT / "public"
+
 
 def get_or_create_ticket_investigation_job(channel_id: int) -> TicketInvestigationJob:
     job = ticket_investigation_jobs.get(channel_id)
@@ -158,3 +167,213 @@ def get_or_create_ticket_investigation_job(channel_id: int) -> TicketInvestigati
 
 def clear_ticket_investigation_job(channel_id: int) -> None:
     ticket_investigation_jobs.pop(channel_id, None)
+
+
+def hydrate_ticket_state(channel_id: int) -> None:
+    if _ticket_state_is_loaded(channel_id):
+        return
+    payload = _read_json(_TICKET_STATE_DIR / f"{channel_id}.json")
+    if payload is None:
+        return
+    conversation_threads[channel_id] = list(payload.get("history", []))
+    job_payload = payload.get("investigation_job")
+    if isinstance(job_payload, dict):
+        ticket_investigation_jobs[channel_id] = _deserialize_investigation_job(job_payload)
+    wallet = payload.get("last_wallet")
+    if wallet:
+        last_wallet_by_channel[channel_id] = wallet
+    pending_wallet = payload.get("pending_wallet_confirmation")
+    if pending_wallet:
+        pending_wallet_confirmation_by_channel[channel_id] = pending_wallet
+    last_reply_at = _parse_datetime(payload.get("last_bot_reply_at"))
+    if last_reply_at is not None:
+        last_bot_reply_ts_by_channel[channel_id] = last_reply_at
+    if payload.get("stopped"):
+        stopped_channels.add(channel_id)
+    if payload.get("awaiting_initial_button_press"):
+        channels_awaiting_initial_button_press.add(channel_id)
+    intent = payload.get("channel_intent_after_button")
+    if intent:
+        channel_intent_after_button[channel_id] = intent
+    if payload.get("bug_report_debounce"):
+        bug_report_debounce_channels.add(channel_id)
+    monitored_new_channels.add(channel_id)
+
+
+def persist_ticket_state(channel_id: int) -> None:
+    _ensure_state_dirs()
+    payload = {
+        "channel_id": channel_id,
+        "history": list(conversation_threads.get(channel_id, [])),
+        "investigation_job": _serialize_investigation_job(
+            ticket_investigation_jobs.get(channel_id)
+        ),
+        "last_wallet": last_wallet_by_channel.get(channel_id),
+        "pending_wallet_confirmation": pending_wallet_confirmation_by_channel.get(channel_id),
+        "last_bot_reply_at": _format_datetime(last_bot_reply_ts_by_channel.get(channel_id)),
+        "stopped": channel_id in stopped_channels,
+        "awaiting_initial_button_press": channel_id in channels_awaiting_initial_button_press,
+        "channel_intent_after_button": channel_intent_after_button.get(channel_id),
+        "bug_report_debounce": channel_id in bug_report_debounce_channels,
+    }
+    (_TICKET_STATE_DIR / f"{channel_id}.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def clear_ticket_channel_state(
+    channel_id: int,
+    *,
+    keep_stopped: bool = False,
+    delete_persisted: bool = False,
+) -> None:
+    conversation_threads.pop(channel_id, None)
+    ticket_investigation_jobs.pop(channel_id, None)
+    pending_messages.pop(channel_id, None)
+    last_wallet_by_channel.pop(channel_id, None)
+    pending_wallet_confirmation_by_channel.pop(channel_id, None)
+    last_bot_reply_ts_by_channel.pop(channel_id, None)
+    channels_awaiting_initial_button_press.discard(channel_id)
+    channel_intent_after_button.pop(channel_id, None)
+    bug_report_debounce_channels.discard(channel_id)
+    if keep_stopped:
+        stopped_channels.add(channel_id)
+    else:
+        stopped_channels.discard(channel_id)
+        monitored_new_channels.discard(channel_id)
+    reset_ticket_codex_session(channel_id)
+    if delete_persisted:
+        (_TICKET_STATE_DIR / f"{channel_id}.json").unlink(missing_ok=True)
+        return
+    persist_ticket_state(channel_id)
+
+
+def hydrate_public_conversation(author_id: int) -> None:
+    if author_id in public_conversations:
+        return
+    payload = _read_json(_PUBLIC_STATE_DIR / f"{author_id}.json")
+    if payload is None:
+        return
+    public_conversations[author_id] = PublicConversation(
+        history=list(payload.get("history", [])),
+        last_interaction_time=_parse_datetime(payload.get("last_interaction_time"))
+        or datetime.now(timezone.utc),
+        investigation_job=_deserialize_investigation_job(payload["investigation_job"])
+        if isinstance(payload.get("investigation_job"), dict)
+        else None,
+    )
+
+
+def persist_public_conversation(author_id: int) -> None:
+    conversation = public_conversations.get(author_id)
+    if conversation is None:
+        return
+    _ensure_state_dirs()
+    payload = {
+        "author_id": author_id,
+        "history": list(conversation.history),
+        "last_interaction_time": _format_datetime(conversation.last_interaction_time),
+        "investigation_job": _serialize_investigation_job(conversation.investigation_job),
+    }
+    (_PUBLIC_STATE_DIR / f"{author_id}.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def clear_public_conversation(author_id: int) -> None:
+    public_conversations.pop(author_id, None)
+    (_PUBLIC_STATE_DIR / f"{author_id}.json").unlink(missing_ok=True)
+
+
+def reset_ticket_codex_session(channel_id: int) -> None:
+    if not config.TICKET_EXECUTION_CODEX_SESSION_DIR:
+        return
+    manager = CodexSupportSessionManager(
+        config.TICKET_EXECUTION_CODEX_SESSION_DIR,
+        max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+    )
+    manager.reset(f"ticket:{channel_id}")
+
+
+def _ticket_state_is_loaded(channel_id: int) -> bool:
+    return any(
+        (
+            channel_id in conversation_threads,
+            channel_id in ticket_investigation_jobs,
+            channel_id in last_wallet_by_channel,
+            channel_id in pending_wallet_confirmation_by_channel,
+            channel_id in last_bot_reply_ts_by_channel,
+            channel_id in stopped_channels,
+            channel_id in channels_awaiting_initial_button_press,
+            channel_id in channel_intent_after_button,
+            channel_id in bug_report_debounce_channels,
+        )
+    )
+
+
+def _ensure_state_dirs() -> None:
+    _TICKET_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _PUBLIC_STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _serialize_investigation_job(job: TicketInvestigationJob | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    return {
+        "channel_id": job.channel_id,
+        "requested_intent": job.requested_intent,
+        "mode": job.mode,
+        "current_specialty": job.current_specialty,
+        "last_specialty": job.last_specialty,
+        "evidence": {
+            "wallet": job.evidence.wallet,
+            "chain": job.evidence.chain,
+            "tx_hashes": list(job.evidence.tx_hashes),
+            "withdrawal_target_chain": job.evidence.withdrawal_target_chain,
+            "withdrawal_target_vault": job.evidence.withdrawal_target_vault,
+        },
+    }
+
+
+def _deserialize_investigation_job(payload: dict[str, Any]) -> TicketInvestigationJob:
+    evidence = payload.get("evidence", {})
+    return TicketInvestigationJob(
+        channel_id=payload.get("channel_id"),
+        requested_intent=payload.get("requested_intent"),
+        mode=payload.get("mode", "idle"),
+        current_specialty=payload.get("current_specialty"),
+        last_specialty=payload.get("last_specialty"),
+        evidence=InvestigationEvidence(
+            wallet=evidence.get("wallet"),
+            chain=evidence.get("chain"),
+            tx_hashes=list(evidence.get("tx_hashes", [])),
+            withdrawal_target_chain=evidence.get("withdrawal_target_chain"),
+            withdrawal_target_vault=evidence.get("withdrawal_target_vault"),
+        ),
+    )
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _format_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def _parse_datetime(raw_value: str | None) -> datetime | None:
+    if not raw_value:
+        return None
+    try:
+        return datetime.fromisoformat(raw_value)
+    except ValueError:
+        return None

@@ -9,10 +9,10 @@ from state import (
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
     bug_report_debounce_channels,
-    clear_ticket_investigation_job,
+    clear_ticket_channel_state,
     get_or_create_ticket_investigation_job,
+    persist_ticket_state,
     stopped_channels,
-    pending_messages,
     pending_tasks,
 )
 
@@ -42,6 +42,7 @@ class InitialInquiryView(View):
             investigation_job.begin_collecting()
         else:
             investigation_job.mark_waiting_for_user()
+        persist_ticket_state(interaction.channel.id)
 
         if interaction.channel:
             await interaction.channel.send(prompt_message, suppress_embeds=True)
@@ -86,6 +87,7 @@ class InitialInquiryView(View):
         else:
             await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False, suppress_embeds=True)
         stopped_channels.add(interaction.channel.id)
+        persist_ticket_state(interaction.channel.id)
         logging.info(f"BD/Partner inquiry redirected in {interaction.channel.id}. Bot stopped.")
 
     @button(label="❓ Other/My Issue Isn't Listed", style=discord.ButtonStyle.secondary, custom_id="initial_other_issue", row=2)
@@ -100,6 +102,7 @@ class InitialInquiryView(View):
         investigation_job = get_or_create_ticket_investigation_job(interaction.channel.id)
         investigation_job.record_requested_intent("other_free_form")
         investigation_job.mark_waiting_for_user()
+        persist_ticket_state(interaction.channel.id)
         logging.info(f"User selected 'Other' in {interaction.channel.id}. Awaiting free-form input.")
 
     async def handle_button_click(self, interaction: discord.Interaction, button_custom_id: str):
@@ -132,9 +135,7 @@ class StopBotView(View):
             await interaction.response.defer()
 
         stopped_channels.add(channel_id)
-        bug_report_debounce_channels.discard(channel_id)
-        clear_ticket_investigation_job(channel_id)
-        pending_messages.pop(channel_id, None)
+        clear_ticket_channel_state(channel_id, keep_stopped=True, delete_persisted=False)
         task = pending_tasks.pop(channel_id, None)
         if task:
             task.cancel()

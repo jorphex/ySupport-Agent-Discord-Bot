@@ -28,15 +28,20 @@ from state import (
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
     bug_report_debounce_channels,
-    clear_ticket_investigation_job,
+    clear_public_conversation,
+    clear_ticket_channel_state,
     conversation_threads,
     get_or_create_ticket_investigation_job,
+    hydrate_public_conversation,
+    hydrate_ticket_state,
     last_wallet_by_channel,
     last_bot_reply_ts_by_channel,
     monitored_new_channels,
     pending_messages,
     pending_tasks,
     pending_wallet_confirmation_by_channel,
+    persist_public_conversation,
+    persist_ticket_state,
     public_conversations,
     stopped_channels,
 )
@@ -150,10 +155,11 @@ class TicketBot(discord.Client):
                 project_context = config.CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown")
                 logging.info(f"New {project_context.capitalize()} ticket channel created: {channel.name} (ID: {channel.id}). Initializing state.")
                 conversation_threads[channel.id] = []
-                clear_ticket_investigation_job(channel.id)
-                stopped_channels.discard(channel.id)
-                bug_report_debounce_channels.discard(channel.id)
-                pending_messages.pop(channel.id, None)
+                clear_ticket_channel_state(
+                    channel.id,
+                    keep_stopped=False,
+                    delete_persisted=True,
+                )
                 if channel.id in pending_tasks:
                     try:
                         pending_tasks.pop(channel.id).cancel()
@@ -177,6 +183,7 @@ class TicketBot(discord.Client):
                     await channel.send(welcome_message, view=InitialInquiryView(), suppress_embeds=True)
                     channels_awaiting_initial_button_press.add(channel.id)
                     last_bot_reply_ts_by_channel[channel.id] = datetime.now(timezone.utc)
+                    persist_ticket_state(channel.id)
                     logging.info(f"Sent initial inquiry buttons to channel {channel.id}")
                 except discord.Forbidden:
                     logging.error(f"Missing permissions to send initial message with buttons in {channel.id}")
@@ -230,6 +237,7 @@ class TicketBot(discord.Client):
             original_author_id = original_message.author.id
             current_history: List[TResponseInputItem] = []
             public_investigation_job = None
+            hydrate_public_conversation(original_author_id)
 
             conversation = public_conversations.get(original_author_id)
             if conversation:
@@ -249,6 +257,7 @@ class TicketBot(discord.Client):
                         time_since_last.total_seconds(),
                     )
                     public_conversations.pop(original_author_id, None)
+                    clear_public_conversation(original_author_id)
 
             if public_investigation_job is None:
                 public_investigation_job = TicketInvestigationJob(
@@ -281,6 +290,7 @@ class TicketBot(discord.Client):
                         last_interaction_time=datetime.now(timezone.utc),
                         investigation_job=worker_result.updated_job,
                     )
+                    persist_public_conversation(original_author_id)
                     logging.info(
                         "Saved updated public conversation context for user %s. History length: %s items.",
                         original_author_id,
@@ -302,6 +312,7 @@ class TicketBot(discord.Client):
                         original_author_id,
                     )
                     public_conversations.pop(original_author_id, None)
+                    clear_public_conversation(original_author_id)
                     await original_message.reply(
                         _guardrail_tripwire_reply(e),
                         mention_author=False,
@@ -315,6 +326,7 @@ class TicketBot(discord.Client):
                         message.channel.id,
                     )
                     public_conversations.pop(original_author_id, None)
+                    clear_public_conversation(original_author_id)
                     if public_run_context.repo_search_calls:
                         reply_text = (
                             "I hit an internal analysis limit while reviewing repo evidence for that request. "
@@ -338,6 +350,7 @@ class TicketBot(discord.Client):
                         exc_info=True,
                     )
                     public_conversations.pop(original_author_id, None)
+                    clear_public_conversation(original_author_id)
                     await original_message.reply(
                         f"Sorry, an error occurred while processing that request. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>.",
                         mention_author=False,
@@ -490,8 +503,10 @@ class TicketBot(discord.Client):
         if not isinstance(message.channel, discord.TextChannel) or not message.channel.category:
             return
         channel_id = message.channel.id
-        if channel_id not in monitored_new_channels:
+        if message.channel.category.id not in config.CATEGORY_CONTEXT_MAP:
             return
+        hydrate_ticket_state(channel_id)
+        monitored_new_channels.add(channel_id)
 
         if channel_id in channels_awaiting_initial_button_press:
             try:
@@ -502,6 +517,7 @@ class TicketBot(discord.Client):
                     suppress_embeds=True,
                 )
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+                persist_ticket_state(channel_id)
             except Exception:
                 pass
             return
@@ -609,12 +625,12 @@ class TicketBot(discord.Client):
                             "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
                             channel_id,
                         )
+                    persist_ticket_state(channel_id)
                 except InputGuardrailTripwireTriggered as e:
                     logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                     final_reply = _guardrail_tripwire_reply(e)
                     should_stop_processing = True
-                    conversation_threads.pop(channel_id, None)
-                    clear_ticket_investigation_job(channel_id)
+                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
                 except MaxTurnsExceeded:
                     logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                     if run_context.repo_search_calls:
@@ -628,18 +644,17 @@ class TicketBot(discord.Client):
                             f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
                         )
                     should_stop_processing = True
-                    conversation_threads.pop(channel_id, None)
-                    clear_ticket_investigation_job(channel_id)
+                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
                 except AgentsException as e:
                     logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
                     final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                     should_stop_processing = True
-                    clear_ticket_investigation_job(channel_id)
+                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
                 except Exception as e:
                     logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                     final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                     should_stop_processing = True
-                    clear_ticket_investigation_job(channel_id)
+                    clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
@@ -652,9 +667,11 @@ class TicketBot(discord.Client):
                     if should_stop_processing and channel_id not in stopped_channels:
                         stopped_channels.add(channel_id)
                         logging.info(f"Added channel {channel_id} to stopped channels due to error/handoff tag.")
+                    persist_ticket_state(channel_id)
                 except discord.Forbidden:
                     logging.error(f"Missing permissions to send message in channel {channel_id}")
                     stopped_channels.add(channel_id)
+                    persist_ticket_state(channel_id)
                 except Exception as e:
                     logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
         except asyncio.CancelledError:
@@ -663,6 +680,11 @@ class TicketBot(discord.Client):
         finally:
             if pending_tasks.get(channel_id) is current_task:
                 pending_tasks.pop(channel_id, None)
+
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        if not isinstance(channel, discord.TextChannel):
+            return
+        clear_ticket_channel_state(channel.id, keep_stopped=False, delete_persisted=True)
 
 
 # Run the Bot
