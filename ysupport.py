@@ -37,6 +37,7 @@ from state import (
     hydrate_ticket_state,
     last_wallet_by_channel,
     last_bot_reply_ts_by_channel,
+    mark_ticket_channel_stopped,
     monitored_new_channels,
     pending_messages,
     pending_tasks,
@@ -44,6 +45,7 @@ from state import (
     persist_public_conversation,
     persist_ticket_state,
     public_conversations,
+    reset_ticket_channel_for_terminal_reply,
     stopped_channels,
 )
 from ticket_investigation_json_endpoint import (
@@ -713,11 +715,7 @@ class TicketBot(discord.Client):
                 if boundary_reply is not None:
                     final_reply = boundary_reply
                     should_stop_processing = True
-                    clear_ticket_channel_state(
-                        channel_id,
-                        keep_stopped=False,
-                        delete_persisted=True,
-                    )
+                    reset_ticket_channel_for_terminal_reply(channel_id)
                 else:
                     try:
                         worker_result = await self.investigation_executor.execute_turn(
@@ -750,7 +748,7 @@ class TicketBot(discord.Client):
                         logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                         final_reply = _guardrail_tripwire_reply(e)
                         should_stop_processing = True
-                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                        reset_ticket_channel_for_terminal_reply(channel_id)
                     except MaxTurnsExceeded:
                         logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                         if run_context.repo_search_calls:
@@ -764,17 +762,17 @@ class TicketBot(discord.Client):
                                 f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
                             )
                         should_stop_processing = True
-                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                        reset_ticket_channel_for_terminal_reply(channel_id)
                     except AgentsException as e:
                         logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
                         final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                         should_stop_processing = True
-                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                        reset_ticket_channel_for_terminal_reply(channel_id)
                     except Exception as e:
                         logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                         final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
                         should_stop_processing = True
-                        clear_ticket_channel_state(channel_id, keep_stopped=False, delete_persisted=True)
+                        reset_ticket_channel_for_terminal_reply(channel_id)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
@@ -785,13 +783,13 @@ class TicketBot(discord.Client):
                     last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
                     logging.info(f"Sent ticket reply/replies in channel {channel_id}. Stop processing flag: {should_stop_processing}")
                     if should_stop_processing and channel_id not in stopped_channels:
-                        stopped_channels.add(channel_id)
+                        mark_ticket_channel_stopped(channel_id)
                         logging.info(f"Added channel {channel_id} to stopped channels due to error/handoff tag.")
-                    persist_ticket_state(channel_id)
+                    elif not should_stop_processing:
+                        persist_ticket_state(channel_id)
                 except discord.Forbidden:
                     logging.error(f"Missing permissions to send message in channel {channel_id}")
-                    stopped_channels.add(channel_id)
-                    persist_ticket_state(channel_id)
+                    mark_ticket_channel_stopped(channel_id)
                 except Exception as e:
                     logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
         except asyncio.CancelledError:

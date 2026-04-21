@@ -249,6 +249,27 @@ def clear_ticket_channel_state(
     persist_ticket_state(channel_id)
 
 
+def reset_ticket_channel_for_terminal_reply(channel_id: int) -> None:
+    clear_ticket_channel_state(
+        channel_id,
+        keep_stopped=False,
+        delete_persisted=True,
+    )
+
+
+def stop_ticket_channel(channel_id: int) -> None:
+    clear_ticket_channel_state(
+        channel_id,
+        keep_stopped=True,
+        delete_persisted=False,
+    )
+
+
+def mark_ticket_channel_stopped(channel_id: int) -> None:
+    stopped_channels.add(channel_id)
+    persist_ticket_state(channel_id)
+
+
 def hydrate_public_conversation(author_id: int) -> None:
     if author_id in public_conversations:
         return

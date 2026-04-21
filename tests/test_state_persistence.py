@@ -20,11 +20,14 @@ from state import (
     hydrate_ticket_state,
     last_bot_reply_ts_by_channel,
     last_wallet_by_channel,
+    mark_ticket_channel_stopped,
     pending_wallet_confirmation_by_channel,
     persist_public_conversation,
     persist_ticket_state,
     public_conversations,
+    reset_ticket_channel_for_terminal_reply,
     stopped_channels,
+    stop_ticket_channel,
     ticket_investigation_jobs,
 )
 
@@ -117,6 +120,53 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
                 self.assertEqual(payload["history"], [])
+
+    def test_reset_ticket_channel_for_terminal_reply_deletes_persisted_state(self) -> None:
+        channel_id = 103
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+                patch("state.reset_ticket_codex_session"),
+            ):
+                conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
+                ticket_investigation_jobs[channel_id] = TicketInvestigationJob(channel_id=channel_id)
+                persist_ticket_state(channel_id)
+
+                reset_ticket_channel_for_terminal_reply(channel_id)
+
+                self.assertNotIn(channel_id, conversation_threads)
+                self.assertNotIn(channel_id, ticket_investigation_jobs)
+                self.assertFalse((ticket_dir / f"{channel_id}.json").exists())
+
+    def test_stop_ticket_channel_and_mark_ticket_channel_stopped_persist_stop_state(self) -> None:
+        channel_id = 104
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+                patch("state.reset_ticket_codex_session"),
+            ):
+                conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
+
+                stop_ticket_channel(channel_id)
+                self.assertIn(channel_id, stopped_channels)
+
+                payload = state._read_json(ticket_dir / f"{channel_id}.json")
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertTrue(payload["stopped"])
+
+                stopped_channels.discard(channel_id)
+                mark_ticket_channel_stopped(channel_id)
+                payload = state._read_json(ticket_dir / f"{channel_id}.json")
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertTrue(payload["stopped"])
 
 
 class PublicStatePersistenceTests(unittest.TestCase):

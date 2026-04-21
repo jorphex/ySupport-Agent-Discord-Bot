@@ -9,11 +9,11 @@ from state import (
     channels_awaiting_initial_button_press,
     channel_intent_after_button,
     bug_report_debounce_channels,
-    clear_ticket_channel_state,
     get_or_create_ticket_investigation_job,
+    mark_ticket_channel_stopped,
     persist_ticket_state,
-    stopped_channels,
     pending_tasks,
+    stop_ticket_channel,
 )
 
 
@@ -86,8 +86,7 @@ class InitialInquiryView(View):
             await interaction.channel.send(STANDARD_REDIRECT_MESSAGE, suppress_embeds=True)
         else:
             await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False, suppress_embeds=True)
-        stopped_channels.add(interaction.channel.id)
-        persist_ticket_state(interaction.channel.id)
+        mark_ticket_channel_stopped(interaction.channel.id)
         logging.info(f"BD/Partner inquiry redirected in {interaction.channel.id}. Bot stopped.")
 
     @button(label="❓ Other/My Issue Isn't Listed", style=discord.ButtonStyle.secondary, custom_id="initial_other_issue", row=2)
@@ -134,8 +133,7 @@ class StopBotView(View):
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-        stopped_channels.add(channel_id)
-        clear_ticket_channel_state(channel_id, keep_stopped=True, delete_persisted=False)
+        stop_ticket_channel(channel_id)
         task = pending_tasks.pop(channel_id, None)
         if task:
             task.cancel()
