@@ -38,13 +38,11 @@ from support_tools import _extract_artifact_refs, _repo_search_block_message
 from ticket_investigation_runtime import (
     _build_specialist_turn_input,
     TicketAgentFlowOutcome,
-    _looks_like_bug_bounty_intake_boundary_case,
     _contains_report_artifact_evidence,
     _merge_explicit_evidence_into_job,
     _normalize_ticket_triage_decision,
     _reply_requests_human_handoff,
     _select_ticket_starting_agent,
-    bug_bounty_intake_boundary_reply,
     resolve_freeform_starting_agent,
     TicketInvestigationRuntime,
     TicketTurnRequest,
@@ -192,25 +190,6 @@ class RoutingTests(unittest.TestCase):
             self.assertEqual(agent_key, "data")
         finally:
             clear_ticket_investigation_job(channel_id)
-
-    def test_bug_bounty_intake_boundary_helper_matches_opening_request(self) -> None:
-        text = (
-            "Good day team, me and my team discovered an issue that should be addressed "
-            "and hope to be rewarded for our efforts"
-        )
-
-        self.assertTrue(_looks_like_bug_bounty_intake_boundary_case(text))
-
-    def test_bug_bounty_intake_boundary_reply_points_to_security_process(self) -> None:
-        reply = bug_bounty_intake_boundary_reply(
-            "Good day team, me and my team discovered an issue that should be addressed "
-            "and hope to be rewarded for our efforts"
-        )
-
-        self.assertIsNotNone(reply)
-        assert reply is not None
-        self.assertIn("docs.yearn.fi/developers/security", reply)
-        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, reply)
 
     def test_follow_up_routing_does_not_force_data_reuse_for_ui_issue(self) -> None:
         channel_id = 26
@@ -1321,29 +1300,43 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
         fake_runner = _FakeRunner([])
         context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "security_process_boundary",
+                "tripwire_triggered": True,
+                "message": (
+                    "If you are reporting a Yearn security issue and want bounty or disclosure handling, "
+                    "use Yearn's official security process at https://docs.yearn.fi/developers/security. "
+                    f"Human help is required beyond that path. {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                ),
+            }
         try:
-            runtime = TicketInvestigationRuntime(fake_runner)
-            outcome = await runtime.run_turn(
-                TicketTurnRequest(
-                    aggregated_text=(
-                        "Good day team, me and my team discovered an issue that should be addressed "
-                        "and hope to be rewarded for our efforts"
-                    ),
-                    input_list=[
-                        {
-                            "role": "user",
-                            "content": (
-                                "Good day team, me and my team discovered an issue that should be addressed "
-                                "and hope to be rewarded for our efforts"
-                            ),
-                        }
-                    ],
-                    current_history=[],
-                    run_context=context,
-                    investigation_job=investigation_job,
-                    workflow_name="tests.ticket_flow",
+            with patch(
+                "ticket_investigation_runtime.evaluate_support_boundary",
+                new=fake_boundary,
+            ):
+                runtime = TicketInvestigationRuntime(fake_runner)
+                outcome = await runtime.run_turn(
+                    TicketTurnRequest(
+                        aggregated_text=(
+                            "Good day team, me and my team discovered an issue that should be addressed "
+                            "and hope to be rewarded for our efforts"
+                        ),
+                        input_list=[
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Good day team, me and my team discovered an issue that should be addressed "
+                                    "and hope to be rewarded for our efforts"
+                                ),
+                            }
+                        ],
+                        current_history=[],
+                        run_context=context,
+                        investigation_job=investigation_job,
+                        workflow_name="tests.ticket_flow",
+                    )
                 )
-            )
         finally:
             clear_ticket_investigation_job(channel_id)
 
