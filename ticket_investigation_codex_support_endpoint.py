@@ -413,6 +413,8 @@ def _codex_support_prompt(
         "If `ysupport_mcp` is listed, prefer it for Yearn-specific docs, repo context, vault context, and support facts.\n"
         "No file writes.\n"
         "Do not tell the user to go to Discord or open a Discord ticket.\n"
+        "If the exact fact is known, give it first.\n"
+        "If the user asked multiple questions, answer them in order.\n"
         "Before setting requires_human_handoff=true, do the strongest direct support work you can from the request and tools.\n"
         "Inspect linked artifacts before handoff.\n"
         "If the user asks for a human but also gives a concrete target or question, answer what you can first.\n"
@@ -421,6 +423,7 @@ def _codex_support_prompt(
         "If human review is truly needed, set requires_human_handoff=true and explain why briefly.\n"
         "Routine support: concise.\n"
         "Investigations and report triage: enough prose to explain conclusion, evidence, and remaining limit.\n"
+        "Stop once the asked question is answered. No add-on sections.\n"
     )
 
 
