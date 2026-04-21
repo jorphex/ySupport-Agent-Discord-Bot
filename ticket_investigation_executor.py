@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, replace
+import re
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 from state import TicketInvestigationJob
@@ -107,7 +108,11 @@ class TransportTicketInvestigationExecutor:
     ) -> TicketExecutionResult:
         transport_request = TicketExecutionTransportRequest.from_turn_request(
             request,
-            wants_bug_review_status=bool(hooks and hooks.send_bug_review_status is not None),
+            wants_bug_review_status=bool(
+                hooks
+                and hooks.send_bug_review_status is not None
+                and _should_request_bug_review_status(request)
+            ),
         )
         transport_result = await self.transport.execute_transport_turn(
             transport_request,
@@ -123,3 +128,29 @@ class TransportTicketInvestigationExecutor:
 class LoopbackTransportTicketInvestigationExecutor(TransportTicketInvestigationExecutor):
     def __init__(self, delegate: TicketInvestigationExecutor) -> None:
         super().__init__(LoopbackTicketExecutionTransport(delegate))
+
+
+_BUG_REVIEW_STATUS_PATTERNS = (
+    re.compile(r"https?://gist\.github\.com/", re.IGNORECASE),
+    re.compile(r"\bimmunefi\b", re.IGNORECASE),
+    re.compile(r"\breport\s*#?\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\breport\b", re.IGNORECASE),
+    re.compile(r"\bgist\b", re.IGNORECASE),
+    re.compile(r"\bpoc\b", re.IGNORECASE),
+    re.compile(r"\bproof of concept\b", re.IGNORECASE),
+    re.compile(r"\bexploit\b", re.IGNORECASE),
+    re.compile(r"\bvulnerability\b", re.IGNORECASE),
+    re.compile(r"\bvuln\b", re.IGNORECASE),
+    re.compile(r"\bfinding(?:s)?\b", re.IGNORECASE),
+    re.compile(r"\bai spam\b", re.IGNORECASE),
+)
+
+
+def _should_request_bug_review_status(request: "TicketTurnRequest") -> bool:
+    requested_intent = getattr(request.investigation_job, "requested_intent", None)
+    if requested_intent != "investigate_issue":
+        return False
+    text = request.aggregated_text.strip()
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _BUG_REVIEW_STATUS_PATTERNS)

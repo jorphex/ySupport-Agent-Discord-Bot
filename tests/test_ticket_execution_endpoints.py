@@ -182,11 +182,64 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(transport.requests), 1)
-        self.assertTrue(transport.requests[0].wants_bug_review_status)
+        self.assertFalse(transport.requests[0].wants_bug_review_status)
         self.assertIs(transport.hooks[0].send_bug_review_status, fake_send_bug_review_status)
         self.assertEqual(result.flow_outcome.raw_final_reply, "transport-ok")
         self.assertEqual(result.updated_job.current_specialty, "bug")
         self.assertEqual(result.updated_job.mode, "investigating")
+
+    async def test_transport_executor_requests_bug_review_status_for_report_like_issue(self) -> None:
+        class _FakeTransport:
+            def __init__(self, requests, hooks):
+                self.requests = requests
+                self.hooks = hooks
+
+            async def execute_transport_turn(self, request, hooks=None):
+                self.requests.append(request)
+                self.hooks.append(hooks)
+                updated_job = TicketInvestigationJob(channel_id=196)
+                updated_job.begin_investigating()
+                updated_job.complete_specialist_turn("bug")
+                return TicketExecutionTransportResult.from_execution_parts(
+                    TicketAgentFlowOutcome(
+                        raw_final_reply="transport-ok",
+                        conversation_history=[],
+                        completed_agent_key="bug",
+                        requires_human_handoff=False,
+                    ),
+                    updated_job,
+                )
+
+        async def fake_send_bug_review_status() -> None:
+            return None
+
+        transport: TicketExecutionTransport = _FakeTransport(requests=[], hooks=[])
+        executor = TransportTicketInvestigationExecutor(transport)
+        request = TicketTurnRequest(
+            aggregated_text="Request for Review of Report # 73981 https://gist.github.com/example/abcdef",
+            input_list=[{"role": "user", "content": "Request for Review of Report # 73981 https://gist.github.com/example/abcdef"}],
+            current_history=[],
+            run_context=BotRunContext(
+                channel_id=196,
+                project_context="yearn",
+                initial_button_intent="investigate_issue",
+            ),
+            investigation_job=TicketInvestigationJob(channel_id=196),
+            workflow_name="tests.executor.transport.report",
+        )
+        request.investigation_job.begin_collecting("investigate_issue")
+
+        result = await executor.execute_turn(
+            request,
+            hooks=TicketExecutionHooks(
+                send_bug_review_status=fake_send_bug_review_status,
+            ),
+        )
+
+        self.assertEqual(len(transport.requests), 1)
+        self.assertTrue(transport.requests[0].wants_bug_review_status)
+        self.assertIs(transport.hooks[0].send_bug_review_status, fake_send_bug_review_status)
+        self.assertEqual(result.flow_outcome.raw_final_reply, "transport-ok")
 
     async def test_loopback_transport_rehydrates_request_for_delegate(self) -> None:
         worker = _FakeWorker(requests=[])
