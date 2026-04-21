@@ -79,7 +79,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('[mcp_servers.ysupport.env]', config_text)
             self.assertNotIn("openai_docs", config_text)
             self.assertIn(
-                "You are ySupport, a Yearn support agent",
+                "You are ySupport.",
                 home.instructions_path.read_text(encoding="utf-8"),
             )
             self.assertEqual(
@@ -457,9 +457,9 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             response_schema_path=Path("support_response_schema.json"),
         )
 
-        self.assertIn("Keep routine support answers concise and support-oriented.", prompt_text)
-        self.assertIn("For investigate_issue turns, linked-artifact review, or technical report triage", prompt_text)
-        self.assertIn("two to four short paragraphs", prompt_text)
+        self.assertIn("Routine support: concise.", prompt_text)
+        self.assertIn("Investigations and report triage: enough prose", prompt_text)
+        self.assertIn("Do not mention handoff if public evidence already answers the main question.", prompt_text)
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
