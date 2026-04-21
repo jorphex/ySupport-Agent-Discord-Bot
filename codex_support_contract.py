@@ -91,6 +91,8 @@ class SupportTurnRequest:
         investigation_job = request.investigation_job
         run_context = request.run_context
         evidence = dict(investigation_job.get("evidence", {}))
+        initial_button_intent = run_context.get("initial_button_intent")
+        requested_intent = investigation_job.get("requested_intent")
         withdrawal_target = None
         if evidence.get("withdrawal_target_chain") or evidence.get(
             "withdrawal_target_vault"
@@ -106,8 +108,8 @@ class SupportTurnRequest:
             channel_id=run_context.get("channel_id"),
             project_context=run_context.get("project_context", "unknown"),
             workflow_name=request.workflow_name,
-            initial_button_intent=run_context.get("initial_button_intent"),
-            requested_intent=investigation_job.get("requested_intent"),
+            initial_button_intent=initial_button_intent,
+            requested_intent=requested_intent,
             evidence=evidence,
             support_state={
                 "investigation_mode": investigation_job.get("mode"),
@@ -126,6 +128,29 @@ class SupportTurnRequest:
                     "last_search_artifact_refs": list(
                         run_context.get("repo_last_search_artifact_refs", [])
                     ),
+                },
+                "workflow_context": {
+                    "surface": channel_type,
+                    "button_context_known": bool(initial_button_intent),
+                    "initial_button_intent": initial_button_intent,
+                    "requested_intent": requested_intent,
+                    "guardrail_profile": _derive_guardrail_profile(
+                        channel_type=channel_type,
+                        initial_button_intent=initial_button_intent,
+                        requested_intent=requested_intent,
+                    ),
+                    "expected_first_actions": _derive_expected_first_actions(
+                        channel_type=channel_type,
+                        initial_button_intent=initial_button_intent,
+                        requested_intent=requested_intent,
+                    ),
+                    "non_support_boundaries": [
+                        "listing",
+                        "partnership",
+                        "marketing",
+                        "vendor_security",
+                        "job_inquiry",
+                    ],
                 },
             },
             constraints={
@@ -246,6 +271,58 @@ def _is_allowed_reported_tool(tool: str, allowed_tools: set[str]) -> bool:
             if tool == prefix or tool.startswith(prefix):
                 return True
     return False
+
+
+def _derive_guardrail_profile(
+    *,
+    channel_type: str,
+    initial_button_intent: str | None,
+    requested_intent: str | None,
+) -> str:
+    if channel_type == "public":
+        return "public_support"
+    intent = requested_intent or initial_button_intent
+    if intent == "data_deposits_withdrawals_start":
+        return "ticket_deposits_withdrawals"
+    if intent == "docs_qa":
+        return "ticket_docs_qa"
+    if intent == "investigate_issue":
+        return "ticket_issue_investigation"
+    if intent == "other_free_form":
+        return "ticket_free_form_support"
+    return "ticket_general_support"
+
+
+def _derive_expected_first_actions(
+    *,
+    channel_type: str,
+    initial_button_intent: str | None,
+    requested_intent: str | None,
+) -> list[str]:
+    intent = requested_intent or initial_button_intent
+    if channel_type == "public":
+        return [
+            "Answer directly in-channel and keep public-channel replies concise.",
+        ]
+    if intent == "data_deposits_withdrawals_start":
+        return [
+            "If the user provides a wallet address, start with wallet position lookup before asking for more detail.",
+            "If the user provides a vault address, vault name, or token, start with vault lookup.",
+            "If the user provides a tx hash, investigate the transaction directly.",
+        ]
+    if intent == "docs_qa":
+        return [
+            "Treat this as a direct product/docs question before escalating.",
+        ]
+    if intent == "investigate_issue":
+        return [
+            "Treat linked artifacts, tx hashes, and concrete product targets as investigation inputs, not generic support chatter.",
+        ]
+    if intent == "other_free_form":
+        return [
+            "Treat this as a free-form support request and infer the best Yearn support path from the user message and known context.",
+        ]
+    return []
 
 
 def support_result_to_transport_result(

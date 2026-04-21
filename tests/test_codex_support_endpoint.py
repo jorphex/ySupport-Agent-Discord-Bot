@@ -197,6 +197,14 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             support_request.support_state["repo_context"]["last_search_artifact_refs"],
             [],
         )
+        self.assertEqual(
+            support_request.support_state["workflow_context"]["guardrail_profile"],
+            "public_support",
+        )
+        self.assertEqual(
+            support_request.support_state["workflow_context"]["expected_first_actions"],
+            ["Answer directly in-channel and keep public-channel replies concise."],
+        )
         self.assertEqual(len(support_request.recent_transcript), 12)
         self.assertEqual(
             [item["content"] for item in support_request.recent_transcript],
@@ -213,6 +221,51 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             support_request_without_mcp.constraints["allowed_tools"],
             ["shell", "web_search"],
+        )
+
+    def test_support_turn_request_includes_deposit_withdrawal_workflow_context(self) -> None:
+        request = TicketExecutionTransportRequest(
+            aggregated_text="0xB8B9E3097c8b1DDdF9C5ea9d48A7eBeaF09D67d2",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 91,
+                "is_public_trigger": False,
+                "project_context": "yearn",
+                "initial_button_intent": "data_deposits_withdrawals_start",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 91,
+                "requested_intent": "data_deposits_withdrawals_start",
+                "mode": "waiting_for_user",
+                "evidence": {"wallet": "0xB8B9E3097c8b1DDdF9C5ea9d48A7eBeaF09D67d2"},
+            },
+            workflow_name="tests.deposit_flow",
+            wants_bug_review_status=False,
+        )
+
+        support_request = SupportTurnRequest.from_ticket_execution_request(request)
+
+        workflow_context = support_request.support_state["workflow_context"]
+        self.assertEqual(
+            workflow_context["guardrail_profile"],
+            "ticket_deposits_withdrawals",
+        )
+        self.assertTrue(workflow_context["button_context_known"])
+        self.assertIn(
+            "If the user provides a wallet address, start with wallet position lookup before asking for more detail.",
+            workflow_context["expected_first_actions"],
+        )
+        self.assertEqual(
+            workflow_context["non_support_boundaries"],
+            [
+                "listing",
+                "partnership",
+                "marketing",
+                "vendor_security",
+                "job_inquiry",
+            ],
         )
 
     def test_verify_support_turn_result_rejects_discord_redirects(self) -> None:
