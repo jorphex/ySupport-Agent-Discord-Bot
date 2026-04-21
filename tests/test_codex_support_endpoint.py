@@ -16,6 +16,7 @@ from codex_support_contract import (
 )
 from ticket_investigation_codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
+    _codex_support_prompt,
 )
 from ticket_investigation_json_endpoint import build_ticket_execution_json_endpoint
 from ticket_investigation_transport import (
@@ -412,6 +413,16 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(verified.handoff_reason)
         self.assertNotIn("hand this off", verified.answer.lower())
         self.assertIn("dashboard looks fresh", verified.answer.lower())
+
+    def test_codex_support_prompt_requests_fuller_prose_for_investigations(self) -> None:
+        prompt_text = _codex_support_prompt(
+            support_request_path=Path("support_request.json"),
+            response_schema_path=Path("support_response_schema.json"),
+        )
+
+        self.assertIn("Keep routine support answers concise and support-oriented.", prompt_text)
+        self.assertIn("For investigate_issue turns, linked-artifact review, or technical report triage", prompt_text)
+        self.assertIn("two to four short paragraphs", prompt_text)
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT

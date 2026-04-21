@@ -429,5 +429,8 @@ def _codex_support_prompt(
         "strategist, or operator did not act, give the factual support answer and stop there.\n"
         "Answer directly when possible. If human review is needed, set requires_human_handoff=true and explain "
         "the reason briefly.\n"
-        "Keep the answer concise and support-oriented.\n"
+        "Keep routine support answers concise and support-oriented.\n"
+        "For investigate_issue turns, linked-artifact review, or technical report triage, use enough prose to "
+        "explain the conclusion, the strongest supporting evidence, and the main remaining limitation. Prefer "
+        "two to four short paragraphs over an overly compressed verdict.\n"
     )
