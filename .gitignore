@@ -24,3 +24,4 @@ OPERATOR_MAINTAINER_REFERENCE.md
 /yearn_rag/update_docs.sh
 /yearn_rag/doc_link_map.json
 /.cache/repo_context/
+.tmp_replay/

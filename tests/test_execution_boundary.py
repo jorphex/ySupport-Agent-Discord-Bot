@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
@@ -35,6 +36,28 @@ import tools_lib
 
 
 class ConfigSummaryTests(unittest.TestCase):
+    def test_ticket_execution_state_defaults_point_to_bot_state_root(self) -> None:
+        self.assertEqual(
+            config.TICKET_EXECUTION_STATE_ROOT,
+            Path("/var/lib/ysupport-codex"),
+        )
+        self.assertEqual(
+            config.TICKET_EXECUTION_CODEX_HOME,
+            "/var/lib/ysupport-codex/home",
+        )
+        self.assertEqual(
+            config.TICKET_EXECUTION_ARTIFACT_DIR,
+            "/var/lib/ysupport-codex/runs",
+        )
+        self.assertEqual(
+            config.TICKET_EXECUTION_RUN_DIR_ROOT,
+            "/var/lib/ysupport-codex/runs",
+        )
+        self.assertEqual(
+            config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR,
+            "/var/lib/ysupport-codex/shadow",
+        )
+
     def test_build_rpc_urls_prefers_explicit_per_chain_env(self) -> None:
         rpc_urls = config.build_rpc_urls(
             {
@@ -94,11 +117,13 @@ class ConfigSummaryTests(unittest.TestCase):
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_model = config.TICKET_EXECUTION_CODEX_MODEL
+        original_reasoning = config.TICKET_EXECUTION_CODEX_REASONING_EFFORT
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
         try:
             config.TICKET_EXECUTION_ENDPOINT = "codex_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
             config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
+            config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = "medium"
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
 
             summary = config.ticket_execution_runtime_summary()
@@ -106,11 +131,14 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
             config.TICKET_EXECUTION_CODEX_MODEL = original_model
+            config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = original_reasoning
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
 
         self.assertIn("primary=codex_exec", summary)
         self.assertIn("fallback=local", summary)
         self.assertIn("codex_model=gpt-5.4", summary)
+        self.assertIn("codex_reasoning=medium", summary)
+        self.assertIn("state_root=/var/lib/ysupport-codex", summary)
         self.assertIn("artifact_dir=/tmp/ticket-artifacts", summary)
 
     def test_ticket_execution_runtime_warnings_flag_primary_codex_without_fallback(self) -> None:
@@ -688,10 +716,13 @@ class CodexBundleTests(unittest.TestCase):
                 run_dir=temp_dir,
                 repo_root="/root/bots/discord/ysupport",
                 model="gpt-5.4",
+                reasoning_effort="medium",
             )
 
             self.assertIn("-m", bundle.command)
             self.assertIn("gpt-5.4", bundle.command)
+            self.assertIn("-c", bundle.command)
+            self.assertIn('model_reasoning_effort="medium"', bundle.command)
 
     def test_build_codex_ticket_execution_bundle_writes_expected_response_for_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

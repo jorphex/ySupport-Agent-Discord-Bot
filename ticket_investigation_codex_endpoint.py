@@ -29,6 +29,7 @@ class CodexExecTicketExecutionJsonEndpoint:
         repo_root: str | Path,
         codex_command: Sequence[str] | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         allowed_command_prefixes: Sequence[Sequence[str]] | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
@@ -45,6 +46,7 @@ class CodexExecTicketExecutionJsonEndpoint:
         self.repo_root = Path(repo_root)
         self.codex_command = command
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.allowed_command_prefixes = [
             list(prefix) for prefix in (allowed_command_prefixes or [])
         ]
@@ -92,6 +94,7 @@ class CodexExecTicketExecutionJsonEndpoint:
                 repo_root=self.repo_root,
                 codex_command=self.codex_command,
                 model=self.model,
+                reasoning_effort=self.reasoning_effort,
                 response_json_override=smoke_response_json,
             )
             try:

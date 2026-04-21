@@ -34,6 +34,7 @@ def build_codex_ticket_execution_bundle(
     repo_root: str | Path,
     codex_command: Sequence[str] | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     response_json_override: str | None = None,
 ) -> CodexTicketExecutionBundle:
     run_dir_path = Path(run_dir)
@@ -67,6 +68,8 @@ def build_codex_ticket_execution_bundle(
     command = list(codex_command or DEFAULT_CODEX_EXEC_COMMAND)
     if model:
         command.extend(["-m", model])
+    if reasoning_effort:
+        command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
     command.extend(
         [
             "--output-schema",

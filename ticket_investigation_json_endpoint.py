@@ -1,13 +1,21 @@
+import asyncio
+from datetime import datetime, timezone
 import os
+from pathlib import Path
 import sys
 from collections.abc import Sequence
+import json
 from typing import Protocol
+from uuid import uuid4
 
 import config
 from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
 from ticket_investigation_codex_endpoint import (
     CodexExecTicketExecutionJsonEndpoint,
     build_codex_exec_allowed_prefixes,
+)
+from ticket_investigation_codex_support_endpoint import (
+    CodexSupportTicketExecutionJsonEndpoint,
 )
 from ticket_investigation_executor import (
     TicketExecutionHooks,
@@ -113,22 +121,160 @@ class FailoverTicketExecutionJsonEndpoint:
                 ) from fallback_exc
 
 
+class ShadowTicketExecutionJsonEndpoint:
+    def __init__(
+        self,
+        primary: TicketExecutionJsonEndpoint,
+        shadow: TicketExecutionJsonEndpoint,
+        *,
+        primary_mode: str,
+        shadow_mode: str,
+        artifact_dir: str | None = None,
+    ) -> None:
+        self.primary = primary
+        self.shadow = shadow
+        self.primary_mode = primary_mode
+        self.shadow_mode = shadow_mode
+        self.artifact_dir = artifact_dir or None
+        self._shadow_tasks: set[asyncio.Task[None]] = set()
+
+    async def execute_json_turn(
+        self,
+        request_json: str,
+        hooks: TicketExecutionHooks | None = None,
+    ) -> str:
+        response_json = await self.primary.execute_json_turn(
+            request_json,
+            hooks=hooks,
+        )
+        request = TicketExecutionTransportRequest.from_json(request_json)
+        if request.smoke_mode:
+            return response_json
+        shadow_task = asyncio.create_task(
+            self._run_shadow(request_json, response_json),
+            name=f"ticket-execution-shadow:{self.shadow_mode}",
+        )
+        self._shadow_tasks.add(shadow_task)
+        shadow_task.add_done_callback(self._shadow_tasks.discard)
+        return response_json
+
+    async def _run_shadow(
+        self,
+        request_json: str,
+        primary_response_json: str,
+    ) -> None:
+        record: dict[str, object] = {
+            "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+            "primary_mode": self.primary_mode,
+            "shadow_mode": self.shadow_mode,
+            "request": json.loads(request_json),
+            "primary_result": json.loads(primary_response_json),
+        }
+        try:
+            shadow_response_json = await self.shadow.execute_json_turn(request_json)
+            record["shadow_result"] = json.loads(shadow_response_json)
+        except Exception as exc:
+            record["shadow_error"] = repr(exc)
+        self._write_shadow_record(record)
+
+    def _write_shadow_record(self, record: dict[str, object]) -> None:
+        if not self.artifact_dir:
+            return
+        artifact_root = Path(self.artifact_dir)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        filename = (
+            f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+            f"-{self.shadow_mode}-{uuid4().hex}.json"
+        )
+        (artifact_root / filename).write_text(
+            json.dumps(record, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
+class ConditionalTicketExecutionJsonEndpoint:
+    def __init__(
+        self,
+        default: TicketExecutionJsonEndpoint,
+        canary: TicketExecutionJsonEndpoint,
+        *,
+        channel_ids: set[str],
+        intents: set[str],
+    ) -> None:
+        self.default = default
+        self.canary = canary
+        self.channel_ids = set(channel_ids)
+        self.intents = set(intents)
+
+    async def execute_json_turn(
+        self,
+        request_json: str,
+        hooks: TicketExecutionHooks | None = None,
+    ) -> str:
+        request = TicketExecutionTransportRequest.from_json(request_json)
+        endpoint = self.canary if self._matches_canary(request) else self.default
+        return await endpoint.execute_json_turn(request_json, hooks=hooks)
+
+    def _matches_canary(self, request: TicketExecutionTransportRequest) -> bool:
+        channel_id = request.run_context.get("channel_id")
+        requested_intent = request.investigation_job.get("requested_intent")
+        if channel_id is not None and str(channel_id) in self.channel_ids:
+            return True
+        if requested_intent and requested_intent in self.intents:
+            return True
+        return False
+
+
 def build_ticket_execution_json_endpoint(
     delegate: TicketInvestigationExecutor,
 ) -> TicketExecutionJsonEndpoint:
     config.validate_ticket_execution_runtime_config()
-    primary = _build_single_ticket_execution_json_endpoint(
+    primary: TicketExecutionJsonEndpoint = _build_single_ticket_execution_json_endpoint(
         config.TICKET_EXECUTION_ENDPOINT,
         delegate,
     )
     fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
     if not fallback_mode or fallback_mode == config.TICKET_EXECUTION_ENDPOINT:
-        return primary
-    fallback = _build_single_ticket_execution_json_endpoint(
-        fallback_mode,
-        delegate,
-    )
-    return FailoverTicketExecutionJsonEndpoint(primary, fallback)
+        endpoint: TicketExecutionJsonEndpoint = primary
+    else:
+        fallback = _build_single_ticket_execution_json_endpoint(
+            fallback_mode,
+            delegate,
+        )
+        endpoint = FailoverTicketExecutionJsonEndpoint(primary, fallback)
+    canary_mode = config.TICKET_EXECUTION_CANARY_ENDPOINT
+    if canary_mode and (
+        config.TICKET_EXECUTION_CANARY_CHANNEL_IDS
+        or config.TICKET_EXECUTION_CANARY_INTENTS
+    ):
+        canary = _build_single_ticket_execution_json_endpoint(
+            canary_mode,
+            delegate,
+        )
+        endpoint = ConditionalTicketExecutionJsonEndpoint(
+            endpoint,
+            canary,
+            channel_ids=config.TICKET_EXECUTION_CANARY_CHANNEL_IDS,
+            intents=config.TICKET_EXECUTION_CANARY_INTENTS,
+        )
+    shadow_mode = config.TICKET_EXECUTION_SHADOW_ENDPOINT
+    if shadow_mode:
+        shadow = _build_single_ticket_execution_json_endpoint(
+            shadow_mode,
+            delegate,
+        )
+        return ShadowTicketExecutionJsonEndpoint(
+            endpoint,
+            shadow,
+            primary_mode=config.TICKET_EXECUTION_ENDPOINT,
+            shadow_mode=shadow_mode,
+            artifact_dir=(
+                config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR
+                or config.TICKET_EXECUTION_ARTIFACT_DIR
+                or None
+            ),
+        )
+    return endpoint
 
 
 def _build_single_ticket_execution_json_endpoint(
@@ -153,12 +299,35 @@ def _build_single_ticket_execution_json_endpoint(
             repo_root=config.BASE_DIR,
             codex_command=command,
             model=config.TICKET_EXECUTION_CODEX_MODEL,
+            reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
             allowed_command_prefixes=build_codex_exec_allowed_prefixes(
                 command,
                 config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES,
             ),
             cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
-            env=_subprocess_env(),
+            env=_codex_env(),
+            artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
+            run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
+        )
+    if mode == "codex_support_exec":
+        command = list(_codex_command())
+        return CodexSupportTicketExecutionJsonEndpoint(
+            codex_command=command,
+            model=config.TICKET_EXECUTION_CODEX_MODEL,
+            reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
+            repo_root=config.BASE_DIR,
+            codex_home=config.TICKET_EXECUTION_CODEX_HOME,
+            codex_auth_source=config.TICKET_EXECUTION_CODEX_AUTH_SOURCE,
+            ysupport_mcp_url=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL,
+            ysupport_mcp_container=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER,
+            mcp_server_api_key=config.MCP_SERVER_API_KEY,
+            web_search_mode=config.TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE,
+            allowed_command_prefixes=build_codex_exec_allowed_prefixes(
+                command,
+                config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES,
+            ),
+            cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
+            env=_codex_env(),
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
             run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
@@ -180,7 +349,7 @@ def _codex_command() -> Sequence[str]:
 def resolve_ticket_execution_base_command(mode: str) -> list[str] | None:
     if mode == "subprocess":
         return list(_subprocess_command())
-    if mode == "codex_exec":
+    if mode in {"codex_exec", "codex_support_exec"}:
         return list(_codex_command())
     return None
 
@@ -216,6 +385,13 @@ def _subprocess_env() -> dict[str, str]:
     for key, value in os.environ.items():
         if key in allowed_keys or any(key.startswith(prefix) for prefix in allowed_prefixes):
             env[key] = value
+    return env
+
+
+def _codex_env() -> dict[str, str]:
+    env = _subprocess_env()
+    if config.TICKET_EXECUTION_CODEX_HOME:
+        env["CODEX_HOME"] = config.TICKET_EXECUTION_CODEX_HOME
     return env
 
 

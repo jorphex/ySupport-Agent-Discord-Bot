@@ -1,21 +1,11 @@
 import asyncio
 import sys
 
-from agents import Runner, set_default_openai_key
+from agents import set_default_openai_key
 from dotenv import load_dotenv
 
 import config
-from ticket_investigation_executor import LocalTicketInvestigationExecutor
-from ticket_investigation_json_endpoint import ExecutorBackedTicketExecutionJsonEndpoint
-from ticket_investigation_runtime import TicketInvestigationRuntime
-from ticket_investigation_worker import TicketInvestigationWorker
-
-
-def build_local_ticket_execution_json_endpoint() -> ExecutorBackedTicketExecutionJsonEndpoint:
-    runtime = TicketInvestigationRuntime(Runner)
-    worker = TicketInvestigationWorker(runtime)
-    executor = LocalTicketInvestigationExecutor(worker)
-    return ExecutorBackedTicketExecutionJsonEndpoint(executor)
+from ticket_execution_runtime_factory import build_local_ticket_execution_json_endpoint
 
 
 async def execute_request_json(request_json: str) -> str:

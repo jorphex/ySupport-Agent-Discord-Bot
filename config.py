@@ -1,4 +1,3 @@
-# config.py
 import os
 from pathlib import Path
 import shlex
@@ -44,6 +43,41 @@ def _env_int(name: str, default: int | None = None) -> int | None:
     except ValueError:
         _INVALID_ENV_ERRORS[name] = f"{name} must be an integer"
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        _INVALID_ENV_ERRORS[name] = f"{name} must be a number"
+        return default
+
+
+def _read_codex_mcp_url_from_home(codex_home: Path) -> str | None:
+    config_path = codex_home / "config.toml"
+    if not config_path.exists():
+        return None
+    try:
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    in_ysupport_section = False
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_ysupport_section = line == "[mcp_servers.ysupport]"
+            continue
+        if not in_ysupport_section or not line.startswith("url"):
+            continue
+        _, _, value = line.partition("=")
+        normalized = value.strip().strip('"').strip("'")
+        return normalized or None
+    return None
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -142,13 +176,70 @@ TICKET_EXECUTION_ENDPOINT = os.getenv("TICKET_EXECUTION_ENDPOINT", "local").stri
 TICKET_EXECUTION_FALLBACK_ENDPOINT = os.getenv(
     "TICKET_EXECUTION_FALLBACK_ENDPOINT", ""
 ).strip().lower()
+TICKET_EXECUTION_SHADOW_ENDPOINT = os.getenv(
+    "TICKET_EXECUTION_SHADOW_ENDPOINT", ""
+).strip().lower()
+TICKET_EXECUTION_CANARY_ENDPOINT = os.getenv(
+    "TICKET_EXECUTION_CANARY_ENDPOINT", ""
+).strip().lower()
 TICKET_EXECUTION_SUBPROCESS_COMMAND = shlex.split(
     os.getenv("TICKET_EXECUTION_SUBPROCESS_COMMAND", "")
 )
 TICKET_EXECUTION_CODEX_COMMAND = shlex.split(
     os.getenv("TICKET_EXECUTION_CODEX_COMMAND", "")
 )
-TICKET_EXECUTION_CODEX_MODEL = os.getenv("TICKET_EXECUTION_CODEX_MODEL", "").strip() or None
+TICKET_EXECUTION_CODEX_MODEL = (
+    os.getenv("TICKET_EXECUTION_CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+)
+TICKET_EXECUTION_CODEX_REASONING_EFFORT = os.getenv(
+    "TICKET_EXECUTION_CODEX_REASONING_EFFORT",
+    "medium",
+).strip().lower() or "medium"
+TICKET_EXECUTION_STATE_ROOT = Path(
+    os.getenv("TICKET_EXECUTION_STATE_ROOT", "/var/lib/ysupport-codex").strip()
+    or "/var/lib/ysupport-codex"
+)
+_DEFAULT_TICKET_EXECUTION_CODEX_HOME = str(TICKET_EXECUTION_STATE_ROOT / "home")
+_DEFAULT_TICKET_EXECUTION_ARTIFACT_DIR = str(TICKET_EXECUTION_STATE_ROOT / "runs")
+_DEFAULT_TICKET_EXECUTION_RUN_DIR_ROOT = str(TICKET_EXECUTION_STATE_ROOT / "runs")
+_DEFAULT_TICKET_EXECUTION_SHADOW_ARTIFACT_DIR = str(
+    TICKET_EXECUTION_STATE_ROOT / "shadow"
+)
+TICKET_EXECUTION_CODEX_HOME = (
+    os.getenv(
+        "TICKET_EXECUTION_CODEX_HOME",
+        _DEFAULT_TICKET_EXECUTION_CODEX_HOME,
+    ).strip()
+    or None
+)
+TICKET_EXECUTION_CODEX_AUTH_SOURCE = os.getenv(
+    "TICKET_EXECUTION_CODEX_AUTH_SOURCE", ""
+).strip() or None
+_DEFAULT_MCP_PORT = (
+    _env_int(
+        "TICKET_EXECUTION_CODEX_YSUPPORT_MCP_PORT",
+        _env_int("MCP_PORT", 8001) or 8001,
+    )
+    or 8001
+)
+_DEFAULT_SYSTEM_CODEX_HOME = Path(
+    os.getenv("TICKET_EXECUTION_CODEX_SOURCE_HOME", str(Path.home() / ".codex"))
+)
+_DEFAULT_SYSTEM_YSUPPORT_MCP_URL = _read_codex_mcp_url_from_home(
+    _DEFAULT_SYSTEM_CODEX_HOME
+)
+TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL = os.getenv(
+    "TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL",
+    _DEFAULT_SYSTEM_YSUPPORT_MCP_URL or f"http://127.0.0.1:{_DEFAULT_MCP_PORT}/mcp",
+).strip()
+TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE = os.getenv(
+    "TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE",
+    "live",
+).strip().lower()
+TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER = os.getenv(
+    "TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER",
+    "ysupport-mcp",
+).strip() or None
 TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = _env_command_prefixes(
     "TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES"
 )
@@ -162,19 +253,60 @@ TICKET_EXECUTION_SUBPROCESS_ENV_KEYS = _env_csv(
 TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES = _env_csv(
     "TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES"
 )
-TICKET_EXECUTION_ARTIFACT_DIR = os.getenv("TICKET_EXECUTION_ARTIFACT_DIR", "").strip()
-TICKET_EXECUTION_RUN_DIR_ROOT = os.getenv("TICKET_EXECUTION_RUN_DIR_ROOT", "").strip()
+TICKET_EXECUTION_ARTIFACT_DIR = os.getenv(
+    "TICKET_EXECUTION_ARTIFACT_DIR",
+    _DEFAULT_TICKET_EXECUTION_ARTIFACT_DIR,
+).strip()
+TICKET_EXECUTION_RUN_DIR_ROOT = os.getenv(
+    "TICKET_EXECUTION_RUN_DIR_ROOT",
+    _DEFAULT_TICKET_EXECUTION_RUN_DIR_ROOT,
+).strip()
+TICKET_EXECUTION_SHADOW_ARTIFACT_DIR = os.getenv(
+    "TICKET_EXECUTION_SHADOW_ARTIFACT_DIR",
+    _DEFAULT_TICKET_EXECUTION_SHADOW_ARTIFACT_DIR,
+).strip()
+TICKET_EXECUTION_CANARY_CHANNEL_IDS = {
+    value.strip()
+    for value in os.getenv("TICKET_EXECUTION_CANARY_CHANNEL_IDS", "").split(",")
+    if value.strip()
+}
+TICKET_EXECUTION_CANARY_INTENTS = {
+    value.strip()
+    for value in os.getenv("TICKET_EXECUTION_CANARY_INTENTS", "").split(",")
+    if value.strip()
+}
+SUPPORT_DASHBOARD_BASE_URL = os.getenv(
+    "SUPPORT_DASHBOARD_BASE_URL",
+    "",
+).strip()
+SUPPORT_DASHBOARD_VERIFY_SSL = _env_bool("SUPPORT_DASHBOARD_VERIFY_SSL", False)
+SUPPORT_DASHBOARD_TIMEOUT_SECONDS = _env_float(
+    "SUPPORT_DASHBOARD_TIMEOUT_SECONDS",
+    20.0,
+)
 
 
 def ticket_execution_runtime_summary() -> str:
     parts = [f"primary={TICKET_EXECUTION_ENDPOINT}"]
     if TICKET_EXECUTION_FALLBACK_ENDPOINT:
         parts.append(f"fallback={TICKET_EXECUTION_FALLBACK_ENDPOINT}")
+    if TICKET_EXECUTION_SHADOW_ENDPOINT:
+        parts.append(f"shadow={TICKET_EXECUTION_SHADOW_ENDPOINT}")
+    if TICKET_EXECUTION_CANARY_ENDPOINT:
+        parts.append(f"canary={TICKET_EXECUTION_CANARY_ENDPOINT}")
     if (
-        TICKET_EXECUTION_ENDPOINT == "codex_exec"
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_exec"
+        TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT in {"codex_exec", "codex_support_exec"}
     ):
         parts.append(f"codex_model={TICKET_EXECUTION_CODEX_MODEL or 'default'}")
+        parts.append(
+            "codex_reasoning="
+            f"{TICKET_EXECUTION_CODEX_REASONING_EFFORT or 'default'}"
+        )
+    if TICKET_EXECUTION_STATE_ROOT:
+        parts.append(f"state_root={TICKET_EXECUTION_STATE_ROOT}")
+    if TICKET_EXECUTION_CODEX_HOME:
+        parts.append(f"codex_home={TICKET_EXECUTION_CODEX_HOME}")
     if TICKET_EXECUTION_ARTIFACT_DIR:
         parts.append(f"artifact_dir={TICKET_EXECUTION_ARTIFACT_DIR}")
     elif TICKET_EXECUTION_RUN_DIR_ROOT:
@@ -184,17 +316,30 @@ def ticket_execution_runtime_summary() -> str:
 
 def ticket_execution_runtime_warnings() -> list[str]:
     warnings: list[str] = []
-    if TICKET_EXECUTION_ENDPOINT == "codex_exec" and not TICKET_EXECUTION_FALLBACK_ENDPOINT:
+    if (
+        TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
+        and not TICKET_EXECUTION_FALLBACK_ENDPOINT
+    ):
         warnings.append(
-            "primary codex_exec is enabled without a fallback endpoint"
+            f"primary {TICKET_EXECUTION_ENDPOINT} is enabled without a fallback endpoint"
+        )
+    if TICKET_EXECUTION_CANARY_ENDPOINT and not (
+        TICKET_EXECUTION_CANARY_CHANNEL_IDS or TICKET_EXECUTION_CANARY_INTENTS
+    ):
+        warnings.append(
+            "canary endpoint is configured without channel or intent selectors"
         )
     return warnings
 
 
 def validate_ticket_execution_runtime_config() -> None:
     uses_codex = (
-        TICKET_EXECUTION_ENDPOINT == "codex_exec"
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_exec"
+        TICKET_EXECUTION_ENDPOINT in {"codex_exec", "codex_support_exec"}
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT in {"codex_exec", "codex_support_exec"}
+    )
+    uses_codex_support = (
+        TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
+        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
     )
     has_persistent_workspace = bool(
         TICKET_EXECUTION_ARTIFACT_DIR or TICKET_EXECUTION_RUN_DIR_ROOT
@@ -203,6 +348,15 @@ def validate_ticket_execution_runtime_config() -> None:
         raise ValueError(
             "codex_exec requires TICKET_EXECUTION_ARTIFACT_DIR or "
             "TICKET_EXECUTION_RUN_DIR_ROOT so each run has persistent workspace state."
+        )
+    if uses_codex_support and not TICKET_EXECUTION_CODEX_HOME:
+        raise ValueError(
+            "codex_support_exec requires TICKET_EXECUTION_CODEX_HOME so the bot uses "
+            "a dedicated Codex home instead of the operator default."
+        )
+    if uses_codex_support and not MCP_SERVER_API_KEY:
+        raise ValueError(
+            "codex_support_exec requires MCP_SERVER_API_KEY for the ysupport MCP config."
         )
 
 
