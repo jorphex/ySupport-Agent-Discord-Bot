@@ -229,6 +229,19 @@ BD_PRIORITY_GUARDRAIL_INSTRUCTIONS = (
     "- Only classify as a business category if the message is a clear, unsolicited, initial proposal. If in doubt, classify as **'not_bd_pr'**."
 )
 
+SUPPORT_SCOPE_GUARDRAIL_INSTRUCTIONS = (
+    "Analyze the user's message to decide whether it is in scope for Yearn support or is just unrelated assistant use.\n\n"
+    "Use the following categories for the `scope` field:\n"
+    "- `yearn_support`: The message is about Yearn products, Yearn docs, Yearn vaults, deposits, withdrawals, rewards, migrations, transactions, bug reports, contract behavior, repo or code questions about Yearn, or other Yearn-specific support or technical context.\n"
+    "- `non_support_assistant`: The message is unrelated to Yearn support and is instead generic coding help, general chat, writing help, translation, essay/joke/story generation, homework, or other broad assistant use.\n"
+    "- `uncertain`: The message is too ambiguous to tell confidently.\n\n"
+    "Be conservative.\n"
+    "- Short follow-ups, yes/no replies, addresses, tx hashes, or terse replies inside a support ticket should normally be `yearn_support`.\n"
+    "- Yearn-related contract, code, repo, PoC, exploit, or developer questions are `yearn_support`, not `non_support_assistant`.\n"
+    "- Only use `non_support_assistant` when the message is clearly unrelated to Yearn.\n"
+    "- If in doubt, choose `yearn_support`, not `non_support_assistant`."
+)
+
 TRIAGE_AGENT_INSTRUCTIONS = (
     "# Role and Objective\n"
     "You are the primary Yearn support agent. Your task is to analyze the user's request and take the appropriate action: handoff to a specialist, ask for clarification, or respond directly.\n\n"

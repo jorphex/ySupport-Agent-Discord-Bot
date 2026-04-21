@@ -25,9 +25,11 @@ from state import (
 from ticket_investigation_worker import TicketInvestigationWorker
 from support_agents import (
     BDPriorityCheckOutput,
+    SupportScopeCheckOutput,
     _looks_like_concrete_security_disclosure,
     bd_priority_guardrail,
     evaluate_bd_priority_boundary,
+    evaluate_support_scope_boundary,
     TicketTriageDecision,
     ticket_triage_router_agent,
     triage_agent,
@@ -464,18 +466,70 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply, "Boundary reply")
 
     async def test_outer_support_boundary_reply_blocks_off_topic_coding_help(self) -> None:
-        reply = await _outer_support_boundary_reply(
-            "Can you write a Python script to parse a CSV for me?"
-        )
+        async def fake_scope(_text: str):
+            return {
+                "scope": "non_support_assistant",
+                "tripwire_triggered": True,
+            }
+
+        with patch("ysupport.evaluate_support_scope_boundary", new=fake_scope):
+            reply = await _outer_support_boundary_reply(
+                "Can you write a Python script to parse a CSV for me?"
+            )
 
         self.assertEqual(reply, OUT_OF_SCOPE_SUPPORT_MESSAGE)
 
     async def test_outer_support_boundary_reply_allows_normal_yearn_support(self) -> None:
-        reply = await _outer_support_boundary_reply(
-            "Where can I monitor stYFI rewards?"
-        )
+        async def fake_scope(_text: str):
+            return {
+                "scope": "yearn_support",
+                "tripwire_triggered": False,
+            }
+
+        with patch("ysupport.evaluate_support_scope_boundary", new=fake_scope):
+            reply = await _outer_support_boundary_reply(
+                "Where can I monitor stYFI rewards?"
+            )
 
         self.assertIsNone(reply)
+
+    async def test_evaluate_support_scope_boundary_returns_non_support_tripwire(self) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return SupportScopeCheckOutput(
+                    scope="non_support_assistant",
+                    reasoning="generic coding help unrelated to Yearn",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_scope_boundary(
+                "Can you write a Python script to parse a CSV for me?"
+            )
+
+        self.assertTrue(result["tripwire_triggered"])
+        self.assertEqual(result["scope"], "non_support_assistant")
+
+    async def test_evaluate_support_scope_boundary_keeps_yearn_dev_question_in_scope(self) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return SupportScopeCheckOutput(
+                    scope="yearn_support",
+                    reasoning="question is about Yearn contract behavior",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_scope_boundary(
+                "Can you explain Yearn VaultV3 process_report behavior?"
+            )
+
+        self.assertFalse(result["tripwire_triggered"])
+        self.assertEqual(result["scope"], "yearn_support")
 
 
 class InvestigationJobTests(unittest.TestCase):

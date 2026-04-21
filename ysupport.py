@@ -22,7 +22,7 @@ from router import (
     is_wallet_confirmation,
     is_wallet_rejection,
 )
-from support_agents import evaluate_bd_priority_boundary
+from support_agents import evaluate_bd_priority_boundary, evaluate_support_scope_boundary
 from state import (
     BotRunContext,
     PublicConversation,
@@ -57,10 +57,8 @@ from ticket_investigation_executor import (
     TransportTicketInvestigationExecutor,
 )
 from ticket_investigation_runtime import (
-    ADDRESS_RE,
     TicketInvestigationRuntime,
     TicketTurnRequest,
-    TX_HASH_RE,
     bug_bounty_intake_boundary_reply,
 )
 from ticket_investigation_worker import TicketInvestigationWorker
@@ -109,117 +107,16 @@ def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
     return "Your request could not be processed due to input checks."
 
 
-_YEARN_SUPPORT_TERMS = (
-    "yearn",
-    "vault",
-    "strategy",
-    "router",
-    "deposit",
-    "withdraw",
-    "withdrawal",
-    "claim",
-    "stake",
-    "unstake",
-    "migration",
-    "migrate",
-    "reward",
-    "rewards",
-    "apy",
-    "pps",
-    "harvest",
-    "report",
-    "dashboard",
-    "wallet",
-    "transaction",
-    "tx ",
-    "styfi",
-    "veyfi",
-    "yfi",
-    "yyb",
-    "rabby",
-    "metamask",
-    "etherscan",
-    "base",
-    "ethereum",
-    "arbitrum",
-    "optimism",
-    "sonic",
-    "katana",
-)
-
-_OFF_TOPIC_CODING_TERMS = (
-    "python",
-    "javascript",
-    "typescript",
-    "react",
-    "next.js",
-    "nextjs",
-    "node.js",
-    "nodejs",
-    "java ",
-    "c++",
-    "rust",
-    "golang",
-    "sql",
-    "html",
-    "css",
-    "docker",
-    "kubernetes",
-    "regex",
-    "leetcode",
-    "homework",
-    "programming",
-    "compile error",
-    "stack trace",
-    "unit test",
-    "debug my code",
-    "write code",
-    "fix my code",
-)
-
-_OFF_TOPIC_GENERAL_TERMS = (
-    "translate this",
-    "summarize this",
-    "summarise this",
-    "write a poem",
-    "write a joke",
-    "write a story",
-    "recipe",
-    "weather",
-    "restaurant",
-    "capital of",
-    "math problem",
-)
-
-
-def _looks_like_yearn_support_scope(text: str) -> bool:
-    lowered = (text or "").lower()
-    if ADDRESS_RE.search(text or "") or TX_HASH_RE.search(text or ""):
-        return True
-    return any(term in lowered for term in _YEARN_SUPPORT_TERMS)
-
-
-def _out_of_scope_support_reply(text: str) -> str | None:
-    lowered = (text or "").lower()
-    if _looks_like_yearn_support_scope(text):
-        return None
-    if any(term in lowered for term in _OFF_TOPIC_CODING_TERMS):
-        return OUT_OF_SCOPE_SUPPORT_MESSAGE
-    if any(term in lowered for term in _OFF_TOPIC_GENERAL_TERMS):
-        return OUT_OF_SCOPE_SUPPORT_MESSAGE
-    return None
-
-
 async def _outer_support_boundary_reply(text: str) -> str | None:
-    out_of_scope_reply = _out_of_scope_support_reply(text)
-    if out_of_scope_reply is not None:
-        return out_of_scope_reply
     boundary_reply = bug_bounty_intake_boundary_reply(text)
     if boundary_reply is not None:
         return boundary_reply
     output_info = await evaluate_bd_priority_boundary(text)
     if output_info.get("tripwire_triggered") and output_info.get("message"):
         return str(output_info["message"])
+    scope_output = await evaluate_support_scope_boundary(text)
+    if scope_output.get("tripwire_triggered"):
+        return OUT_OF_SCOPE_SUPPORT_MESSAGE
     return None
 
 

@@ -18,6 +18,7 @@ from agent_prompts import (
     YEARn_DOCS_QA_AGENT_INSTRUCTIONS,
     YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
     BD_PRIORITY_GUARDRAIL_INSTRUCTIONS,
+    SUPPORT_SCOPE_GUARDRAIL_INSTRUCTIONS,
     TRIAGE_AGENT_INSTRUCTIONS,
     TICKET_TRIAGE_ROUTER_INSTRUCTIONS,
 )
@@ -61,6 +62,14 @@ class TicketTriageDecision(BaseModel):
         description="User-facing message for ask_clarifying, respond_directly, or human_escalation. Leave empty for route_* actions.",
     )
     reasoning: str = Field(..., description="Brief explanation for the routing decision.")
+
+
+class SupportScopeCheckOutput(BaseModel):
+    scope: Literal["yearn_support", "non_support_assistant", "uncertain"] = Field(
+        ...,
+        description="Whether the message is in scope for Yearn support or is unrelated assistant use.",
+    )
+    reasoning: str = Field(..., description="Brief explanation for the scope classification.")
 
 
 def _looks_like_vendor_security_outreach(text: str) -> bool:
@@ -224,6 +233,17 @@ bd_priority_guardrail_agent = Agent[BotRunContext](
     ),
 )
 
+support_scope_guardrail_agent = Agent[BotRunContext](
+    name="Yearn Support Scope Guardrail Check",
+    instructions=SUPPORT_SCOPE_GUARDRAIL_INSTRUCTIONS,
+    output_type=SupportScopeCheckOutput,
+    model=config.LLM_GUARDRAIL_MODEL,
+    model_settings=_gpt5_model_settings(
+        effort=config.LLM_GUARDRAIL_REASONING_EFFORT,
+        verbosity=config.LLM_GUARDRAIL_VERBOSITY,
+    ),
+)
+
 
 @input_guardrail(name="BD/PR/Listing/Job Guardrail")
 async def bd_priority_guardrail(
@@ -318,6 +338,42 @@ async def evaluate_bd_priority_boundary(text_input: str) -> dict[str, Any]:
     except Exception as e:
         logging.error(f"[Guardrail:BD/Priority] Error during check: {e}", exc_info=True)
         return {"error": str(e), "tripwire_triggered": False}
+
+
+async def evaluate_support_scope_boundary(text_input: str) -> dict[str, Any]:
+    if not text_input.strip():
+        return {"scope": "yearn_support", "tripwire_triggered": False}
+    logging.info(f"[Guardrail:Scope] Analyzing input: '{text_input[:100]}...'")
+
+    try:
+        guardrail_runner = Runner()
+        run_config_guardrail = RunConfig(
+            workflow_name="Yearn Support Scope Guardrail Check",
+            tracing_disabled=True,
+        )
+        result = await guardrail_runner.run(
+            starting_agent=support_scope_guardrail_agent,
+            input=text_input,
+            run_config=run_config_guardrail,
+        )
+        check_output = result.final_output_as(SupportScopeCheckOutput)
+        logging.info(
+            "[Guardrail:Scope] Check result: scope=%s reasoning=%s",
+            check_output.scope,
+            check_output.reasoning,
+        )
+        return {
+            "scope": check_output.scope,
+            "reasoning": check_output.reasoning,
+            "tripwire_triggered": check_output.scope == "non_support_assistant",
+        }
+    except Exception as e:
+        logging.error(f"[Guardrail:Scope] Error during check: {e}", exc_info=True)
+        return {
+            "scope": "yearn_support",
+            "error": str(e),
+            "tripwire_triggered": False,
+        }
 
 
 yearn_data_agent = Agent[BotRunContext](
