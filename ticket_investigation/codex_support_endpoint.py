@@ -17,16 +17,16 @@ from codex_support_contract import (
     verify_support_turn_result,
 )
 from codex_support_sessions import CodexSupportSessionManager
-from ticket_execution_subprocess_utils import (
+from ticket_execution.subprocess_utils import (
     build_effective_execution_env,
     safe_export_workspace_copy,
     validate_allowed_command_prefix,
     write_execution_artifacts,
 )
-from ticket_execution_workspace import TicketExecutionWorkspace
-from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
-from ticket_investigation_executor import TicketExecutionHooks
-from ticket_investigation_transport import (
+from ticket_execution.workspace import TicketExecutionWorkspace
+from ticket_investigation.codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
+from ticket_investigation.executor import TicketExecutionHooks
+from ticket_investigation.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
 )

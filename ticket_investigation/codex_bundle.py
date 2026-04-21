@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from ticket_investigation_transport import TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA
+from ticket_investigation.transport import TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA
 
 
 DEFAULT_CODEX_EXEC_COMMAND = [

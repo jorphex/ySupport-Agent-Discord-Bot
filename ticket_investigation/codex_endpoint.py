@@ -3,19 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-from ticket_investigation_codex_bundle import (
+from ticket_investigation.codex_bundle import (
     DEFAULT_CODEX_EXEC_COMMAND,
     build_codex_ticket_execution_bundle,
 )
-from ticket_execution_subprocess_utils import (
+from ticket_execution.subprocess_utils import (
     build_effective_execution_env,
     run_bounded_subprocess,
     safe_export_workspace_copy,
     validate_allowed_command_prefix,
 )
-from ticket_execution_workspace import TicketExecutionWorkspace
-from ticket_investigation_executor import TicketExecutionHooks
-from ticket_investigation_transport import (
+from ticket_execution.workspace import TicketExecutionWorkspace
+from ticket_investigation.executor import TicketExecutionHooks
+from ticket_investigation.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,

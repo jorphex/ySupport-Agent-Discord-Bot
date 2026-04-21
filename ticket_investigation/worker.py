@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketInvestigationRuntime, TicketTurnRequest
+from ticket_investigation.runtime import TicketAgentFlowOutcome, TicketInvestigationRuntime, TicketTurnRequest
 
 
 @dataclass

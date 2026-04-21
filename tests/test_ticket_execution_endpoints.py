@@ -9,15 +9,15 @@ import unittest
 from dataclasses import dataclass
 from unittest.mock import patch
 
-from ticket_execution_subprocess_utils import run_bounded_subprocess
-from ticket_investigation_json_endpoint import (
+from ticket_execution.subprocess_utils import run_bounded_subprocess
+from ticket_investigation.json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     FailoverTicketExecutionJsonEndpoint,
     JsonEndpointTicketExecutionTransport,
 )
-from ticket_investigation_codex_endpoint import CodexExecTicketExecutionJsonEndpoint
-from ticket_investigation_subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
-from ticket_investigation_executor import (
+from ticket_investigation.codex_endpoint import CodexExecTicketExecutionJsonEndpoint
+from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
+from ticket_investigation.executor import (
     LocalTicketInvestigationExecutor,
     LoopbackTicketExecutionTransport,
     LoopbackTransportTicketInvestigationExecutor,
@@ -25,12 +25,12 @@ from ticket_investigation_executor import (
     TicketExecutionHooks,
     TransportTicketInvestigationExecutor,
 )
-from ticket_investigation_transport import (
+from ticket_investigation.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
-from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketTurnRequest
-from ticket_investigation_worker import TicketWorkerResult
+from ticket_investigation.runtime import TicketAgentFlowOutcome, TicketTurnRequest
+from ticket_investigation.worker import TicketWorkerResult
 from state import BotRunContext, TicketInvestigationJob
 
 

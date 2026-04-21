@@ -623,7 +623,7 @@ class LlmTicketFlowTests(LlmE2EBase):
             "from dotenv import load_dotenv; "
             "from agents import set_default_openai_key; "
             "import config; "
-            "from ticket_investigation_worker_cli import execute_request_json; "
+            "from ticket_investigation.worker_cli import execute_request_json; "
             "load_dotenv(); "
             "set_default_openai_key(config.OPENAI_API_KEY); "
             "sys.stdin.read(); "

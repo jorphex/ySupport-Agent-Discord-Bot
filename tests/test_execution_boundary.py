@@ -10,23 +10,23 @@ from unittest.mock import patch
 
 import config
 from state import BotRunContext, TicketInvestigationJob
-from ticket_execution_status import (
+from ticket_execution.status import (
     build_ticket_execution_status,
     main as ticket_execution_status_main,
 )
-from ticket_investigation_codex_bundle import (
+from ticket_investigation.codex_bundle import (
     DEFAULT_CODEX_EXEC_COMMAND,
     build_codex_ticket_execution_bundle,
 )
-from ticket_investigation_codex_endpoint import CodexExecTicketExecutionJsonEndpoint
-from ticket_investigation_json_endpoint import (
+from ticket_investigation.codex_endpoint import CodexExecTicketExecutionJsonEndpoint
+from ticket_investigation.json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     FailoverTicketExecutionJsonEndpoint,
     build_ticket_execution_json_endpoint,
 )
-from ticket_investigation_runtime import TicketAgentFlowOutcome, TicketTurnRequest
-from ticket_investigation_subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
-from ticket_investigation_transport import (
+from ticket_investigation.runtime import TicketAgentFlowOutcome, TicketTurnRequest
+from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
+from ticket_investigation.transport import (
     TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA,
     TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA,
     TicketExecutionTransportRequest,
@@ -273,10 +273,10 @@ class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
 class TicketExecutionStatusTests(unittest.TestCase):
     def test_build_ticket_execution_status_reports_repo_context_and_valid_config(self) -> None:
         with patch(
-            "ticket_execution_status.get_repo_context_status",
+            "ticket_execution.status.get_repo_context_status",
             return_value={"state": "ready", "fresh": True},
         ), patch(
-            "ticket_execution_status._build_codex_session_summary",
+            "ticket_execution.status._build_codex_session_summary",
             return_value={"root_dir": "/tmp/sessions", "active_sessions": 2},
         ):
             status = build_ticket_execution_status()
@@ -298,11 +298,19 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertEqual(status["repo_context"]["state"], "ready")
 
     def test_build_ticket_execution_status_smoke_probe_reports_success_for_local_endpoint(self) -> None:
-        with patch(
-            "ticket_execution_status.get_repo_context_status",
-            return_value={"state": "ready", "fresh": True},
-        ):
-            status = build_ticket_execution_status(include_smoke_probe=True)
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "local"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
+            with patch(
+                "ticket_execution.status.get_repo_context_status",
+                return_value={"state": "ready", "fresh": True},
+            ):
+                status = build_ticket_execution_status(include_smoke_probe=True)
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
 
         smoke_probe = status["ticket_execution"]["smoke_probe"]
         self.assertTrue(smoke_probe["ok"])
@@ -320,7 +328,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
             config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
             captured = io.StringIO()
             with patch(
-                "ticket_execution_status.get_repo_context_status",
+                "ticket_execution.status.get_repo_context_status",
                 return_value={"state": "disabled", "fresh": False},
             ):
                 with redirect_stdout(captured):
@@ -348,7 +356,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
             config.YEARN_TICKET_CATEGORY_ID = None
             captured = io.StringIO()
             with patch(
-                "ticket_execution_status.get_repo_context_status",
+                "ticket_execution.status.get_repo_context_status",
                 return_value={"state": "disabled", "fresh": False},
             ):
                 with redirect_stdout(captured):
@@ -376,7 +384,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
             config.TICKET_EXECUTION_CODEX_COMMAND = [sys.executable, "-c", "print('ok')"]
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
             with patch(
-                "ticket_execution_status.get_repo_context_status",
+                "ticket_execution.status.get_repo_context_status",
                 return_value={"state": "ready", "fresh": True},
             ):
                 status = build_ticket_execution_status()
@@ -414,7 +422,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
                 config.TICKET_EXECUTION_SUBPROCESS_COMMAND = ["./worker.sh", "--json"]
                 config.TICKET_EXECUTION_SUBPROCESS_CWD = temp_dir
                 with patch(
-                    "ticket_execution_status.get_repo_context_status",
+                    "ticket_execution.status.get_repo_context_status",
                     return_value={"state": "ready", "fresh": True},
                 ):
                     status = build_ticket_execution_status()

@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import config
-from ticket_execution_replay_cli import (
+from ticket_execution.replay_cli import (
     _reset_replay_session,
     build_arg_parser,
     execute_request_json,
@@ -70,7 +70,7 @@ class TicketExecutionReplayCliTests(unittest.IsolatedAsyncioTestCase):
                 observed["conversation_key"] = conversation_key
 
         with patch(
-            "ticket_execution_replay_cli.CodexSupportSessionManager",
+            "ticket_execution.replay_cli.CodexSupportSessionManager",
             return_value=_FakeManager(),
         ):
             _reset_replay_session(request_json)
@@ -102,10 +102,10 @@ class TicketExecutionReplayCliTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with patch(
-                "ticket_execution_replay_cli.build_local_ticket_investigation_executor",
+                "ticket_execution.replay_cli.build_local_ticket_investigation_executor",
                 return_value=_FakeExecutor(),
             ), patch(
-                "ticket_execution_replay_cli.build_ticket_execution_json_endpoint",
+                "ticket_execution.replay_cli.build_ticket_execution_json_endpoint",
                 side_effect=_fake_build_endpoint,
             ):
                 response_json = await execute_request_json(
@@ -142,10 +142,10 @@ class TicketExecutionReplayCliTests(unittest.IsolatedAsyncioTestCase):
             return _FakeEndpoint()
 
         with patch(
-            "ticket_execution_replay_cli.build_local_ticket_investigation_executor",
+            "ticket_execution.replay_cli.build_local_ticket_investigation_executor",
             side_effect=AssertionError("local executor should not be built"),
         ), patch(
-            "ticket_execution_replay_cli.build_ticket_execution_json_endpoint",
+            "ticket_execution.replay_cli.build_ticket_execution_json_endpoint",
             side_effect=_fake_build_endpoint,
         ):
             response_json = await execute_request_json(

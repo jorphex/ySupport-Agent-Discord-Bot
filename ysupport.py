@@ -49,20 +49,20 @@ from state import (
     reset_ticket_channel_for_terminal_reply,
     stopped_channels,
 )
-from ticket_investigation_json_endpoint import (
+from ticket_investigation.json_endpoint import (
     build_ticket_execution_json_endpoint,
     JsonEndpointTicketExecutionTransport,
 )
-from ticket_investigation_executor import (
+from ticket_investigation.executor import (
     LocalTicketInvestigationExecutor,
     TicketExecutionHooks,
     TransportTicketInvestigationExecutor,
 )
-from ticket_investigation_runtime import (
+from ticket_investigation.runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
 )
-from ticket_investigation_worker import TicketInvestigationWorker
+from ticket_investigation.worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
 
@@ -919,7 +919,6 @@ class TicketBot(discord.Client):
                             should_stop_processing = True
                         finally:
                             await progress_reporter.close()
-                            reset_ticket_channel_for_terminal_reply(channel_id)
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None

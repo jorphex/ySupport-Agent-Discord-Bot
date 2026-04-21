@@ -5,11 +5,11 @@ import tempfile
 import unittest
 
 import config
-from ticket_investigation_json_endpoint import (
+from ticket_investigation.json_endpoint import (
     ShadowTicketExecutionJsonEndpoint,
     build_ticket_execution_json_endpoint,
 )
-from ticket_investigation_transport import (
+from ticket_investigation.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )

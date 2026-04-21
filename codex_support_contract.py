@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from ticket_investigation_transport import TicketExecutionTransportRequest, TicketExecutionTransportResult
+from ticket_investigation.transport import TicketExecutionTransportRequest, TicketExecutionTransportResult
 
 _MAX_RECENT_TRANSCRIPT_ITEMS = 12
 _FORBIDDEN_DISCORD_REDIRECT_PATTERNS = (

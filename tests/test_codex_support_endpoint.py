@@ -14,13 +14,13 @@ from codex_support_contract import (
     SupportTurnResult,
     verify_support_turn_result,
 )
-from ticket_investigation_codex_support_endpoint import (
+from ticket_investigation.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
     _codex_support_prompt,
 )
-from ticket_investigation_executor import TicketExecutionHooks
-from ticket_investigation_json_endpoint import build_ticket_execution_json_endpoint
-from ticket_investigation_transport import (
+from ticket_investigation.executor import TicketExecutionHooks
+from ticket_investigation.json_endpoint import build_ticket_execution_json_endpoint
+from ticket_investigation.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -735,7 +735,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with mock.patch(
-            "ticket_investigation_codex_support_endpoint._run_codex_support_json_subprocess",
+            "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
             side_effect=fake_run_streaming_subprocess,
         ):
             task_one = asyncio.create_task(endpoint.execute_json_turn(request.to_json()))

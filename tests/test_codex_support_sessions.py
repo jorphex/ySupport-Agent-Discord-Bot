@@ -6,11 +6,11 @@ import tempfile
 import unittest
 
 from codex_support_sessions import CodexSupportSessionManager
-from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
-from ticket_investigation_codex_support_endpoint import (
+from ticket_investigation.codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
+from ticket_investigation.codex_support_endpoint import (
     _build_codex_support_command,
 )
-from ticket_investigation_transport import TicketExecutionTransportRequest
+from ticket_investigation.transport import TicketExecutionTransportRequest
 
 
 class CodexSupportSessionManagerTests(unittest.TestCase):

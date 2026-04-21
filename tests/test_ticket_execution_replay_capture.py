@@ -1,6 +1,6 @@
 import unittest
 
-from ticket_execution_replay_capture import (
+from ticket_execution.replay_capture import (
     build_first_turn_transport_request,
     infer_initial_button_intent,
 )

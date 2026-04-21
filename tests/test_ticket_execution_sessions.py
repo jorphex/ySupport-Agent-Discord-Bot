@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from codex_support_sessions import CodexSupportSessionManager
-from ticket_execution_sessions import main as ticket_execution_sessions_main
+from ticket_execution.sessions import main as ticket_execution_sessions_main
 
 
 class TicketExecutionSessionsCliTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class TicketExecutionSessionsCliTests(unittest.TestCase):
             )
             captured = io.StringIO()
             with patch(
-                "ticket_execution_sessions.build_session_manager",
+                "ticket_execution.sessions.build_session_manager",
                 return_value=manager,
             ):
                 with redirect_stdout(captured):
@@ -42,7 +42,7 @@ class TicketExecutionSessionsCliTests(unittest.TestCase):
             )
             captured = io.StringIO()
             with patch(
-                "ticket_execution_sessions.build_session_manager",
+                "ticket_execution.sessions.build_session_manager",
                 return_value=manager,
             ):
                 with redirect_stdout(captured):
@@ -72,7 +72,7 @@ class TicketExecutionSessionsCliTests(unittest.TestCase):
             )
             captured = io.StringIO()
             with patch(
-                "ticket_execution_sessions.build_session_manager",
+                "ticket_execution.sessions.build_session_manager",
                 return_value=manager,
             ):
                 with redirect_stdout(captured):

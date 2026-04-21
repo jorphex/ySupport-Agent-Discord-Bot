@@ -22,7 +22,7 @@ from state import (
     public_conversations,
     PublicConversation,
 )
-from ticket_investigation_worker import TicketInvestigationWorker
+from ticket_investigation.worker import TicketInvestigationWorker
 from support_agents import (
     SupportBoundaryCheckOutput,
     evaluate_support_boundary,
@@ -35,7 +35,7 @@ from support_agents import (
     yearn_docs_qa_agent,
 )
 from support_tools import _extract_artifact_refs, _repo_search_block_message
-from ticket_investigation_runtime import (
+from ticket_investigation.runtime import (
     _build_specialist_turn_input,
     TicketAgentFlowOutcome,
     _contains_report_artifact_evidence,
@@ -1417,7 +1417,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             }
         try:
             with patch(
-                "ticket_investigation_runtime.evaluate_support_boundary",
+                "ticket_investigation.runtime.evaluate_support_boundary",
                 new=fake_boundary,
             ):
                 runtime = TicketInvestigationRuntime(fake_runner)
@@ -1465,7 +1465,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with patch(
-                "ticket_investigation_runtime.evaluate_support_boundary",
+                "ticket_investigation.runtime.evaluate_support_boundary",
                 new=fail_boundary,
             ):
                 runtime = TicketInvestigationRuntime(fake_runner)

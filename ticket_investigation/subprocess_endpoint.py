@@ -2,15 +2,15 @@ from collections.abc import Sequence
 import json
 from pathlib import Path
 
-from ticket_execution_subprocess_utils import (
+from ticket_execution.subprocess_utils import (
     build_effective_execution_env,
     run_bounded_subprocess,
     safe_export_workspace_copy,
     validate_allowed_command_prefix,
 )
-from ticket_execution_workspace import TicketExecutionWorkspace
-from ticket_investigation_executor import TicketExecutionHooks
-from ticket_investigation_transport import (
+from ticket_execution.workspace import TicketExecutionWorkspace
+from ticket_investigation.executor import TicketExecutionHooks
+from ticket_investigation.transport import (
     TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA,
     TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA,
     TicketExecutionTransportRequest,

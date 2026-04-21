@@ -6,14 +6,14 @@ import re
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 from state import TicketInvestigationJob
-from ticket_investigation_transport import (
+from ticket_investigation.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
 
 if TYPE_CHECKING:
-    from ticket_investigation_runtime import TicketTurnRequest
-    from ticket_investigation_worker import TicketInvestigationWorker
+    from ticket_investigation.runtime import TicketTurnRequest
+    from ticket_investigation.worker import TicketInvestigationWorker
 
 
 @dataclass

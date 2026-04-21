@@ -19,20 +19,20 @@ from support_agents import (
     yearn_docs_qa_agent,
 )
 import tools_lib
-from ticket_investigation_executor import (
+from ticket_investigation.executor import (
     LocalTicketInvestigationExecutor,
     TransportTicketInvestigationExecutor,
 )
-from ticket_investigation_json_endpoint import (
+from ticket_investigation.json_endpoint import (
     JsonEndpointTicketExecutionTransport,
     build_ticket_execution_json_endpoint,
 )
-from ticket_investigation_runtime import (
+from ticket_investigation.runtime import (
     TicketInvestigationRuntime,
     TicketTurnRequest,
     resolve_freeform_starting_agent,
 )
-from ticket_investigation_worker import TicketInvestigationWorker
+from ticket_investigation.worker import TicketInvestigationWorker
 
 
 RUN_LLM_E2E = bool(config.OPENAI_API_KEY) and os.getenv("RUN_LLM_E2E_TESTS") == "1"

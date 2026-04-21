@@ -9,20 +9,20 @@ from typing import Protocol
 from uuid import uuid4
 
 import config
-from ticket_investigation_codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
-from ticket_investigation_codex_endpoint import (
+from ticket_investigation.codex_bundle import DEFAULT_CODEX_EXEC_COMMAND
+from ticket_investigation.codex_endpoint import (
     CodexExecTicketExecutionJsonEndpoint,
     build_codex_exec_allowed_prefixes,
 )
-from ticket_investigation_codex_support_endpoint import (
+from ticket_investigation.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation_executor import (
+from ticket_investigation.executor import (
     TicketExecutionHooks,
     TicketInvestigationExecutor,
 )
-from ticket_investigation_subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
-from ticket_investigation_transport import (
+from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
+from ticket_investigation.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
