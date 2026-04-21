@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -586,3 +587,64 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "ticket_execution_smoke_ok:codex_support_exec",
         )
         self.assertEqual(updated_job["channel_id"], 110)
+
+    async def test_codex_support_endpoint_serializes_same_conversation(self) -> None:
+        response = SupportTurnResult(
+            answer="support-ok",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="checked",
+            used_tools=["shell"],
+        ).to_json()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        call_count = 0
+
+        async def fake_run_bounded_subprocess(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                first_started.set()
+                await release_first.wait()
+                return response
+            second_started.set()
+            return response
+
+        endpoint = CodexSupportTicketExecutionJsonEndpoint(
+            codex_command=["codex", "exec"],
+            allowed_command_prefixes=[["codex", "exec"]],
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="investigate support",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 109,
+                "project_context": "yearn",
+                "initial_button_intent": "investigate_issue",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 109,
+                "requested_intent": "investigate_issue",
+                "mode": "collecting",
+                "evidence": {"wallet": None, "chain": "base", "tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.codex_support_exec",
+            wants_bug_review_status=False,
+        )
+
+        with mock.patch(
+            "ticket_investigation_codex_support_endpoint.run_bounded_subprocess",
+            side_effect=fake_run_bounded_subprocess,
+        ):
+            task_one = asyncio.create_task(endpoint.execute_json_turn(request.to_json()))
+            await first_started.wait()
+            task_two = asyncio.create_task(endpoint.execute_json_turn(request.to_json()))
+            await asyncio.sleep(0.05)
+            self.assertFalse(second_started.is_set())
+            release_first.set()
+            await asyncio.gather(task_one, task_two)
+
+        self.assertTrue(second_started.is_set())

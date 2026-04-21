@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -37,6 +39,28 @@ class CodexSupportExecutionBundle:
     support_request_path: Path
     response_schema_path: Path
     resumed_session_id: str | None
+
+
+class _ConversationExecutionLocks:
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._guard = asyncio.Lock()
+
+    @asynccontextmanager
+    async def acquire(self, conversation_key: str | None):
+        if not conversation_key:
+            yield
+            return
+        async with self._guard:
+            lock = self._locks.get(conversation_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[conversation_key] = lock
+        await lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
 
 
 class CodexSupportTicketExecutionJsonEndpoint:
@@ -102,6 +126,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
+        self.execution_locks = _ConversationExecutionLocks()
 
     async def execute_json_turn(
         self,
@@ -117,117 +142,114 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 request,
                 endpoint_mode="codex_support_exec",
             ).to_json()
-        ysupport_mcp_enabled = False
-        if self.codex_home and self.ysupport_mcp_url and self.mcp_server_api_key:
-            support_home = prepare_codex_support_home(
-                codex_home=self.codex_home,
-                repo_root=self.repo_root,
-                mcp_container_name=self.ysupport_mcp_container,
-                auth_source=self.codex_auth_source,
-                ysupport_mcp_url=self.ysupport_mcp_url,
-                mcp_server_api_key=self.mcp_server_api_key,
-                web_search_mode=self.web_search_mode,
-            )
-            ysupport_mcp_enabled = support_home.ysupport_mcp_enabled
+        conversation_key = _conversation_key_for_request(request)
+        async with self.execution_locks.acquire(conversation_key):
+            ysupport_mcp_enabled = False
+            if self.codex_home and self.ysupport_mcp_url and self.mcp_server_api_key:
+                support_home = prepare_codex_support_home(
+                    codex_home=self.codex_home,
+                    repo_root=self.repo_root,
+                    mcp_container_name=self.ysupport_mcp_container,
+                    auth_source=self.codex_auth_source,
+                    ysupport_mcp_url=self.ysupport_mcp_url,
+                    mcp_server_api_key=self.mcp_server_api_key,
+                    web_search_mode=self.web_search_mode,
+                )
+                ysupport_mcp_enabled = support_home.ysupport_mcp_enabled
 
-        workspace = TicketExecutionWorkspace(
-            artifact_dir=self.artifact_dir or None,
-            run_dir_root=self.run_dir_root or None,
-            prefix="ticket-codex-support-run-",
-        )
-        with workspace as run_dir:
-            support_request = SupportTurnRequest.from_ticket_execution_request(
-                request,
-                ysupport_mcp_enabled=ysupport_mcp_enabled,
+            workspace = TicketExecutionWorkspace(
+                artifact_dir=self.artifact_dir or None,
+                run_dir_root=self.run_dir_root or None,
+                prefix="ticket-codex-support-run-",
             )
-            workflow_context = support_request.support_state.get("workflow_context", {})
-            conversation_key = (
-                self.session_manager.conversation_key_for_request(request)
-                if self.session_manager is not None
-                else None
-            )
-            session_record = (
-                self.session_manager.load_for_turn(
-                    conversation_key=conversation_key,
-                    requested_intent=support_request.requested_intent,
-                    guardrail_profile=workflow_context.get("guardrail_profile"),
-                    human_handoff_active=bool(
-                        support_request.support_state.get("human_handoff_active")
-                    ),
+            with workspace as run_dir:
+                support_request = SupportTurnRequest.from_ticket_execution_request(
+                    request,
+                    ysupport_mcp_enabled=ysupport_mcp_enabled,
                 )
-                if self.session_manager is not None and conversation_key is not None
-                else None
-            )
-            bundle = _build_codex_support_execution_bundle(
-                support_request=support_request,
-                run_dir=run_dir,
-                codex_command=self.codex_command,
-                model=self.model,
-                reasoning_effort=self.reasoning_effort,
-                resume_session_id=session_record.session_id if session_record else None,
-            )
-            exported_run_dir: Path | None = None
-            try:
-                response_text = await run_bounded_subprocess(
-                    command=bundle.command,
-                    stdin_text=bundle.prompt_text,
-                    cwd=self.cwd or str(run_dir),
-                    env=build_effective_execution_env(
-                        env=self.env,
-                        inherit_parent_env=self.inherit_parent_env,
-                        run_dir=run_dir,
-                    ),
-                    timeout_seconds=self.timeout_seconds,
-                    max_output_chars=self.max_output_chars,
-                    max_error_chars=self.max_error_chars,
-                    timeout_message=(
-                        f"Codex support execution timed out after {self.timeout_seconds} seconds."
-                    ),
-                    empty_stdout_message="Codex support execution returned empty stdout.",
-                    oversized_stdout_message="Codex support execution returned too much stdout.",
-                    metadata={
-                        "base_command": self.codex_command,
-                        "command": bundle.command,
-                        "cwd": self.cwd or str(run_dir),
-                    },
-                    artifact_run_dir=run_dir,
-                )
-            except Exception as exc:
-                if (
-                    self.session_manager is not None
-                    and conversation_key is not None
-                    and session_record is not None
-                ):
-                    self.session_manager.record_failure(
+                workflow_context = support_request.support_state.get("workflow_context", {})
+                session_record = (
+                    self.session_manager.load_for_turn(
                         conversation_key=conversation_key,
-                        error_text=str(exc),
-                    )
-                raise
-            finally:
-                exported_run_dir = safe_export_workspace_copy(
-                    workspace,
-                    logger_name=__name__,
-                    context="codex support execution",
-                )
-
-            if self.session_manager is not None and conversation_key is not None:
-                session_id = self._extract_session_id_from_run_dir(run_dir)
-                if session_id is not None:
-                    self.session_manager.record_success(
-                        conversation_key=conversation_key,
-                        session_id=session_id,
-                        artifact_dir=str(exported_run_dir) if exported_run_dir else None,
                         requested_intent=support_request.requested_intent,
                         guardrail_profile=workflow_context.get("guardrail_profile"),
                         human_handoff_active=bool(
                             support_request.support_state.get("human_handoff_active")
                         ),
                     )
-            support_result = verify_support_turn_result(
-                SupportTurnResult.from_json(response_text),
-                support_request,
-            )
-            return support_result_to_transport_result(support_result, request).to_json()
+                    if self.session_manager is not None and conversation_key is not None
+                    else None
+                )
+                bundle = _build_codex_support_execution_bundle(
+                    support_request=support_request,
+                    run_dir=run_dir,
+                    codex_command=self.codex_command,
+                    model=self.model,
+                    reasoning_effort=self.reasoning_effort,
+                    resume_session_id=session_record.session_id if session_record else None,
+                )
+                exported_run_dir: Path | None = None
+                try:
+                    response_text = await run_bounded_subprocess(
+                        command=bundle.command,
+                        stdin_text=bundle.prompt_text,
+                        cwd=self.cwd or str(run_dir),
+                        env=build_effective_execution_env(
+                            env=self.env,
+                            inherit_parent_env=self.inherit_parent_env,
+                            run_dir=run_dir,
+                        ),
+                        timeout_seconds=self.timeout_seconds,
+                        max_output_chars=self.max_output_chars,
+                        max_error_chars=self.max_error_chars,
+                        timeout_message=(
+                            f"Codex support execution timed out after {self.timeout_seconds} seconds."
+                        ),
+                        empty_stdout_message="Codex support execution returned empty stdout.",
+                        oversized_stdout_message="Codex support execution returned too much stdout.",
+                        metadata={
+                            "base_command": self.codex_command,
+                            "command": bundle.command,
+                            "cwd": self.cwd or str(run_dir),
+                        },
+                        artifact_run_dir=run_dir,
+                    )
+                except Exception as exc:
+                    if (
+                        self.session_manager is not None
+                        and conversation_key is not None
+                        and session_record is not None
+                    ):
+                        self.session_manager.record_failure(
+                            conversation_key=conversation_key,
+                            error_text=str(exc),
+                        )
+                    raise
+                finally:
+                    exported_run_dir = safe_export_workspace_copy(
+                        workspace,
+                        logger_name=__name__,
+                        context="codex support execution",
+                    )
+
+                if self.session_manager is not None and conversation_key is not None:
+                    session_id = self._extract_session_id_from_run_dir(run_dir)
+                    if session_id is not None:
+                        self.session_manager.record_success(
+                            conversation_key=conversation_key,
+                            session_id=session_id,
+                            artifact_dir=str(exported_run_dir) if exported_run_dir else None,
+                            requested_intent=support_request.requested_intent,
+                            guardrail_profile=workflow_context.get("guardrail_profile"),
+                            human_handoff_active=bool(
+                                support_request.support_state.get("human_handoff_active")
+                            ),
+                        )
+                support_result = verify_support_turn_result(
+                    SupportTurnResult.from_json(response_text),
+                    support_request,
+                )
+                return support_result_to_transport_result(support_result, request).to_json()
 
     def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:
         stderr_path = run_dir / "stderr.txt"
@@ -287,6 +309,16 @@ def _build_codex_support_execution_bundle(
         response_schema_path=response_schema_path,
         resumed_session_id=resume_session_id,
     )
+
+
+def _conversation_key_for_request(
+    request: TicketExecutionTransportRequest,
+) -> str | None:
+    channel_id = request.run_context.get("channel_id")
+    if channel_id is None:
+        return None
+    channel_type = "public" if request.run_context.get("is_public_trigger") else "ticket"
+    return f"{channel_type}:{channel_id}"
 
 
 def _build_codex_support_command(
