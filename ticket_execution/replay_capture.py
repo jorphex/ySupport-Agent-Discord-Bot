@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import PurePosixPath
 import sys
+from urllib.parse import urlparse
 
 from ticket_investigation.transport import TicketExecutionTransportRequest
 from ticket_transcript_fetch import (
@@ -72,6 +74,11 @@ def build_first_turn_transport_request(
     aggregated_text = "\n".join(
         message.content for message in messages[start_index : end_index + 1]
     ).strip()
+    attachments = [
+        _attachment_payload_from_url(attachment_url)
+        for message in messages[start_index : end_index + 1]
+        for attachment_url in message.attachments
+    ]
     requested_intent = initial_intent
     mode = "collecting" if initial_intent == "investigate_issue" else "waiting_for_user"
     if requested_intent is None:
@@ -81,6 +88,7 @@ def build_first_turn_transport_request(
         aggregated_text=aggregated_text,
         input_list=[{"role": "user", "content": aggregated_text}],
         current_history=[],
+        attachments=attachments,
         run_context={
             "channel_id": int(channel_id),
             "category_id": None,
@@ -110,6 +118,20 @@ def build_first_turn_transport_request(
         workflow_name=f"ticket_replay.first_turn.{channel_id}",
         wants_bug_review_status=False,
     )
+
+
+def _attachment_payload_from_url(url: str) -> dict[str, object]:
+    path = PurePosixPath(urlparse(url).path)
+    filename = path.name or "attachment"
+    suffix = path.suffix.lower()
+    is_image = suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+    return {
+        "filename": filename,
+        "url": url,
+        "content_type": None,
+        "size": None,
+        "is_image": is_image,
+    }
 
 
 def _resolve_target_index(

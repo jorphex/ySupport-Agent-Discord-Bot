@@ -78,6 +78,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('command = "python3"', config_text)
             self.assertIn('args = ["mcp_server.py"]', config_text)
             self.assertIn('[mcp_servers.ysupport.env]', config_text)
+            self.assertIn("view_image = false", config_text)
             self.assertNotIn("openai_docs", config_text)
             self.assertIn(
                 "You are ySupport.",
@@ -231,6 +232,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             aggregated_text="0xB8B9E3097c8b1DDdF9C5ea9d48A7eBeaF09D67d2",
             input_list=[],
             current_history=[],
+            attachments=[],
             run_context={
                 "channel_id": 91,
                 "is_public_trigger": False,
@@ -269,6 +271,45 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "vendor_security",
                 "job_inquiry",
             ],
+        )
+
+    def test_support_turn_request_preserves_image_attachments(self) -> None:
+        request = TicketExecutionTransportRequest(
+            aggregated_text="Why do these numbers differ?",
+            input_list=[],
+            current_history=[],
+            attachments=[
+                {
+                    "filename": "image.png",
+                    "url": "https://cdn.example.test/image.png",
+                    "content_type": "image/png",
+                    "size": 1234,
+                    "is_image": True,
+                }
+            ],
+            run_context={
+                "channel_id": 92,
+                "is_public_trigger": False,
+                "project_context": "yearn",
+                "initial_button_intent": "investigate_issue",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 92,
+                "requested_intent": "investigate_issue",
+                "mode": "collecting",
+                "evidence": {},
+            },
+            workflow_name="tests.image_support",
+            wants_bug_review_status=False,
+        )
+
+        support_request = SupportTurnRequest.from_ticket_execution_request(request)
+
+        self.assertEqual(len(support_request.attachments), 1)
+        self.assertEqual(
+            support_request.constraints["allowed_tools"],
+            ["shell", "web_search", "ysupport_mcp"],
         )
 
     def test_verify_support_turn_result_rejects_discord_redirects(self) -> None:
@@ -367,6 +408,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "used_tools": [
                         "shell",
                         "ysupport_mcp.search_vaults",
+                        "mcp__ysupport__search_documentation",
                         "shell",
                         " ",
                     ],
@@ -377,7 +419,10 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified.answer, "Here is the answer.")
         self.assertEqual(verified.handoff_reason, "needs strategist confirmation")
         self.assertEqual(verified.evidence_summary, "Checked the docs and repo.")
-        self.assertEqual(verified.used_tools, ["shell", "ysupport_mcp.search_vaults"])
+        self.assertEqual(
+            verified.used_tools,
+            ["shell", "ysupport_mcp.search_vaults", "mcp__ysupport__search_documentation"],
+        )
 
     def test_verify_support_turn_result_downgrades_optional_handoff_offer(self) -> None:
         request = SupportTurnRequest(

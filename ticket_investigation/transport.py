@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +21,7 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "aggregated_text",
         "input_list",
         "current_history",
+        "attachments",
         "run_context",
         "investigation_job",
         "workflow_name",
@@ -30,6 +31,7 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "aggregated_text": {"type": "string"},
         "input_list": {"type": "array"},
         "current_history": {"type": "array"},
+        "attachments": {"type": "array"},
         "run_context": {"type": "object"},
         "investigation_job": {"type": "object"},
         "workflow_name": {"type": "string"},
@@ -171,6 +173,7 @@ def build_smoke_transport_request() -> "TicketExecutionTransportRequest":
         aggregated_text="ticket execution smoke probe",
         input_list=[],
         current_history=[],
+        attachments=[],
         run_context={
             "channel_id": 0,
             "category_id": None,
@@ -216,12 +219,14 @@ class TicketExecutionTransportRequest:
     wants_bug_review_status: bool = False
     precomputed_boundary: dict[str, Any] | None = None
     smoke_mode: str | None = None
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "aggregated_text": self.aggregated_text,
             "input_list": list(self.input_list),
             "current_history": list(self.current_history),
+            "attachments": list(self.attachments),
             "run_context": dict(self.run_context),
             "investigation_job": dict(self.investigation_job),
             "workflow_name": self.workflow_name,
@@ -243,6 +248,7 @@ class TicketExecutionTransportRequest:
             aggregated_text=payload["aggregated_text"],
             input_list=list(payload.get("input_list", [])),
             current_history=list(payload.get("current_history", [])),
+            attachments=list(payload.get("attachments", [])),
             run_context=dict(payload.get("run_context", {})),
             investigation_job=dict(payload.get("investigation_job", {})),
             workflow_name=payload["workflow_name"],
@@ -273,6 +279,7 @@ class TicketExecutionTransportRequest:
             aggregated_text=request.aggregated_text,
             input_list=list(request.input_list),
             current_history=list(request.current_history),
+            attachments=list(request.attachments),
             run_context=serialize_run_context(request.run_context),
             investigation_job=serialize_investigation_job(request.investigation_job),
             workflow_name=request.workflow_name,
@@ -292,6 +299,7 @@ class TicketExecutionTransportRequest:
             aggregated_text=self.aggregated_text,
             input_list=list(self.input_list),
             current_history=list(self.current_history),
+            attachments=list(self.attachments),
             run_context=deserialize_run_context(self.run_context),
             investigation_job=deserialize_investigation_job(self.investigation_job),
             workflow_name=self.workflow_name,

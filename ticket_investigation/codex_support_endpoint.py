@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urlparse
+
+import aiohttp
 
 from codex_support_home import prepare_codex_support_home
 from codex_support_contract import (
@@ -188,6 +191,10 @@ class CodexSupportTicketExecutionJsonEndpoint:
                     if self.session_manager is not None and conversation_key is not None
                     else None
                 )
+                await _prepare_support_request_attachments(
+                    support_request,
+                    run_dir=run_dir,
+                )
                 bundle = _build_codex_support_execution_bundle(
                     support_request=support_request,
                     run_dir=run_dir,
@@ -312,6 +319,7 @@ def _build_codex_support_execution_bundle(
         reasoning_effort=reasoning_effort,
         response_schema_path=response_schema_path,
         run_dir_path=run_dir_path,
+        image_paths=_image_attachment_paths(support_request),
         resume_session_id=resume_session_id,
     )
     return CodexSupportExecutionBundle(
@@ -322,6 +330,96 @@ def _build_codex_support_execution_bundle(
         response_schema_path=response_schema_path,
         resumed_session_id=resume_session_id,
     )
+
+
+async def _prepare_support_request_attachments(
+    support_request: SupportTurnRequest,
+    *,
+    run_dir: str | Path,
+) -> None:
+    attachments = list(support_request.attachments)
+    if not attachments:
+        return
+    attachments_dir = Path(run_dir) / "attachments"
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    prepared: list[dict[str, object]] = []
+    for index, attachment in enumerate(attachments, start=1):
+        item = dict(attachment)
+        item["local_path"] = None
+        if not _attachment_is_image(item):
+            prepared.append(item)
+            continue
+        try:
+            local_path = await _download_attachment_image(
+                attachment=item,
+                attachments_dir=attachments_dir,
+                index=index,
+            )
+        except Exception:
+            prepared.append(item)
+            continue
+        item["is_image"] = True
+        item["local_path"] = str(local_path)
+        prepared.append(item)
+    support_request.attachments = prepared
+
+
+def _image_attachment_paths(support_request: SupportTurnRequest) -> list[Path]:
+    image_paths: list[Path] = []
+    for attachment in support_request.attachments:
+        if not _attachment_is_image(attachment):
+            continue
+        local_path = str(attachment.get("local_path") or "").strip()
+        if not local_path:
+            continue
+        path = Path(local_path)
+        if path.exists():
+            image_paths.append(path)
+    return image_paths
+
+
+def _attachment_is_image(attachment: dict[str, object]) -> bool:
+    if bool(attachment.get("is_image")):
+        return True
+    content_type = str(attachment.get("content_type") or "").lower()
+    if content_type.startswith("image/"):
+        return True
+    filename = str(attachment.get("filename") or "").lower()
+    return filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+
+
+async def _download_attachment_image(
+    *,
+    attachment: dict[str, object],
+    attachments_dir: Path,
+    index: int,
+) -> Path:
+    url = str(attachment.get("url") or "").strip()
+    if not url:
+        raise ValueError("Attachment URL is required.")
+    source_name = str(attachment.get("filename") or "").strip()
+    suffix = Path(source_name).suffix or Path(urlparse(url).path).suffix or ".img"
+    safe_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    target_path = attachments_dir / f"attachment_{index}{safe_suffix.lower()}"
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            body = await response.read()
+            content_type = (response.headers.get("Content-Type") or "").strip().lower()
+    if not body:
+        raise ValueError("Attachment download returned empty body.")
+    if not content_type.startswith("image/") and target_path.suffix.lower() not in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".bmp",
+    }:
+        raise ValueError("Attachment is not an image.")
+    target_path.write_bytes(body)
+    return target_path
 
 
 def _conversation_key_for_request(
@@ -345,6 +443,7 @@ def _build_codex_support_command(
     reasoning_effort: str | None,
     response_schema_path: Path,
     run_dir_path: Path,
+    image_paths: list[Path],
     resume_session_id: str | None,
 ) -> list[str]:
     if resume_session_id:
@@ -353,6 +452,7 @@ def _build_codex_support_command(
             session_id=resume_session_id,
             model=model,
             reasoning_effort=reasoning_effort,
+            image_paths=image_paths,
         )
         command.append("-")
         return command
@@ -365,6 +465,8 @@ def _build_codex_support_command(
         command.extend(["-m", model])
     if reasoning_effort:
         command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+    for image_path in image_paths:
+        command.extend(["-i", str(image_path)])
     command.extend(
         [
             "--json",
@@ -384,6 +486,7 @@ def _build_codex_resume_command(
     session_id: str,
     model: str | None,
     reasoning_effort: str | None,
+    image_paths: list[Path],
 ) -> list[str]:
     exec_index = next(
         (index for index, token in enumerate(codex_command) if token == "exec"),
@@ -398,6 +501,8 @@ def _build_codex_resume_command(
         command.extend(["-m", model])
     if reasoning_effort:
         command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+    for image_path in image_paths:
+        command.extend(["-i", str(image_path)])
     command.append("--json")
     return command
 
@@ -413,6 +518,7 @@ def _codex_support_prompt(
         f"Return only JSON matching {response_schema_path.name}.\n"
         "Use `channel_type`, `channel_id`, `initial_button_intent`, and `requested_intent` as workflow context.\n"
         "Use `support_state` as explicit runtime state. Prefer it over re-inferring the same facts from transcript when they agree.\n"
+        "If `attachments` includes screenshot or image files, inspect them before answering any question that depends on what they show.\n"
         "Use `support_state.workflow_context` as outer Discord/UI context. Follow its expected first actions before generic clarification.\n"
         "Treat `support_state.workflow_context.non_support_boundaries` as hard outer guardrails.\n"
         "If a boundary or off-scope message reaches you, reply briefly and stay on the boundary.\n"
@@ -422,6 +528,8 @@ def _codex_support_prompt(
         "Do not tell the user to go to Discord or open a Discord ticket.\n"
         "If the exact fact is known, give it first.\n"
         "If the user asked multiple questions, answer them in order.\n"
+        "For screenshot or metric-comparison questions, do not stop at a plausible explanation. Identify the exact labels and numbers in the user evidence, then compare them to current Yearn data only if needed.\n"
+        "For investigation answers, use at least one Yearn-specific fact source and one metric-definition or repo/docs source when the question is about how displayed metrics differ.\n"
         "Before setting requires_human_handoff=true, do the strongest direct support work you can from the request and tools.\n"
         "Inspect linked artifacts before handoff.\n"
         "If the user asks for a human but also gives a concrete target or question, answer what you can first.\n"
@@ -606,6 +714,8 @@ def _progress_from_tool_item(item: dict[str, object]) -> str:
         str(item.get(key) or "")
         for key in ("tool_name", "name", "server", "title")
     ).lower()
+    if "view_image" in raw_name or "image" in raw_name or "attachment" in raw_name:
+        return "Checking screenshots"
     if "harvest" in raw_name or "report" in raw_name:
         return "Checking recent harvests"
     if "search_vaults" in raw_name or "discover" in raw_name or "vault" in raw_name:

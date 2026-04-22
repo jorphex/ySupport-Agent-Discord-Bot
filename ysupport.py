@@ -41,6 +41,7 @@ from state import (
     mark_ticket_awaiting_initial_button,
     monitored_new_channels,
     pending_messages,
+    pending_attachments_by_channel,
     pending_tasks,
     pending_wallet_confirmation_by_channel,
     persist_public_conversation,
@@ -156,6 +157,52 @@ def _ticket_debounce_seconds(channel_id: int, run_context: BotRunContext) -> int
     return config.COOLDOWN_SECONDS
 
 
+def _normalize_discord_attachment(
+    attachment: discord.Attachment,
+) -> dict[str, Any]:
+    content_type = (attachment.content_type or "").strip() or None
+    return {
+        "filename": attachment.filename,
+        "url": attachment.url,
+        "content_type": content_type,
+        "size": attachment.size,
+        "is_image": bool(content_type and content_type.startswith("image/")),
+    }
+
+
+def _attachment_payloads_from_message(
+    message: discord.Message,
+) -> list[dict[str, Any]]:
+    return [
+        _normalize_discord_attachment(attachment)
+        for attachment in message.attachments
+        if attachment.url
+    ]
+
+
+def _dedupe_attachment_payloads(
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for attachment in attachments:
+        url = str(attachment.get("url") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        deduped.append(dict(attachment))
+    return deduped
+
+
+def _message_text_for_turn(message: discord.Message) -> str:
+    content = (message.content or "").strip()
+    if content:
+        return content
+    if message.attachments:
+        return "(attachment only)"
+    return ""
+
+
 def _canonicalize_current_user_message(
     aggregated_text: str,
     run_context: BotRunContext,
@@ -209,6 +256,7 @@ def _build_turn_request(
     aggregated_text: str,
     input_list: List[TResponseInputItem],
     current_history: List[TResponseInputItem],
+    attachments: list[dict[str, Any]],
     run_context: BotRunContext,
     investigation_job: TicketInvestigationJob,
     workflow_name: str,
@@ -218,6 +266,7 @@ def _build_turn_request(
         aggregated_text=aggregated_text,
         input_list=input_list,
         current_history=current_history,
+        attachments=attachments,
         run_context=run_context,
         investigation_job=investigation_job,
         workflow_name=workflow_name,
@@ -452,7 +501,10 @@ class TicketBot(discord.Client):
 
         try:
             original_message = await message.channel.fetch_message(message.reference.message_id)
-            if not (original_message and not original_message.author.bot and original_message.content):
+            if not original_message or original_message.author.bot:
+                return True
+            original_message_text = _message_text_for_turn(original_message)
+            if not original_message_text:
                 return True
 
             original_author_id = original_message.author.id
@@ -490,7 +542,7 @@ class TicketBot(discord.Client):
                 trigger_char_used=trigger_char_used,
             )
 
-            moderator_access_reply = _outer_moderator_access_reply(original_message.content)
+            moderator_access_reply = _outer_moderator_access_reply(original_message_text)
             if moderator_access_reply is not None:
                 public_conversations.pop(original_author_id, None)
                 clear_public_conversation(original_author_id)
@@ -501,7 +553,7 @@ class TicketBot(discord.Client):
                 )
                 return True
 
-            boundary_output = await _outer_support_boundary_result(original_message.content)
+            boundary_output = await _outer_support_boundary_result(original_message_text)
             boundary_reply = _boundary_reply_from_output(boundary_output)
             if boundary_reply is not None:
                 public_conversations.pop(original_author_id, None)
@@ -521,11 +573,12 @@ class TicketBot(discord.Client):
                 try:
                     worker_result = await self.investigation_executor.execute_turn(
                         _build_turn_request(
-                            aggregated_text=original_message.content,
+                            aggregated_text=original_message_text,
                             input_list=current_history + [
-                                {"role": "user", "content": original_message.content}
+                                {"role": "user", "content": original_message_text}
                             ],
                             current_history=current_history,
+                            attachments=_attachment_payloads_from_message(original_message),
                             run_context=public_run_context,
                             investigation_job=public_investigation_job,
                             workflow_name=_public_workflow_name(message.channel.id),
@@ -622,24 +675,27 @@ class TicketBot(discord.Client):
             logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
             return True
 
-    async def _collect_aggregated_ticket_text(
+    async def _collect_aggregated_ticket_payload(
         self,
         channel_id: int,
         run_context: BotRunContext,
         *,
         is_button_trigger: bool,
         synthetic_user_message_for_log: str,
-    ) -> str | None:
+    ) -> tuple[str | None, list[dict[str, Any]]]:
         if is_button_trigger:
-            return synthetic_user_message_for_log.strip()
+            return synthetic_user_message_for_log.strip(), []
 
         debounce_seconds = _ticket_debounce_seconds(channel_id, run_context)
         try:
             await asyncio.sleep(debounce_seconds)
         except asyncio.CancelledError:
             logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
-            return None
-        return pending_messages.pop(channel_id, None)
+            return None, []
+        return (
+            pending_messages.pop(channel_id, None),
+            pending_attachments_by_channel.pop(channel_id, []),
+        )
 
     async def _build_ticket_turn_input(
         self,
@@ -804,13 +860,24 @@ class TicketBot(discord.Client):
             except Exception:
                 pass
 
+        normalized_message_text = _message_text_for_turn(message)
         last_reply_ts = last_bot_reply_ts_by_channel.get(channel_id)
         if last_reply_ts and message.created_at <= last_reply_ts:
-            pending_messages[channel_id] = message.content
+            pending_messages[channel_id] = normalized_message_text
+            pending_attachments_by_channel[channel_id] = _attachment_payloads_from_message(
+                message
+            )
         elif channel_id not in pending_messages:
-            pending_messages[channel_id] = message.content
+            pending_messages[channel_id] = normalized_message_text
+            pending_attachments_by_channel[channel_id] = _attachment_payloads_from_message(
+                message
+            )
         else:
-            pending_messages[channel_id] += "\n" + message.content
+            pending_messages[channel_id] += "\n" + normalized_message_text
+            pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
+                pending_attachments_by_channel.get(channel_id, [])
+                + _attachment_payloads_from_message(message)
+            )
 
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
         debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
@@ -820,7 +887,7 @@ class TicketBot(discord.Client):
         current_task = asyncio.current_task()
         try:
             investigation_job = get_or_create_ticket_investigation_job(channel_id)
-            aggregated_text = await self._collect_aggregated_ticket_text(
+            aggregated_text, attachments = await self._collect_aggregated_ticket_payload(
                 channel_id,
                 run_context,
                 is_button_trigger=is_button_trigger,
@@ -867,9 +934,10 @@ class TicketBot(discord.Client):
                                 _build_turn_request(
                                     aggregated_text=aggregated_text,
                                     input_list=input_list,
-                                    current_history=current_history,
-                                    run_context=run_context,
-                                    investigation_job=investigation_job,
+                current_history=current_history,
+                attachments=attachments,
+                run_context=run_context,
+                investigation_job=investigation_job,
                                     workflow_name=_ticket_workflow_name(run_context),
                                     precomputed_boundary=boundary_output,
                                 ),

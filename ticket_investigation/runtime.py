@@ -1,6 +1,6 @@
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, List, Optional
 
 from agents import RunConfig, RunResult, TResponseInputItem
@@ -48,6 +48,7 @@ class TicketTurnRequest:
     workflow_name: str
     precomputed_boundary: dict[str, Any] | None = None
     send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None
+    attachments: List[dict[str, Any]] = field(default_factory=list)
 
 
 def _resolve_agent(agent_key: str):

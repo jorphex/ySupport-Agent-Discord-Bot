@@ -84,6 +84,37 @@ class TicketExecutionReplayCaptureTests(unittest.TestCase):
         self.assertEqual(request.investigation_job["requested_intent"], "investigate_issue")
         self.assertEqual(request.investigation_job["mode"], "collecting")
 
+    def test_build_first_turn_transport_request_preserves_attachment_urls(self) -> None:
+        messages = [
+            TranscriptMessage(
+                id="1",
+                timestamp="2026-04-01T00:00:00+00:00",
+                author_id="bot",
+                author_name="ySupport",
+                author_is_bot=True,
+                content="Welcome",
+                attachments=(),
+            ),
+            TranscriptMessage(
+                id="2",
+                timestamp="2026-04-01T00:00:01+00:00",
+                author_id="user",
+                author_name="User",
+                author_is_bot=False,
+                content="Why do these numbers differ?",
+                attachments=("https://cdn.example.test/image.png",),
+            ),
+        ]
+
+        request = build_first_turn_transport_request(
+            channel_id="123",
+            messages=messages,
+        )
+
+        self.assertEqual(len(request.attachments), 1)
+        self.assertEqual(request.attachments[0]["filename"], "image.png")
+        self.assertTrue(request.attachments[0]["is_image"])
+
     def test_build_first_turn_transport_request_rejects_later_turn_target(self) -> None:
         messages = [
             TranscriptMessage(

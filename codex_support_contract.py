@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import re
 from typing import Any
@@ -107,11 +107,13 @@ class SupportTurnRequest:
     evidence: dict[str, Any]
     support_state: dict[str, Any]
     constraints: dict[str, Any]
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "current_user_message": self.current_user_message,
             "recent_transcript": list(self.recent_transcript),
+            "attachments": list(self.attachments),
             "channel_type": self.channel_type,
             "channel_id": self.channel_id,
             "project_context": self.project_context,
@@ -142,6 +144,7 @@ class SupportTurnRequest:
         allowed_tools = ["shell", "web_search"]
         if ysupport_mcp_enabled:
             allowed_tools.append("ysupport_mcp")
+        attachments = list(request.attachments)
         investigation_job = request.investigation_job
         run_context = request.run_context
         evidence = dict(investigation_job.get("evidence", {}))
@@ -158,6 +161,7 @@ class SupportTurnRequest:
         return cls(
             current_user_message=request.aggregated_text,
             recent_transcript=recent_history,
+            attachments=attachments,
             channel_type=channel_type,
             channel_id=run_context.get("channel_id"),
             project_context=run_context.get("project_context", "unknown"),
@@ -329,9 +333,10 @@ def _is_allowed_reported_tool(tool: str, allowed_tools: set[str]) -> bool:
     if tool in allowed_tools:
         return True
     prefixes = {
-        "ysupport_mcp": ("ysupport_mcp.",),
+        "ysupport_mcp": ("ysupport_mcp.", "mcp__ysupport__"),
         "web_search": ("web_search", "browser", "web."),
         "shell": ("shell", "bash", "exec", "command"),
+        "view_image": ("view_image",),
     }
     for allowed in allowed_tools:
         for prefix in prefixes.get(allowed, ()):

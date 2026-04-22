@@ -134,6 +134,7 @@ class TicketInvestigationJob:
 stopped_channels: set[int] = set()
 conversation_threads: Dict[int, List[TResponseInputItem]] = {}
 pending_messages: Dict[int, str] = {}
+pending_attachments_by_channel: Dict[int, List[Dict[str, Any]]] = {}
 pending_tasks: Dict[int, asyncio.Task] = {}
 monitored_new_channels: set[int] = set()
 
@@ -261,6 +262,7 @@ def clear_ticket_channel_state(
     conversation_threads.pop(channel_id, None)
     ticket_investigation_jobs.pop(channel_id, None)
     pending_messages.pop(channel_id, None)
+    pending_attachments_by_channel.pop(channel_id, None)
     last_wallet_by_channel.pop(channel_id, None)
     pending_wallet_confirmation_by_channel.pop(channel_id, None)
     last_bot_reply_ts_by_channel.pop(channel_id, None)
