@@ -322,6 +322,8 @@ def _normalize_used_tools(values: list[Any]) -> list[str]:
     seen: set[str] = set()
     for value in values:
         tool = str(value).strip()
+        if tool.startswith("functions."):
+            tool = tool[len("functions.") :]
         if not tool or tool in seen:
             continue
         seen.add(tool)

@@ -408,7 +408,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "used_tools": [
                         "shell",
                         "ysupport_mcp.search_vaults",
-                        "mcp__ysupport__search_documentation",
+                        "functions.mcp__ysupport__search_documentation",
                         "shell",
                         " ",
                     ],
