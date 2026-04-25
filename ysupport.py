@@ -537,7 +537,7 @@ class TicketBot(discord.Client):
                 monitored_new_channels.add(channel.id)
                 logging.info(f"Added channel {channel.id} to monitored_new_channels set.")
 
-                delay_seconds = 1.2
+                delay_seconds = 1.5
                 logging.info(f"Delaying welcome message in {channel.id} by {delay_seconds} seconds.")
                 await asyncio.sleep(delay_seconds)
                 ticket_owner_user_id = await _detect_ticket_owner_user_id(channel)
