@@ -30,6 +30,7 @@ from state import (
     reset_ticket_channel_for_terminal_reply,
     stopped_channels,
     stop_ticket_channel,
+    ticket_owner_user_id_by_channel,
     ticket_investigation_jobs,
 )
 
@@ -53,6 +54,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 last_wallet_by_channel[channel_id] = "0xabc"
                 pending_wallet_confirmation_by_channel[channel_id] = "0xdef"
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+                ticket_owner_user_id_by_channel[channel_id] = 555
                 stopped_channels.add(channel_id)
                 channels_awaiting_initial_button_press.add(channel_id)
                 channel_intent_after_button[channel_id] = "investigate_issue"
@@ -65,6 +67,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 last_wallet_by_channel.pop(channel_id, None)
                 pending_wallet_confirmation_by_channel.pop(channel_id, None)
                 last_bot_reply_ts_by_channel.pop(channel_id, None)
+                ticket_owner_user_id_by_channel.pop(channel_id, None)
                 stopped_channels.discard(channel_id)
                 channels_awaiting_initial_button_press.discard(channel_id)
                 channel_intent_after_button.pop(channel_id, None)
@@ -85,6 +88,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                     pending_wallet_confirmation_by_channel[channel_id],
                     "0xdef",
                 )
+                self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 555)
                 self.assertIn(channel_id, stopped_channels)
                 self.assertIn(channel_id, channels_awaiting_initial_button_press)
                 self.assertEqual(
@@ -106,6 +110,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
                 ticket_investigation_jobs[channel_id] = TicketInvestigationJob(channel_id=channel_id)
                 last_wallet_by_channel[channel_id] = "0xabc"
+                ticket_owner_user_id_by_channel[channel_id] = 777
 
                 clear_ticket_channel_state(
                     channel_id,
@@ -117,11 +122,13 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 self.assertNotIn(channel_id, ticket_investigation_jobs)
                 self.assertNotIn(channel_id, last_wallet_by_channel)
                 self.assertIn(channel_id, stopped_channels)
+                self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 777)
                 payload = state._read_json(ticket_dir / f"{channel_id}.json")
                 self.assertIsNotNone(payload)
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
                 self.assertEqual(payload["history"], [])
+                self.assertEqual(payload["ticket_owner_user_id"], 777)
 
     def test_apply_initial_button_intent_updates_waiting_flags_and_job(self) -> None:
         channel_id = 105

@@ -155,6 +155,9 @@ pending_wallet_confirmation_by_channel: Dict[int, str] = {}
 # Timestamp of the last bot reply per channel
 last_bot_reply_ts_by_channel: Dict[int, datetime] = {}
 
+# Ticket opener / customer associated with the ticket channel
+ticket_owner_user_id_by_channel: Dict[int, int] = {}
+
 _DISCORD_STATE_ROOT = Path(config.TICKET_EXECUTION_STATE_ROOT) / "discord_state"
 _TICKET_STATE_DIR = _DISCORD_STATE_ROOT / "tickets"
 _PUBLIC_STATE_DIR = _DISCORD_STATE_ROOT / "public"
@@ -221,6 +224,9 @@ def hydrate_ticket_state(channel_id: int) -> None:
     last_reply_at = _parse_datetime(payload.get("last_bot_reply_at"))
     if last_reply_at is not None:
         last_bot_reply_ts_by_channel[channel_id] = last_reply_at
+    ticket_owner_user_id = payload.get("ticket_owner_user_id")
+    if ticket_owner_user_id is not None:
+        ticket_owner_user_id_by_channel[channel_id] = int(ticket_owner_user_id)
     if payload.get("stopped"):
         stopped_channels.add(channel_id)
     if payload.get("awaiting_initial_button_press"):
@@ -245,6 +251,7 @@ def persist_ticket_state(channel_id: int) -> None:
         "last_wallet": last_wallet_by_channel.get(channel_id),
         "pending_wallet_confirmation": pending_wallet_confirmation_by_channel.get(channel_id),
         "last_bot_reply_at": _format_datetime(last_bot_reply_ts_by_channel.get(channel_id)),
+        "ticket_owner_user_id": ticket_owner_user_id_by_channel.get(channel_id),
         "stopped": channel_id in stopped_channels,
         "awaiting_initial_button_press": channel_id in channels_awaiting_initial_button_press,
         "channel_intent_after_button": channel_intent_after_button.get(channel_id),
@@ -259,6 +266,11 @@ def clear_ticket_channel_state(
     keep_stopped: bool = False,
     delete_persisted: bool = False,
 ) -> None:
+    preserved_ticket_owner_user_id = (
+        ticket_owner_user_id_by_channel.get(channel_id)
+        if keep_stopped
+        else None
+    )
     conversation_threads.pop(channel_id, None)
     ticket_investigation_jobs.pop(channel_id, None)
     pending_messages.pop(channel_id, None)
@@ -266,6 +278,7 @@ def clear_ticket_channel_state(
     last_wallet_by_channel.pop(channel_id, None)
     pending_wallet_confirmation_by_channel.pop(channel_id, None)
     last_bot_reply_ts_by_channel.pop(channel_id, None)
+    ticket_owner_user_id_by_channel.pop(channel_id, None)
     channels_awaiting_initial_button_press.discard(channel_id)
     channel_intent_after_button.pop(channel_id, None)
     bug_report_debounce_channels.discard(channel_id)
@@ -274,6 +287,8 @@ def clear_ticket_channel_state(
     else:
         stopped_channels.discard(channel_id)
         monitored_new_channels.discard(channel_id)
+    if preserved_ticket_owner_user_id is not None:
+        ticket_owner_user_id_by_channel[channel_id] = preserved_ticket_owner_user_id
     reset_ticket_codex_session(channel_id)
     if delete_persisted:
         _safe_unlink(_TICKET_STATE_DIR / f"{channel_id}.json")
@@ -299,6 +314,11 @@ def stop_ticket_channel(channel_id: int) -> None:
 
 def mark_ticket_channel_stopped(channel_id: int) -> None:
     stopped_channels.add(channel_id)
+    persist_ticket_state(channel_id)
+
+
+def remember_ticket_owner_user_id(channel_id: int, user_id: int) -> None:
+    ticket_owner_user_id_by_channel[channel_id] = user_id
     persist_ticket_state(channel_id)
 
 
@@ -365,6 +385,7 @@ def _ticket_state_is_loaded(channel_id: int) -> bool:
             channel_id in last_wallet_by_channel,
             channel_id in pending_wallet_confirmation_by_channel,
             channel_id in last_bot_reply_ts_by_channel,
+            channel_id in ticket_owner_user_id_by_channel,
             channel_id in stopped_channels,
             channel_id in channels_awaiting_initial_button_press,
             channel_id in channel_intent_after_button,

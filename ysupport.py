@@ -1,7 +1,8 @@
 import asyncio
+from copy import deepcopy
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Any, List
+from typing import Any, List, Literal
 
 import discord
 from dotenv import load_dotenv
@@ -47,8 +48,10 @@ from state import (
     persist_public_conversation,
     persist_ticket_state,
     public_conversations,
+    remember_ticket_owner_user_id,
     reset_ticket_channel_for_terminal_reply,
     stopped_channels,
+    ticket_owner_user_id_by_channel,
 )
 from ticket_investigation.json_endpoint import (
     build_ticket_execution_json_endpoint,
@@ -173,9 +176,10 @@ def _normalize_discord_attachment(
 def _attachment_payloads_from_message(
     message: discord.Message,
 ) -> list[dict[str, Any]]:
+    attachments = getattr(message, "attachments", None) or []
     return [
         _normalize_discord_attachment(attachment)
-        for attachment in message.attachments
+        for attachment in attachments
         if attachment.url
     ]
 
@@ -198,7 +202,7 @@ def _message_text_for_turn(message: discord.Message) -> str:
     content = (message.content or "").strip()
     if content:
         return content
-    if message.attachments:
+    if getattr(message, "attachments", None):
         return "(attachment only)"
     return ""
 
@@ -326,13 +330,105 @@ def _build_ticket_run_context(
     channel_id: int,
     category_id: int | None,
     initial_button_intent: str | None,
+    conversation_owner_id: int | None = None,
 ) -> BotRunContext:
     return BotRunContext(
         channel_id=channel_id,
         category_id=category_id,
+        conversation_owner_id=conversation_owner_id,
         project_context=_project_context_for_category(category_id),
         initial_button_intent=initial_button_intent,
     )
+
+
+def _is_contributor_member(author: discord.abc.User) -> bool:
+    contributor_role_id = config.TICKET_CONTRIBUTOR_ROLE_ID
+    if contributor_role_id is None:
+        return False
+    roles = getattr(author, "roles", None) or []
+    return any(getattr(role, "id", None) == contributor_role_id for role in roles)
+
+
+def _normalize_contributor_override_prompt(text: str) -> str | None:
+    stripped = (text or "").strip()
+    prefix = config.TICKET_CONTRIBUTOR_OVERRIDE_PREFIX.strip()
+    if not stripped or not prefix:
+        return None
+    if not stripped.lower().startswith(prefix.lower()):
+        return None
+    prompt = stripped[len(prefix) :].strip()
+    return prompt or None
+
+
+def _extract_ticket_owner_user_id_from_messages(
+    messages: List[discord.Message],
+) -> int | None:
+    for message in messages:
+        if not message.author.bot:
+            continue
+        for mentioned_user in message.mentions:
+            if not mentioned_user.bot:
+                return mentioned_user.id
+    return None
+
+
+async def _detect_ticket_owner_user_id(channel: discord.TextChannel) -> int | None:
+    try:
+        opener_messages = [
+            message async for message in channel.history(limit=5, oldest_first=True)
+        ]
+    except Exception as exc:
+        logging.warning(
+            "Failed to inspect opener messages for ticket %s: %s",
+            channel.id,
+            exc,
+        )
+        return None
+    return _extract_ticket_owner_user_id_from_messages(opener_messages)
+
+
+TicketMessageAction = Literal["process", "ignore", "contributor_override"]
+
+
+def _classify_ticket_message_action(
+    *,
+    author: discord.abc.User,
+    content: str,
+    ticket_owner_user_id: int | None,
+    stopped: bool,
+) -> TicketMessageAction:
+    is_contributor = _is_contributor_member(author)
+    if stopped:
+        if is_contributor and _normalize_contributor_override_prompt(content):
+            return "contributor_override"
+        return "ignore"
+    if ticket_owner_user_id is None:
+        return "ignore" if is_contributor else "process"
+    if author.id != ticket_owner_user_id:
+        return "ignore"
+    return "process"
+
+
+async def _build_recent_channel_history_fallback(
+    channel: discord.TextChannel,
+    *,
+    exclude_message_id: int,
+    limit: int = 12,
+) -> List[TResponseInputItem]:
+    history: List[TResponseInputItem] = []
+    messages = [
+        message
+        async for message in channel.history(limit=limit, oldest_first=True)
+    ]
+    for message in messages:
+        if message.id == exclude_message_id:
+            continue
+        content = _message_text_for_turn(message)
+        if not content:
+            continue
+        role = "assistant" if message.author.bot else "user"
+        history.append({"role": role, "content": content})
+    return history
 
 
 def _outer_moderator_access_reply(text: str) -> str | None:
@@ -444,6 +540,19 @@ class TicketBot(discord.Client):
                 delay_seconds = 1.2
                 logging.info(f"Delaying welcome message in {channel.id} by {delay_seconds} seconds.")
                 await asyncio.sleep(delay_seconds)
+                ticket_owner_user_id = await _detect_ticket_owner_user_id(channel)
+                if ticket_owner_user_id is not None:
+                    remember_ticket_owner_user_id(channel.id, ticket_owner_user_id)
+                    logging.info(
+                        "Detected ticket owner %s for channel %s from opener message.",
+                        ticket_owner_user_id,
+                        channel.id,
+                    )
+                else:
+                    logging.info(
+                        "Could not detect ticket owner from opener messages for channel %s.",
+                        channel.id,
+                    )
 
                 welcome_message = (
                     f"Welcome to {project_context.capitalize()} Support!\n\n\n"
@@ -697,6 +806,76 @@ class TicketBot(discord.Client):
             pending_attachments_by_channel.pop(channel_id, []),
         )
 
+    async def _handle_stopped_ticket_contributor_override(
+        self,
+        message: discord.Message,
+        run_context: BotRunContext,
+        prompt_text: str,
+    ) -> None:
+        channel_id = message.channel.id
+        investigation_job = deepcopy(get_or_create_ticket_investigation_job(channel_id))
+        current_history = list(conversation_threads.get(channel_id, []))
+        if not current_history and isinstance(message.channel, discord.TextChannel):
+            current_history = await _build_recent_channel_history_fallback(
+                message.channel,
+                exclude_message_id=message.id,
+            )
+        input_list: List[TResponseInputItem] = current_history + [
+            {
+                "role": "system",
+                "content": (
+                    "This is a contributor override turn in a stopped ticket. "
+                    "Answer the contributor request using the existing ticket context, "
+                    "but do not treat this as a normal user turn or a full bot resume."
+                ),
+            },
+            {"role": "user", "content": prompt_text},
+        ]
+
+        logging.info(
+            "Processing contributor override in stopped ticket %s from %s.",
+            channel_id,
+            message.author.name,
+        )
+
+        async with message.channel.typing():
+            progress_reporter = _DiscordProgressReporter(message.channel, channel_id)
+            try:
+                worker_result = await self.investigation_executor.execute_turn(
+                    _build_turn_request(
+                        aggregated_text=prompt_text,
+                        input_list=input_list,
+                        current_history=current_history,
+                        attachments=_attachment_payloads_from_message(message),
+                        run_context=run_context,
+                        investigation_job=investigation_job,
+                        workflow_name=f"{_ticket_workflow_name(run_context)} [contributor override]",
+                        precomputed_boundary=None,
+                    ),
+                    hooks=TicketExecutionHooks(
+                        send_progress_update=progress_reporter.update,
+                    ),
+                )
+                final_reply = _render_support_reply(
+                    worker_result.flow_outcome.raw_final_reply
+                )
+            except Exception as exc:
+                logging.error(
+                    "Contributor override failed in stopped ticket %s: %s",
+                    channel_id,
+                    exc,
+                    exc_info=True,
+                )
+                final_reply = (
+                    f"Contributor override failed. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                )
+            finally:
+                await progress_reporter.close()
+
+        await send_long_message(message.channel, final_reply)
+        last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+        persist_ticket_state(channel_id)
+
     async def _build_ticket_turn_input(
         self,
         *,
@@ -818,6 +997,46 @@ class TicketBot(discord.Client):
             return
         hydrate_ticket_state(channel_id)
         monitored_new_channels.add(channel_id)
+        ticket_owner_user_id = ticket_owner_user_id_by_channel.get(channel_id)
+        action = _classify_ticket_message_action(
+            author=message.author,
+            content=message.content,
+            ticket_owner_user_id=ticket_owner_user_id,
+            stopped=channel_id in stopped_channels,
+        )
+
+        if action == "ignore":
+            logging.info(
+                "Ignoring ticket message in %s from %s. owner=%s stopped=%s contributor=%s",
+                channel_id,
+                message.author.name,
+                ticket_owner_user_id,
+                channel_id in stopped_channels,
+                _is_contributor_member(message.author),
+            )
+            return
+
+        if (
+            ticket_owner_user_id is None
+            and isinstance(message.channel, discord.TextChannel)
+        ):
+            ticket_owner_user_id = await _detect_ticket_owner_user_id(message.channel)
+            if ticket_owner_user_id is not None:
+                remember_ticket_owner_user_id(channel_id, ticket_owner_user_id)
+                logging.info(
+                    "Recovered ticket owner %s for channel %s from opener history during message processing.",
+                    ticket_owner_user_id,
+                    channel_id,
+                )
+
+        if ticket_owner_user_id is None and not _is_contributor_member(message.author):
+            ticket_owner_user_id = message.author.id
+            remember_ticket_owner_user_id(channel_id, ticket_owner_user_id)
+            logging.info(
+                "Assigned fallback ticket owner %s for channel %s from first non-contributor message.",
+                ticket_owner_user_id,
+                channel_id,
+            )
 
         if channel_id in channels_awaiting_initial_button_press:
             try:
@@ -842,11 +1061,20 @@ class TicketBot(discord.Client):
             channel_id=channel_id,
             category_id=message.channel.category.id,
             initial_button_intent=current_intent_from_map,
+            conversation_owner_id=ticket_owner_user_id,
         )
 
         if ticket_run_context.project_context == "unknown":
             return
-        if channel_id in stopped_channels:
+        if action == "contributor_override":
+            override_prompt = _normalize_contributor_override_prompt(message.content)
+            if override_prompt is None:
+                return
+            await self._handle_stopped_ticket_contributor_override(
+                message,
+                ticket_run_context,
+                override_prompt,
+            )
             return
 
         logging.info(f"Processing ticket message in {channel_id} from {message.author.name} (Context: {ticket_run_context.project_context}, Intent: {current_intent_from_map})")

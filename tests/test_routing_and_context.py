@@ -1,6 +1,7 @@
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents import MaxTurnsExceeded, RunContextWrapper, Runner
@@ -50,13 +51,117 @@ from ticket_investigation.runtime import (
 from ysupport import (
     TicketBot,
     _canonicalize_current_user_message,
+    _classify_ticket_message_action,
+    _extract_ticket_owner_user_id_from_messages,
     _guardrail_tripwire_reply,
+    _normalize_contributor_override_prompt,
     _outer_moderator_access_reply,
     _outer_support_boundary_reply,
 )
 
 
 class RoutingTests(unittest.TestCase):
+    def test_normalize_contributor_override_prompt_strips_prefix(self) -> None:
+        self.assertEqual(
+            _normalize_contributor_override_prompt("[y] find the apy logic"),
+            "find the apy logic",
+        )
+        self.assertIsNone(_normalize_contributor_override_prompt("find the apy logic"))
+        self.assertIsNone(_normalize_contributor_override_prompt("[y]   "))
+
+    def test_extract_ticket_owner_user_id_from_messages_prefers_bot_opener_mention(self) -> None:
+        human_message = SimpleNamespace(
+            author=SimpleNamespace(bot=False),
+            mentions=[SimpleNamespace(id=999, bot=False)],
+        )
+        bot_opener = SimpleNamespace(
+            author=SimpleNamespace(bot=True),
+            mentions=[
+                SimpleNamespace(id=111, bot=True),
+                SimpleNamespace(id=222, bot=False),
+            ],
+        )
+
+        self.assertEqual(
+            _extract_ticket_owner_user_id_from_messages([human_message, bot_opener]),
+            222,
+        )
+
+    @patch("ysupport._is_contributor_member")
+    def test_classify_ticket_message_action_active_ticket_only_allows_owner(
+        self,
+        mock_is_contributor_member,
+    ) -> None:
+        mock_is_contributor_member.side_effect = lambda author: author.id == 2
+        owner = SimpleNamespace(id=1)
+        contributor = SimpleNamespace(id=2)
+        stranger = SimpleNamespace(id=3)
+
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=owner,
+                content="help",
+                ticket_owner_user_id=1,
+                stopped=False,
+            ),
+            "process",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=contributor,
+                content="I have thoughts",
+                ticket_owner_user_id=1,
+                stopped=False,
+            ),
+            "ignore",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=stranger,
+                content="same issue",
+                ticket_owner_user_id=1,
+                stopped=False,
+            ),
+            "ignore",
+        )
+
+    @patch("ysupport._is_contributor_member")
+    def test_classify_ticket_message_action_stopped_ticket_allows_only_prefixed_contributor(
+        self,
+        mock_is_contributor_member,
+    ) -> None:
+        mock_is_contributor_member.side_effect = lambda author: author.id == 2
+        owner = SimpleNamespace(id=1)
+        contributor = SimpleNamespace(id=2)
+
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=owner,
+                content="[y] try again",
+                ticket_owner_user_id=1,
+                stopped=True,
+            ),
+            "ignore",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=contributor,
+                content="please retry",
+                ticket_owner_user_id=1,
+                stopped=True,
+            ),
+            "ignore",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=contributor,
+                content="[y] retry with vault evidence",
+                ticket_owner_user_id=1,
+                stopped=True,
+            ),
+            "contributor_override",
+        )
+
     def test_guardrail_tripwire_reply_prefers_guardrail_message(self) -> None:
         exc = type(
             "FakeTripwire",
