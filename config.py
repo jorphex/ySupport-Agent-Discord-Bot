@@ -438,7 +438,7 @@ def build_rpc_urls(env: dict[str, str] | None = None) -> dict[str, str]:
         "arbitrum": _read("ARBITRUM_RPC_URL", _alchemy_rpc_url("arb-mainnet")),
         "optimism": _read("OPTIMISM_RPC_URL", _alchemy_rpc_url("opt-mainnet")),
         "sonic": _read("SONIC_RPC_URL", _alchemy_rpc_url("sonic-mainnet")),
-        "katana": _read("KATANA_RPC_URL", "https://rpc.katana.network"),
+        "katana": _read("KATANA_RPC_URL", _alchemy_rpc_url("katana-mainnet")),
     }
 
 
