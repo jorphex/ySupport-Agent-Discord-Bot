@@ -48,6 +48,7 @@ from state import (
     persist_public_conversation,
     persist_ticket_state,
     public_conversations,
+    recover_ticket_channel_from_runtime_stop,
     remember_ticket_owner_user_id,
     reset_ticket_channel_for_terminal_reply,
     stopped_channels,
@@ -250,6 +251,15 @@ def _boundary_reply_from_output(output_info: dict[str, Any]) -> str | None:
     return None
 
 
+def _should_stop_for_boundary_output(output_info: dict[str, Any] | None) -> bool:
+    if not isinstance(output_info, dict):
+        return True
+    classification = str(output_info.get("classification") or "").strip()
+    if classification == "security_process_boundary":
+        return False
+    return True
+
+
 def _render_support_reply(raw_reply: str) -> str:
     actual_mention = f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
     return raw_reply.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, actual_mention)
@@ -407,6 +417,28 @@ def _classify_ticket_message_action(
     if author.id != ticket_owner_user_id:
         return "ignore"
     return "process"
+
+
+def _maybe_recover_runtime_stopped_ticket_for_message(
+    *,
+    channel_id: int,
+    author: discord.abc.User,
+    ticket_owner_user_id: int | None,
+) -> bool:
+    if channel_id not in stopped_channels:
+        return False
+    if _is_contributor_member(author):
+        return False
+    if ticket_owner_user_id is not None and author.id != ticket_owner_user_id:
+        return False
+    recovered = recover_ticket_channel_from_runtime_stop(channel_id)
+    if recovered:
+        logging.info(
+            "Recovered runtime-stopped ticket %s on new owner-side message from %s.",
+            channel_id,
+            getattr(author, "name", author.id),
+        )
+    return recovered
 
 
 async def _build_recent_channel_history_fallback(
@@ -769,7 +801,7 @@ class TicketBot(discord.Client):
                     public_conversations.pop(original_author_id, None)
                     clear_public_conversation(original_author_id)
                     await original_message.reply(
-                        f"Sorry, an error occurred while processing that request. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>.",
+                        f"Sorry, an error occurred while processing that request. <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>",
                         mention_author=False,
                         suppress_embeds=True,
                     )
@@ -867,7 +899,7 @@ class TicketBot(discord.Client):
                     exc_info=True,
                 )
                 final_reply = (
-                    f"Contributor override failed. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                    f"Contributor override failed. <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
                 )
             finally:
                 await progress_reporter.close()
@@ -998,6 +1030,20 @@ class TicketBot(discord.Client):
         hydrate_ticket_state(channel_id)
         monitored_new_channels.add(channel_id)
         ticket_owner_user_id = ticket_owner_user_id_by_channel.get(channel_id)
+        if ticket_owner_user_id is None and isinstance(message.channel, discord.TextChannel):
+            ticket_owner_user_id = await _detect_ticket_owner_user_id(message.channel)
+            if ticket_owner_user_id is not None:
+                remember_ticket_owner_user_id(channel_id, ticket_owner_user_id)
+                logging.info(
+                    "Recovered ticket owner %s for channel %s from opener history during message processing.",
+                    ticket_owner_user_id,
+                    channel_id,
+                )
+        _maybe_recover_runtime_stopped_ticket_for_message(
+            channel_id=channel_id,
+            author=message.author,
+            ticket_owner_user_id=ticket_owner_user_id,
+        )
         action = _classify_ticket_message_action(
             author=message.author,
             content=message.content,
@@ -1015,19 +1061,6 @@ class TicketBot(discord.Client):
                 _is_contributor_member(message.author),
             )
             return
-
-        if (
-            ticket_owner_user_id is None
-            and isinstance(message.channel, discord.TextChannel)
-        ):
-            ticket_owner_user_id = await _detect_ticket_owner_user_id(message.channel)
-            if ticket_owner_user_id is not None:
-                remember_ticket_owner_user_id(channel_id, ticket_owner_user_id)
-                logging.info(
-                    "Recovered ticket owner %s for channel %s from opener history during message processing.",
-                    ticket_owner_user_id,
-                    channel_id,
-                )
 
         if ticket_owner_user_id is None and not _is_contributor_member(message.author):
             ticket_owner_user_id = message.author.id
@@ -1143,19 +1176,25 @@ class TicketBot(discord.Client):
                 progress_reporter = _DiscordProgressReporter(channel, channel_id)
                 final_reply = "An unexpected error occurred."
                 should_stop_processing = False
+                stop_reason = None
 
                 moderator_access_reply = _outer_moderator_access_reply(aggregated_text)
                 if moderator_access_reply is not None:
                     final_reply = moderator_access_reply
                     should_stop_processing = True
+                    stop_reason = "boundary_stop"
                     reset_ticket_channel_for_terminal_reply(channel_id)
                 else:
                     boundary_output = await _outer_support_boundary_result(aggregated_text)
                     boundary_reply = _boundary_reply_from_output(boundary_output)
                     if boundary_reply is not None:
                         final_reply = boundary_reply
-                        should_stop_processing = True
-                        reset_ticket_channel_for_terminal_reply(channel_id)
+                        should_stop_processing = _should_stop_for_boundary_output(
+                            boundary_output
+                        )
+                        if should_stop_processing:
+                            stop_reason = "boundary_stop"
+                            reset_ticket_channel_for_terminal_reply(channel_id)
                     else:
                         try:
                             worker_result = await self.investigation_executor.execute_turn(
@@ -1188,8 +1227,17 @@ class TicketBot(discord.Client):
                         except InputGuardrailTripwireTriggered as e:
                             logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                             final_reply = _guardrail_tripwire_reply(e)
-                            should_stop_processing = True
-                            reset_ticket_channel_for_terminal_reply(channel_id)
+                            guardrail_info = getattr(
+                                getattr(getattr(e, "guardrail_result", None), "output", None),
+                                "output_info",
+                                None,
+                            )
+                            should_stop_processing = _should_stop_for_boundary_output(
+                                guardrail_info if isinstance(guardrail_info, dict) else None
+                            )
+                            if should_stop_processing:
+                                stop_reason = "boundary_stop"
+                                reset_ticket_channel_for_terminal_reply(channel_id)
                         except MaxTurnsExceeded:
                             logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                             if run_context.repo_search_calls:
@@ -1203,16 +1251,24 @@ class TicketBot(discord.Client):
                                     f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}> may need to intervene."
                                 )
                             should_stop_processing = True
-                            reset_ticket_channel_for_terminal_reply(channel_id)
+                            stop_reason = "runtime_error"
                         except AgentsException as e:
                             logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                            final_reply = f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again or notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                            final_reply = (
+                                f"Sorry, an error occurred while processing the request "
+                                f"({type(e).__name__}). Please try again. "
+                                f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
+                            )
                             should_stop_processing = True
-                            reset_ticket_channel_for_terminal_reply(channel_id)
+                            stop_reason = "runtime_error"
                         except Exception as e:
                             logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                            final_reply = f"An unexpected error occurred. Please notify <@{config.HUMAN_HANDOFF_TARGET_USER_ID}>."
+                            final_reply = (
+                                f"An unexpected error occurred. "
+                                f"<@{config.HUMAN_HANDOFF_TARGET_USER_ID}>"
+                            )
                             should_stop_processing = True
+                            stop_reason = "runtime_error"
                         finally:
                             await progress_reporter.close()
 
@@ -1225,13 +1281,19 @@ class TicketBot(discord.Client):
                     last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
                     logging.info(f"Sent ticket reply/replies in channel {channel_id}. Stop processing flag: {should_stop_processing}")
                     if should_stop_processing and channel_id not in stopped_channels:
-                        mark_ticket_channel_stopped(channel_id)
+                        mark_ticket_channel_stopped(
+                            channel_id,
+                            reason=stop_reason or "runtime_error",
+                        )
                         logging.info(f"Added channel {channel_id} to stopped channels due to error/handoff tag.")
                     elif not should_stop_processing:
                         persist_ticket_state(channel_id)
                 except discord.Forbidden:
                     logging.error(f"Missing permissions to send message in channel {channel_id}")
-                    mark_ticket_channel_stopped(channel_id)
+                    mark_ticket_channel_stopped(
+                        channel_id,
+                        reason="runtime_error",
+                    )
                 except Exception as e:
                     logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
         except asyncio.CancelledError:

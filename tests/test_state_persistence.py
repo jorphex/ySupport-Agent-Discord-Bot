@@ -27,7 +27,9 @@ from state import (
     persist_public_conversation,
     persist_ticket_state,
     public_conversations,
+    recover_ticket_channel_from_runtime_stop,
     reset_ticket_channel_for_terminal_reply,
+    stop_reasons_by_channel,
     stopped_channels,
     stop_ticket_channel,
     ticket_owner_user_id_by_channel,
@@ -56,6 +58,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
                 ticket_owner_user_id_by_channel[channel_id] = 555
                 stopped_channels.add(channel_id)
+                stop_reasons_by_channel[channel_id] = "manual_stop"
                 channels_awaiting_initial_button_press.add(channel_id)
                 channel_intent_after_button[channel_id] = "investigate_issue"
                 bug_report_debounce_channels.add(channel_id)
@@ -90,6 +93,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 )
                 self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 555)
                 self.assertIn(channel_id, stopped_channels)
+                self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
                 self.assertIn(channel_id, channels_awaiting_initial_button_press)
                 self.assertEqual(
                     channel_intent_after_button[channel_id],
@@ -123,10 +127,12 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 self.assertNotIn(channel_id, last_wallet_by_channel)
                 self.assertIn(channel_id, stopped_channels)
                 self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 777)
+                self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
                 payload = state._read_json(ticket_dir / f"{channel_id}.json")
                 self.assertIsNotNone(payload)
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
+                self.assertEqual(payload["stop_reason"], "manual_stop")
                 self.assertEqual(payload["history"], [])
                 self.assertEqual(payload["ticket_owner_user_id"], 777)
 
@@ -176,12 +182,14 @@ class TicketStatePersistenceTests(unittest.TestCase):
             ):
                 conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
                 ticket_investigation_jobs[channel_id] = TicketInvestigationJob(channel_id=channel_id)
+                ticket_owner_user_id_by_channel[channel_id] = 999
                 persist_ticket_state(channel_id)
 
                 reset_ticket_channel_for_terminal_reply(channel_id)
 
                 self.assertNotIn(channel_id, conversation_threads)
                 self.assertNotIn(channel_id, ticket_investigation_jobs)
+                self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 999)
                 self.assertFalse((ticket_dir / f"{channel_id}.json").exists())
 
     def test_stop_ticket_channel_and_mark_ticket_channel_stopped_persist_stop_state(self) -> None:
@@ -198,18 +206,60 @@ class TicketStatePersistenceTests(unittest.TestCase):
 
                 stop_ticket_channel(channel_id)
                 self.assertIn(channel_id, stopped_channels)
+                self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
 
                 payload = state._read_json(ticket_dir / f"{channel_id}.json")
                 self.assertIsNotNone(payload)
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
+                self.assertEqual(payload["stop_reason"], "manual_stop")
 
                 stopped_channels.discard(channel_id)
-                mark_ticket_channel_stopped(channel_id)
+                stop_reasons_by_channel.pop(channel_id, None)
+                mark_ticket_channel_stopped(channel_id, reason="runtime_error")
                 payload = state._read_json(ticket_dir / f"{channel_id}.json")
                 self.assertIsNotNone(payload)
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
+                self.assertEqual(payload["stop_reason"], "runtime_error")
+
+    def test_recover_ticket_channel_from_runtime_stop_preserves_context(self) -> None:
+        channel_id = 106
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+                patch("state.reset_ticket_codex_session"),
+            ):
+                job = TicketInvestigationJob(channel_id=channel_id)
+                job.record_requested_intent("data_deposits_withdrawals_start")
+                job.mark_waiting_for_user()
+                job.remember_wallet("0xabc")
+                ticket_investigation_jobs[channel_id] = job
+                last_wallet_by_channel[channel_id] = "0xabc"
+                ticket_owner_user_id_by_channel[channel_id] = 888
+                stopped_channels.add(channel_id)
+                stop_reasons_by_channel[channel_id] = "runtime_error"
+
+                persisted_before = state._read_json(ticket_dir / f"{channel_id}.json")
+                if persisted_before is None:
+                    persist_ticket_state(channel_id)
+
+                recovered = recover_ticket_channel_from_runtime_stop(channel_id)
+
+                self.assertTrue(recovered)
+                self.assertNotIn(channel_id, stopped_channels)
+                self.assertNotIn(channel_id, stop_reasons_by_channel)
+                self.assertEqual(last_wallet_by_channel[channel_id], "0xabc")
+                self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 888)
+                self.assertIsNotNone(ticket_investigation_jobs[channel_id])
+                payload = state._read_json(ticket_dir / f"{channel_id}.json")
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertFalse(payload["stopped"])
+                self.assertIsNone(payload["stop_reason"])
 
 
 class PublicStatePersistenceTests(unittest.TestCase):

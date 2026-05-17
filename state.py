@@ -25,6 +25,7 @@ InvestigationMode = Literal[
     "waiting_for_user",
     "escalated_to_human",
 ]
+TicketStopReason = Literal["manual_stop", "boundary_stop", "runtime_error"]
 
 
 # State & Context Definitions
@@ -132,6 +133,7 @@ class TicketInvestigationJob:
 
 # Globals
 stopped_channels: set[int] = set()
+stop_reasons_by_channel: Dict[int, TicketStopReason] = {}
 conversation_threads: Dict[int, List[TResponseInputItem]] = {}
 pending_messages: Dict[int, str] = {}
 pending_attachments_by_channel: Dict[int, List[Dict[str, Any]]] = {}
@@ -229,6 +231,13 @@ def hydrate_ticket_state(channel_id: int) -> None:
         ticket_owner_user_id_by_channel[channel_id] = int(ticket_owner_user_id)
     if payload.get("stopped"):
         stopped_channels.add(channel_id)
+        stop_reason = payload.get("stop_reason")
+        if isinstance(stop_reason, str) and stop_reason in {
+            "manual_stop",
+            "boundary_stop",
+            "runtime_error",
+        }:
+            stop_reasons_by_channel[channel_id] = stop_reason
     if payload.get("awaiting_initial_button_press"):
         channels_awaiting_initial_button_press.add(channel_id)
     intent = payload.get("channel_intent_after_button")
@@ -253,6 +262,7 @@ def persist_ticket_state(channel_id: int) -> None:
         "last_bot_reply_at": _format_datetime(last_bot_reply_ts_by_channel.get(channel_id)),
         "ticket_owner_user_id": ticket_owner_user_id_by_channel.get(channel_id),
         "stopped": channel_id in stopped_channels,
+        "stop_reason": stop_reasons_by_channel.get(channel_id),
         "awaiting_initial_button_press": channel_id in channels_awaiting_initial_button_press,
         "channel_intent_after_button": channel_intent_after_button.get(channel_id),
         "bug_report_debounce": channel_id in bug_report_debounce_channels,
@@ -264,10 +274,17 @@ def clear_ticket_channel_state(
     channel_id: int,
     *,
     keep_stopped: bool = False,
+    stop_reason: TicketStopReason | None = None,
+    preserve_ticket_owner: bool = False,
     delete_persisted: bool = False,
 ) -> None:
     preserved_ticket_owner_user_id = (
         ticket_owner_user_id_by_channel.get(channel_id)
+        if keep_stopped or preserve_ticket_owner
+        else None
+    )
+    preserved_stop_reason = (
+        stop_reason or stop_reasons_by_channel.get(channel_id) or "manual_stop"
         if keep_stopped
         else None
     )
@@ -284,8 +301,11 @@ def clear_ticket_channel_state(
     bug_report_debounce_channels.discard(channel_id)
     if keep_stopped:
         stopped_channels.add(channel_id)
+        if preserved_stop_reason is not None:
+            stop_reasons_by_channel[channel_id] = preserved_stop_reason
     else:
         stopped_channels.discard(channel_id)
+        stop_reasons_by_channel.pop(channel_id, None)
         monitored_new_channels.discard(channel_id)
     if preserved_ticket_owner_user_id is not None:
         ticket_owner_user_id_by_channel[channel_id] = preserved_ticket_owner_user_id
@@ -300,21 +320,44 @@ def reset_ticket_channel_for_terminal_reply(channel_id: int) -> None:
     clear_ticket_channel_state(
         channel_id,
         keep_stopped=False,
+        preserve_ticket_owner=True,
         delete_persisted=True,
     )
 
 
-def stop_ticket_channel(channel_id: int) -> None:
+def stop_ticket_channel(
+    channel_id: int,
+    *,
+    reason: TicketStopReason = "manual_stop",
+) -> None:
     clear_ticket_channel_state(
         channel_id,
         keep_stopped=True,
+        stop_reason=reason,
         delete_persisted=False,
     )
 
 
-def mark_ticket_channel_stopped(channel_id: int) -> None:
+def mark_ticket_channel_stopped(
+    channel_id: int,
+    *,
+    reason: TicketStopReason = "runtime_error",
+) -> None:
     stopped_channels.add(channel_id)
+    stop_reasons_by_channel[channel_id] = reason
     persist_ticket_state(channel_id)
+
+
+def recover_ticket_channel_from_runtime_stop(channel_id: int) -> bool:
+    if channel_id not in stopped_channels:
+        return False
+    if stop_reasons_by_channel.get(channel_id) != "runtime_error":
+        return False
+    stopped_channels.discard(channel_id)
+    stop_reasons_by_channel.pop(channel_id, None)
+    reset_ticket_codex_session(channel_id)
+    persist_ticket_state(channel_id)
+    return True
 
 
 def remember_ticket_owner_user_id(channel_id: int, user_id: int) -> None:

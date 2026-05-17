@@ -278,7 +278,7 @@ def verify_support_turn_result(
             f"Support result contains a forbidden Discord redirect pattern: {forbidden_pattern}"
         )
 
-    allowed_tools = set(request.constraints.get("allowed_tools", []))
+    allowed_tools = _effective_allowed_tools(request)
     unexpected_tools = [
         tool for tool in result.used_tools if not _is_allowed_reported_tool(tool, allowed_tools)
     ]
@@ -308,6 +308,16 @@ def verify_support_turn_result(
         )
 
     return normalized_result
+
+
+def _effective_allowed_tools(request: SupportTurnRequest) -> set[str]:
+    allowed_tools = set(request.constraints.get("allowed_tools", []))
+    if any(
+        isinstance(attachment, dict) and attachment.get("is_image")
+        for attachment in request.attachments
+    ):
+        allowed_tools.add("view_image")
+    return allowed_tools
 
 
 def _normalize_optional_text(value: Any) -> str | None:

@@ -83,7 +83,10 @@ class InitialInquiryView(View):
             await interaction.channel.send(STANDARD_REDIRECT_MESSAGE, suppress_embeds=True)
         else:
             await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False, suppress_embeds=True)
-        mark_ticket_channel_stopped(interaction.channel.id)
+        mark_ticket_channel_stopped(
+            interaction.channel.id,
+            reason="boundary_stop",
+        )
         logging.info(f"BD/Partner inquiry redirected in {interaction.channel.id}. Bot stopped.")
 
     @button(label="❓ Other/My Issue Isn't Listed", style=discord.ButtonStyle.secondary, custom_id="initial_other_issue", row=2)

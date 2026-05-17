@@ -90,6 +90,38 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertNotIn("\r", config_text)
 
+    def test_prepare_codex_support_home_syncs_auth_source_from_canonical_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_source = Path(temp_dir) / "auth-source.json"
+            auth_source.write_text('{"auth_mode":"stale"}', encoding="utf-8")
+            canonical_source = Path(temp_dir) / "canonical-auth.json"
+            canonical_source.write_text('{"auth_mode":"fresh"}', encoding="utf-8")
+
+            with mock.patch(
+                "codex_support_home._choose_ysupport_stdio_launcher",
+                return_value=None,
+            ), mock.patch(
+                "codex_support_home._is_http_url_reachable",
+                return_value=False,
+            ):
+                home = prepare_codex_support_home(
+                    codex_home=Path(temp_dir) / "bot-home",
+                    auth_source=auth_source,
+                    auth_sync_source=canonical_source,
+                    ysupport_mcp_url="http://127.0.0.1:8000/mcp",
+                    mcp_server_api_key="secret-key",
+                    web_search_mode="live",
+                )
+
+            self.assertEqual(
+                auth_source.read_text(encoding="utf-8"),
+                '{"auth_mode":"fresh"}',
+            )
+            self.assertEqual(
+                home.auth_path.read_text(encoding="utf-8"),
+                '{"auth_mode":"fresh"}',
+            )
+
     def test_read_codex_mcp_url_from_home_reads_ysupport_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             codex_home = Path(temp_dir)
@@ -311,6 +343,41 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             support_request.constraints["allowed_tools"],
             ["shell", "web_search", "ysupport_mcp"],
         )
+
+    def test_verify_support_turn_result_allows_view_image_for_image_backed_request(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="What do these screenshots show?",
+            recent_transcript=[],
+            attachments=[
+                {
+                    "filename": "image.png",
+                    "url": "https://cdn.example.test/image.png",
+                    "content_type": "image/png",
+                    "size": 1234,
+                    "is_image": True,
+                }
+            ],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="investigate_issue",
+            requested_intent="investigate_issue",
+            evidence={},
+            support_state={},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer="The screenshot shows a Yearn vault APY breakdown.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Checked the screenshots and Yearn support data.",
+            used_tools=["view_image", "ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertEqual(verified.used_tools, ["view_image", "ysupport_mcp"])
 
     def test_verify_support_turn_result_rejects_discord_redirects(self) -> None:
         request = SupportTurnRequest(
@@ -792,3 +859,61 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(task_one, task_two)
 
         self.assertTrue(second_started.is_set())
+
+    async def test_codex_support_endpoint_retries_once_on_auth_error(self) -> None:
+        response = SupportTurnResult(
+            answer="support-ok",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="checked",
+            used_tools=["shell"],
+        ).to_json()
+        call_count = 0
+
+        async def fake_run_streaming_subprocess(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("refresh_token_reused token_expired")
+            return response
+
+        endpoint = CodexSupportTicketExecutionJsonEndpoint(
+            codex_command=["codex", "exec"],
+            allowed_command_prefixes=[["codex", "exec"]],
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="investigate support",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 111,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 111,
+                "requested_intent": "docs_qa",
+                "mode": "waiting_for_user",
+                "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.codex_support_exec",
+            wants_bug_review_status=False,
+        )
+
+        with mock.patch.object(
+            endpoint,
+            "_prepare_support_home",
+            return_value=False,
+        ) as mock_prepare, mock.patch(
+            "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+            side_effect=fake_run_streaming_subprocess,
+        ):
+            response_json = await endpoint.execute_json_turn(request.to_json())
+
+        transport_result = TicketExecutionTransportResult.from_json(response_json)
+        self.assertEqual(
+            transport_result.flow_outcome["raw_final_reply"],
+            "support-ok",
+        )
+        self.assertEqual(call_count, 2)
+        self.assertEqual(mock_prepare.call_count, 2)

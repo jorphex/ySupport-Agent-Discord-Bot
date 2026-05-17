@@ -22,6 +22,10 @@ from state import (
     pending_wallet_confirmation_by_channel,
     public_conversations,
     PublicConversation,
+    stopped_channels,
+    stop_reasons_by_channel,
+    ticket_investigation_jobs,
+    ticket_owner_user_id_by_channel,
 )
 from ticket_investigation.worker import TicketInvestigationWorker
 from support_agents import (
@@ -54,6 +58,7 @@ from ysupport import (
     _classify_ticket_message_action,
     _extract_ticket_owner_user_id_from_messages,
     _guardrail_tripwire_reply,
+    _maybe_recover_runtime_stopped_ticket_for_message,
     _normalize_contributor_override_prompt,
     _outer_moderator_access_reply,
     _outer_support_boundary_reply,
@@ -161,6 +166,54 @@ class RoutingTests(unittest.TestCase):
             ),
             "contributor_override",
         )
+
+    @patch("ysupport._is_contributor_member")
+    def test_runtime_stopped_ticket_recovers_for_owner_message(
+        self,
+        mock_is_contributor_member,
+    ) -> None:
+        mock_is_contributor_member.return_value = False
+        channel_id = 77
+        owner = SimpleNamespace(id=1, name="owner")
+        stopped_channels.add(channel_id)
+        stop_reasons_by_channel[channel_id] = "runtime_error"
+        try:
+            self.assertTrue(
+                _maybe_recover_runtime_stopped_ticket_for_message(
+                    channel_id=channel_id,
+                    author=owner,
+                    ticket_owner_user_id=1,
+                )
+            )
+            self.assertNotIn(channel_id, stopped_channels)
+            self.assertNotIn(channel_id, stop_reasons_by_channel)
+        finally:
+            stopped_channels.discard(channel_id)
+            stop_reasons_by_channel.pop(channel_id, None)
+
+    @patch("ysupport._is_contributor_member")
+    def test_boundary_stopped_ticket_does_not_recover_for_owner_message(
+        self,
+        mock_is_contributor_member,
+    ) -> None:
+        mock_is_contributor_member.return_value = False
+        channel_id = 78
+        owner = SimpleNamespace(id=1, name="owner")
+        stopped_channels.add(channel_id)
+        stop_reasons_by_channel[channel_id] = "boundary_stop"
+        try:
+            self.assertFalse(
+                _maybe_recover_runtime_stopped_ticket_for_message(
+                    channel_id=channel_id,
+                    author=owner,
+                    ticket_owner_user_id=1,
+                )
+            )
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(stop_reasons_by_channel[channel_id], "boundary_stop")
+        finally:
+            stopped_channels.discard(channel_id)
+            stop_reasons_by_channel.pop(channel_id, None)
 
     def test_guardrail_tripwire_reply_prefers_guardrail_message(self) -> None:
         exc = type(
@@ -1087,13 +1140,14 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                 with patch("ysupport.send_long_message", new=fake_send_long_message):
                     with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
                         await bot.process_ticket_message(channel_id, run_context)
+            self.assertEqual(fake_channel.sent_messages, ["Boundary reply"])
+            self.assertIn(channel_id, stopped_channels)
         finally:
             pending_messages.pop(channel_id, None)
             conversation_threads.pop(channel_id, None)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
+            stopped_channels.discard(channel_id)
             clear_ticket_investigation_job(channel_id)
-
-        self.assertEqual(fake_channel.sent_messages, ["Boundary reply"])
 
     async def test_process_ticket_message_short_circuits_moderator_access_before_executor(self) -> None:
         channel_id = 66
@@ -1129,10 +1183,115 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             pending_messages.pop(channel_id, None)
             conversation_threads.pop(channel_id, None)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
+            stopped_channels.discard(channel_id)
             clear_ticket_investigation_job(channel_id)
 
         self.assertEqual(len(fake_channel.sent_messages), 1)
         self.assertIn("A moderator needs to check this.", fake_channel.sent_messages[0])
+
+    async def test_process_ticket_message_keeps_security_process_boundary_ticket_active(self) -> None:
+        channel_id = 67
+        fake_channel = _FakeDiscordChannel(channel_id)
+
+        class _FailingExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                raise AssertionError("Security-process boundary should stop before executor runs.")
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FailingExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="other_free_form",
+        )
+
+        pending_messages[channel_id] = "I want to report a bug bounty issue."
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        stopped_channels.discard(channel_id)
+        clear_ticket_investigation_job(channel_id)
+
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "security_process_boundary",
+                "tripwire_triggered": True,
+                "message": "Please use the Yearn security process.",
+            }
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
+                with patch("ysupport.send_long_message", new=fake_send_long_message):
+                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                        await bot.process_ticket_message(channel_id, run_context)
+            self.assertEqual(
+                fake_channel.sent_messages,
+                ["Please use the Yearn security process."],
+            )
+            self.assertNotIn(channel_id, stopped_channels)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            stopped_channels.discard(channel_id)
+            clear_ticket_investigation_job(channel_id)
+
+    async def test_process_ticket_message_runtime_error_preserves_ticket_context(self) -> None:
+        channel_id = 68
+        fake_channel = _FakeDiscordChannel(channel_id)
+
+        class _FailingExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                raise RuntimeError("boom")
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FailingExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="investigate_issue",
+        )
+
+        pending_messages[channel_id] = "Something failed."
+        conversation_threads[channel_id] = [{"role": "user", "content": "Earlier context"}]
+        last_wallet_by_channel[channel_id] = "0xabc"
+        ticket_owner_user_id_by_channel[channel_id] = 123
+        job = get_or_create_ticket_investigation_job(channel_id)
+        job.record_requested_intent("investigate_issue")
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with patch("ysupport.send_long_message", new=fake_send_long_message):
+                with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    await bot.process_ticket_message(channel_id, run_context)
+
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(stop_reasons_by_channel[channel_id], "runtime_error")
+            self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 123)
+            self.assertEqual(last_wallet_by_channel[channel_id], "0xabc")
+            self.assertIn(channel_id, ticket_investigation_jobs)
+            self.assertEqual(
+                conversation_threads[channel_id],
+                [{"role": "user", "content": "Earlier context"}],
+            )
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_wallet_by_channel.pop(channel_id, None)
+            ticket_owner_user_id_by_channel.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            stopped_channels.discard(channel_id)
+            stop_reasons_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
 
 
 @dataclass

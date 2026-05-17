@@ -84,6 +84,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         repo_root: str | Path | None = None,
         codex_home: str | Path | None = None,
         codex_auth_source: str | Path | None = None,
+        codex_auth_sync_source: str | Path | None = None,
         session_dir: str | Path | None = None,
         session_max_age_hours: int | None = None,
         ysupport_mcp_url: str | None = None,
@@ -109,6 +110,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.repo_root = Path(repo_root) if repo_root else None
         self.codex_home = Path(codex_home) if codex_home else None
         self.codex_auth_source = Path(codex_auth_source) if codex_auth_source else None
+        self.codex_auth_sync_source = (
+            Path(codex_auth_sync_source) if codex_auth_sync_source else None
+        )
         self.session_manager = (
             CodexSupportSessionManager(
                 session_dir,
@@ -138,6 +142,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
         self.execution_locks = _ConversationExecutionLocks()
+        self._prepare_support_home()
 
     async def execute_json_turn(
         self,
@@ -155,18 +160,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
             ).to_json()
         conversation_key = _conversation_key_for_request(request)
         async with self.execution_locks.acquire(conversation_key):
-            ysupport_mcp_enabled = False
-            if self.codex_home and self.ysupport_mcp_url and self.mcp_server_api_key:
-                support_home = prepare_codex_support_home(
-                    codex_home=self.codex_home,
-                    repo_root=self.repo_root,
-                    mcp_container_name=self.ysupport_mcp_container,
-                    auth_source=self.codex_auth_source,
-                    ysupport_mcp_url=self.ysupport_mcp_url,
-                    mcp_server_api_key=self.mcp_server_api_key,
-                    web_search_mode=self.web_search_mode,
-                )
-                ysupport_mcp_enabled = support_home.ysupport_mcp_enabled
+            ysupport_mcp_enabled = self._prepare_support_home()
 
             workspace = TicketExecutionWorkspace(
                 artifact_dir=self.artifact_dir or None,
@@ -205,34 +199,10 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 )
                 exported_run_dir: Path | None = None
                 try:
-                    response_text = await _run_codex_support_json_subprocess(
-                        command=bundle.command,
-                        stdin_text=bundle.prompt_text,
-                        cwd=self.cwd or str(run_dir),
-                        env=build_effective_execution_env(
-                            env=self.env,
-                            inherit_parent_env=self.inherit_parent_env,
-                            run_dir=run_dir,
-                        ),
-                        timeout_seconds=self.timeout_seconds,
-                        max_output_chars=self.max_output_chars,
-                        max_error_chars=self.max_error_chars,
-                        timeout_message=(
-                            f"Codex support execution timed out after {self.timeout_seconds} seconds."
-                        ),
-                        empty_stdout_message="Codex support execution returned empty stdout.",
-                        oversized_stdout_message="Codex support execution returned too much stdout.",
-                        metadata={
-                            "base_command": self.codex_command,
-                            "command": bundle.command,
-                            "cwd": self.cwd or str(run_dir),
-                        },
-                        artifact_run_dir=run_dir,
-                        progress_callback=(
-                            hooks.send_progress_update
-                            if hooks is not None
-                            else None
-                        ),
+                    response_text = await self._run_with_auth_retry(
+                        bundle=bundle,
+                        run_dir=run_dir,
+                        hooks=hooks,
                     )
                 except Exception as exc:
                     if (
@@ -270,6 +240,71 @@ class CodexSupportTicketExecutionJsonEndpoint:
                     support_request,
                 )
                 return support_result_to_transport_result(support_result, request).to_json()
+
+    def _prepare_support_home(self) -> bool:
+        if not (self.codex_home and self.ysupport_mcp_url and self.mcp_server_api_key):
+            return False
+        support_home = prepare_codex_support_home(
+            codex_home=self.codex_home,
+            repo_root=self.repo_root,
+            mcp_container_name=self.ysupport_mcp_container,
+            auth_source=self.codex_auth_source,
+            auth_sync_source=self.codex_auth_sync_source,
+            ysupport_mcp_url=self.ysupport_mcp_url,
+            mcp_server_api_key=self.mcp_server_api_key,
+            web_search_mode=self.web_search_mode,
+        )
+        return support_home.ysupport_mcp_enabled
+
+    async def _run_with_auth_retry(
+        self,
+        *,
+        bundle: CodexSupportExecutionBundle,
+        run_dir: Path,
+        hooks: TicketExecutionHooks | None,
+    ) -> str:
+        last_error: Exception | None = None
+        for attempt in range(2):
+            if attempt > 0:
+                self._prepare_support_home()
+            try:
+                return await _run_codex_support_json_subprocess(
+                    command=bundle.command,
+                    stdin_text=bundle.prompt_text,
+                    cwd=self.cwd or str(run_dir),
+                    env=build_effective_execution_env(
+                        env=self.env,
+                        inherit_parent_env=self.inherit_parent_env,
+                        run_dir=run_dir,
+                    ),
+                    timeout_seconds=self.timeout_seconds,
+                    max_output_chars=self.max_output_chars,
+                    max_error_chars=self.max_error_chars,
+                    timeout_message=(
+                        f"Codex support execution timed out after {self.timeout_seconds} seconds."
+                    ),
+                    empty_stdout_message="Codex support execution returned empty stdout.",
+                    oversized_stdout_message="Codex support execution returned too much stdout.",
+                    metadata={
+                        "base_command": self.codex_command,
+                        "command": bundle.command,
+                        "cwd": self.cwd or str(run_dir),
+                        "auth_retry_attempt": attempt,
+                    },
+                    artifact_run_dir=run_dir,
+                    progress_callback=(
+                        hooks.send_progress_update
+                        if hooks is not None
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0 and _is_codex_auth_error_text(str(exc)):
+                    continue
+                raise
+        assert last_error is not None
+        raise last_error
 
     def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:
         stderr_path = run_dir / "stderr.txt"
@@ -664,6 +699,20 @@ def _parse_json_event(text: str) -> dict[str, object] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _is_codex_auth_error_text(text: str) -> bool:
+    normalized = text.lower()
+    return any(
+        token in normalized
+        for token in (
+            "refresh_token_reused",
+            "token_expired",
+            "failed to refresh token",
+            "provided authentication token is expired",
+            "your access token could not be refreshed",
+        )
+    )
 
 
 def _final_response_from_codex_event(event: dict[str, object]) -> str | None:

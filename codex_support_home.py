@@ -27,6 +27,7 @@ def prepare_codex_support_home(
     repo_root: str | Path | None = None,
     mcp_container_name: str | None = None,
     auth_source: str | Path | None = None,
+    auth_sync_source: str | Path | None = None,
     web_search_mode: str = "live",
 ) -> CodexSupportHome:
     home_dir = Path(codex_home)
@@ -66,8 +67,14 @@ def prepare_codex_support_home(
 
     if auth_source:
         source_path = Path(auth_source)
+        sync_path = Path(auth_sync_source) if auth_sync_source else None
+        _sync_codex_auth_file(source_path, sync_path)
         if source_path.exists():
-            shutil.copy2(source_path, auth_path)
+            _copy_file_if_distinct(source_path, auth_path)
+    elif auth_sync_source:
+        sync_path = Path(auth_sync_source)
+        if sync_path.exists():
+            _copy_file_if_distinct(sync_path, auth_path)
 
     return CodexSupportHome(
         home_dir=home_dir,
@@ -76,6 +83,24 @@ def prepare_codex_support_home(
         instructions_path=instructions_path,
         ysupport_mcp_enabled=ysupport_mcp_enabled,
     )
+
+
+def _sync_codex_auth_file(
+    auth_source_path: Path,
+    sync_source_path: Path | None,
+) -> None:
+    if sync_source_path is None or not sync_source_path.exists():
+        return
+    _copy_file_if_distinct(sync_source_path, auth_source_path)
+
+
+def _copy_file_if_distinct(source_path: Path, destination_path: Path) -> None:
+    source_resolved = source_path.resolve()
+    destination_resolved = destination_path.resolve()
+    if source_resolved == destination_resolved:
+        return
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, destination_path)
 
 
 def build_codex_support_config_toml(
