@@ -8,6 +8,7 @@ from agents.model_settings import Reasoning
 from pydantic import BaseModel, Field
 
 import config
+from chain_access import get_web3_instances
 import tools_lib
 
 
@@ -465,7 +466,7 @@ faq_candidate_extraction_agent = Agent(
 @lru_cache(maxsize=1)
 def _supported_chain_id_map() -> dict[int, str]:
     chain_ids: dict[int, str] = {}
-    for chain_name, web3_instance in tools_lib.WEB3_INSTANCES.items():
+    for chain_name, web3_instance in get_web3_instances().items():
         try:
             chain_ids[int(web3_instance.eth.chain_id)] = chain_name
         except Exception:

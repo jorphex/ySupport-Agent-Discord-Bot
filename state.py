@@ -18,7 +18,11 @@ except ModuleNotFoundError:
 
 
 SpecialtyKey = Literal["data", "docs", "bug"]
-TeamHandoffNoticeStatus = Literal["open", "pending_delivery"]
+TeamHandoffNoticeStatus = Literal[
+    "open",
+    "pending_delivery",
+    "delivered_pending_close",
+]
 InvestigationMode = Literal[
     "idle",
     "collecting",
@@ -436,6 +440,15 @@ def mark_team_handoff_notice_pending_delivery(
     notice.status = "pending_delivery"
     notice.pending_reply_text = reply_text
     notice.pending_reply_message_id = reply_message_id
+    persist_ticket_state(channel_id)
+
+
+def mark_team_handoff_notice_delivered(channel_id: int) -> None:
+    notice = team_handoff_notice_by_channel.get(channel_id)
+    if notice is None:
+        return
+    notice.reply_consumed = True
+    notice.status = "delivered_pending_close"
     persist_ticket_state(channel_id)
 
 

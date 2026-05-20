@@ -17,6 +17,7 @@ import config
 from handoff import (
     build_archived_handoff_notice,
     build_closed_handoff_notice,
+    build_pending_delivery_handoff_notice,
     TelegramSentMessage,
     HandoffRoute,
     build_handoff_notice,
@@ -30,14 +31,7 @@ from handoff import (
     send_telegram_message,
     strip_handoff_placeholder,
 )
-import tools_lib
-from router import (
-    is_message_primarily_address,
-    is_bug_report_query,
-    is_probable_wallet_address,
-    is_wallet_confirmation,
-    is_wallet_rejection,
-)
+from router import is_bug_report_query
 from support_agents import evaluate_support_boundary, is_security_process_exception_request
 from state import (
     BotRunContext,
@@ -57,6 +51,7 @@ from state import (
     last_wallet_by_channel,
     last_bot_reply_ts_by_channel,
     load_telegram_update_offset,
+    mark_team_handoff_notice_delivered,
     mark_team_handoff_notice_pending_delivery,
     mark_ticket_channel_stopped,
     mark_ticket_awaiting_initial_button,
@@ -64,7 +59,6 @@ from state import (
     pending_messages,
     pending_attachments_by_channel,
     pending_tasks,
-    pending_wallet_confirmation_by_channel,
     persist_telegram_update_offset,
     persist_public_conversation,
     persist_ticket_state,
@@ -78,6 +72,7 @@ from state import (
     team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
 )
+from ticket_intake import prepare_ticket_turn_input
 from ticket_investigation.json_endpoint import (
     build_ticket_execution_json_endpoint,
     JsonEndpointTicketExecutionTransport,
@@ -244,76 +239,6 @@ def _message_text_for_turn(message: discord.Message) -> str:
     return ""
 
 
-def _canonicalize_current_user_message(
-    aggregated_text: str,
-    run_context: BotRunContext,
-    resolved_wallet: str | None,
-) -> str:
-    if not resolved_wallet:
-        return aggregated_text
-    if run_context.initial_button_intent in {
-        "data_deposit_check",
-        "data_withdrawal_flow_start",
-        "data_vault_search",
-        "data_deposits_withdrawals_start",
-    }:
-        return resolved_wallet
-    if is_message_primarily_address(aggregated_text) and is_probable_wallet_address(aggregated_text):
-        return resolved_wallet
-    return aggregated_text
-
-
-def _is_wallet_first_data_intent(intent: str | None) -> bool:
-    return intent in {
-        "data_deposit_check",
-        "data_withdrawal_flow_start",
-        "data_deposits_withdrawals_start",
-    }
-
-
-def _known_yearn_address_hint(resolved_target) -> str:
-    kind = getattr(resolved_target, "kind", "unknown")
-    label = getattr(resolved_target, "label", None) or "Known Yearn object"
-    chain = getattr(resolved_target, "chain", None)
-    chain_text = f" on {chain}" if chain else ""
-    if kind == "vault":
-        return (
-            f"Resolved address is a known Yearn vault{chain_text}: {label}. "
-            "Treat it as a vault/product target, not as the user's wallet. "
-            "Do not switch into wallet deposit lookup unless the user separately provides a wallet address."
-        )
-    if kind == "strategy":
-        vault_label = getattr(resolved_target, "vault_label", None)
-        context = f" attached to {vault_label}" if vault_label else ""
-        return (
-            f"Resolved address is a known Yearn strategy{chain_text}: {label}{context}. "
-            "Treat it as a strategy target, not as the user's wallet."
-        )
-    vault_label = getattr(resolved_target, "vault_label", None)
-    context = f" for {vault_label}" if vault_label else ""
-    return (
-        f"Resolved address is a known Yearn staking wrapper or gauge{chain_text}: {label}{context}. "
-        "Treat it as a staking/auxiliary contract target, not as the user's wallet."
-    )
-
-
-def _known_yearn_address_acknowledgement(resolved_target) -> str:
-    label = getattr(resolved_target, "label", None) or "that address"
-    kind = getattr(resolved_target, "kind", "unknown")
-    if kind == "vault":
-        return f"Thank you. I've identified `{label}` as a Yearn vault and am checking it now. This may take a moment..."
-    if kind == "strategy":
-        return f"Thank you. I've identified `{label}` as a Yearn strategy and am checking it now. This may take a moment..."
-    return f"Thank you. I've identified `{label}` as a Yearn staking contract and am checking it now. This may take a moment..."
-
-
-def _vault_url_target_hint(chain: str, vault_address: str) -> str:
-    return (
-        f"User referenced a Yearn vault page URL for chain {chain} and address {vault_address}. "
-        "Treat the linked address as a vault/product target, not as the user's wallet."
-    )
-
-
 def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
     guardrail_info = exc.guardrail_result.output.output_info
     if isinstance(guardrail_info, dict) and "message" in guardrail_info:
@@ -405,6 +330,49 @@ async def _notify_handoff(
         )
         return sent
     return None
+
+
+def _remember_sent_handoff_notice(
+    *,
+    channel_id: int,
+    route: HandoffRoute,
+    notice: TelegramSentMessage | None,
+) -> None:
+    if notice is None:
+        return
+    remember_team_handoff_notice(
+        channel_id,
+        TeamHandoffNotice(
+            telegram_chat_id=notice.chat_id,
+            telegram_message_id=notice.message_id,
+            target=route.target,
+            reason=route.reason,
+            message_text=notice.message_text,
+        ),
+    )
+
+
+async def _notify_and_record_ticket_handoff(
+    *,
+    route: HandoffRoute,
+    summary: str,
+    channel_id: int,
+    guild_id: int | None,
+    investigation_job: TicketInvestigationJob,
+) -> None:
+    notice = await _notify_handoff(
+        route=route,
+        summary=summary,
+        channel_id=channel_id,
+        guild_id=guild_id,
+        source="ticket",
+    )
+    investigation_job.mark_escalated_to_human()
+    _remember_sent_handoff_notice(
+        channel_id=channel_id,
+        route=route,
+        notice=notice,
+    )
 
 
 async def _run_internal_instruction_turn(
@@ -753,7 +721,7 @@ class TicketBot(discord.Client):
             self._telegram_updates_task = asyncio.create_task(
                 self._telegram_handoff_reply_loop()
             )
-        print("------")
+        logging.info("Telegram handoff reply loop initialized: %s", bool(self._telegram_updates_task))
 
     async def close(self) -> None:
         if self._telegram_updates_task is not None:
@@ -768,10 +736,10 @@ class TicketBot(discord.Client):
                 updates = await fetch_telegram_updates(self._telegram_update_offset)
                 for update in updates:
                     update_id = update.get("update_id")
+                    await self._handle_telegram_handoff_update(update)
                     if isinstance(update_id, int):
                         self._telegram_update_offset = update_id + 1
                         persist_telegram_update_offset(self._telegram_update_offset)
-                    await self._handle_telegram_handoff_update(update)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -780,13 +748,18 @@ class TicketBot(discord.Client):
 
     async def _resume_pending_telegram_handoff_replies(self) -> None:
         for channel_id, notice in list(team_handoff_notice_by_channel.items()):
-            if notice.status != "pending_delivery" or not notice.pending_reply_text:
+            if notice.status == "pending_delivery" and notice.pending_reply_text:
+                await self._deliver_telegram_handoff_reply(
+                    channel_id=channel_id,
+                    notice=notice,
+                    team_reply_text=notice.pending_reply_text,
+                )
                 continue
-            await self._deliver_telegram_handoff_reply(
-                channel_id=channel_id,
-                notice=notice,
-                team_reply_text=notice.pending_reply_text,
-            )
+            if notice.status == "delivered_pending_close":
+                await self._finalize_telegram_handoff_notice_close(
+                    channel_id=channel_id,
+                    notice=notice,
+                )
 
     async def _handle_telegram_handoff_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")
@@ -851,13 +824,14 @@ class TicketBot(discord.Client):
         notice: TeamHandoffNotice,
         team_reply_text: str,
     ) -> bool:
-        await edit_handoff_notice(
-            chat_id=notice.telegram_chat_id,
-            message_id=notice.telegram_message_id,
-            message_text=build_closed_handoff_notice(
-                notice.message_text or "Reply received. Replies closed."
-            ),
-        )
+        if notice.status == "pending_delivery":
+            await edit_handoff_notice(
+                chat_id=notice.telegram_chat_id,
+                message_id=notice.telegram_message_id,
+                message_text=build_pending_delivery_handoff_notice(
+                    notice.message_text or "Reply received. Delivering update..."
+                ),
+            )
 
         channel = self.get_channel(channel_id)
         if channel is None or not hasattr(channel, "send") or not hasattr(channel, "typing"):
@@ -919,9 +893,36 @@ class TicketBot(discord.Client):
             return False
 
         investigation_job.mark_waiting_for_user()
-        clear_team_handoff_notice(channel_id)
         last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+        mark_team_handoff_notice_delivered(channel_id)
+        if not await self._finalize_telegram_handoff_notice_close(
+            channel_id=channel_id,
+            notice=notice,
+        ):
+            return False
         persist_ticket_state(channel_id)
+        return True
+
+    async def _finalize_telegram_handoff_notice_close(
+        self,
+        *,
+        channel_id: int,
+        notice: TeamHandoffNotice,
+    ) -> bool:
+        edited = await edit_handoff_notice(
+            chat_id=notice.telegram_chat_id,
+            message_id=notice.telegram_message_id,
+            message_text=build_closed_handoff_notice(
+                notice.message_text or "Reply received. Replies closed."
+            ),
+        )
+        if not edited:
+            logging.warning(
+                "Failed to close Telegram handoff notice for channel %s after Discord delivery.",
+                channel_id,
+            )
+            return False
+        clear_team_handoff_notice(channel_id)
         return True
 
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
@@ -1358,132 +1359,35 @@ class TicketBot(discord.Client):
         investigation_job,
         aggregated_text: str,
     ) -> tuple[List[TResponseInputItem], List[TResponseInputItem]]:
-        intent = run_context.initial_button_intent
-        is_data_intent = intent in {
-            "data_deposit_check",
-            "data_withdrawal_flow_start",
-            "data_vault_search",
-            "data_deposits_withdrawals_start",
-        }
-        wallet_first_data_intent = _is_wallet_first_data_intent(intent)
-        current_user_content = aggregated_text
-        system_hints: List[str] = []
-        known_tx_hashes = investigation_job.evidence.tx_hashes
-        tx_hash_present_in_message = bool(
-            known_tx_hashes and any(tx_hash in aggregated_text for tx_hash in known_tx_hashes)
+        preparation = await prepare_ticket_turn_input(
+            channel_id=channel_id,
+            run_context=run_context,
+            investigation_job=investigation_job,
+            aggregated_text=aggregated_text,
         )
-        vault_url_target = tools_lib.extract_yearn_vault_url_target(aggregated_text)
-
-        if vault_url_target is not None:
-            vault_url_chain, vault_url_address = vault_url_target
-            investigation_job.remember_chain(vault_url_chain)
-            system_hints.append(_vault_url_target_hint(vault_url_chain, vault_url_address))
-        else:
-            vault_url_chain = None
-            vault_url_address = None
-
-        if tx_hash_present_in_message:
-            system_hints.append(
-                "User provided a transaction hash in this message. Investigate the transaction directly before falling back to wallet-position lookup. "
-                "Do not replace the user's message with a bare address or assume any included address is their wallet unless they clearly identify it as such."
-            )
-
-        if is_data_intent:
-            pending_wallet_confirmation_by_channel.pop(channel_id, None)
-
-        pending_wallet = pending_wallet_confirmation_by_channel.get(channel_id)
-        if pending_wallet:
-            if is_wallet_confirmation(aggregated_text):
-                last_wallet_by_channel[channel_id] = pending_wallet
-                pending_wallet_confirmation_by_channel.pop(channel_id, None)
-                system_hints.append(f"User confirmed their wallet address is {pending_wallet}. Use this address going forward.")
-            elif is_wallet_rejection(aggregated_text):
-                pending_wallet_confirmation_by_channel.pop(channel_id, None)
-                system_hints.append("User rejected the suggested wallet address. Ask for the correct wallet address if needed.")
-
-        extracted_address_or_ens = None
-        if vault_url_address:
-            extracted_address_or_ens = vault_url_address
-        elif is_data_intent:
-            extracted_address_or_ens = tools_lib.extract_address_or_ens(aggregated_text) or aggregated_text
-        elif is_message_primarily_address(aggregated_text) and is_probable_wallet_address(aggregated_text):
-            extracted_address_or_ens = aggregated_text
-
-        if extracted_address_or_ens:
-            parsed_address = tools_lib.resolve_ens(extracted_address_or_ens)
-            if parsed_address:
-                resolved_target = await tools_lib.resolve_yearn_address_target(
-                    parsed_address,
-                    chain_hint=investigation_job.evidence.chain,
+        for ack_message in preparation.ack_messages:
+            try:
+                await channel.send(ack_message, suppress_embeds=True)
+                last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+                logging.info(
+                    "Sent ticket intake acknowledgement message to channel %s",
+                    channel_id,
                 )
-                resolved_kind = getattr(resolved_target, "kind", "unknown")
-                last_wallet = last_wallet_by_channel.get(channel_id)
-                if resolved_kind in {"vault", "strategy", "wrapper_or_gauge"}:
-                    system_hints.append(_known_yearn_address_hint(resolved_target))
-                    if is_data_intent:
-                        ack_message = _known_yearn_address_acknowledgement(resolved_target)
-                        try:
-                            await channel.send(ack_message, suppress_embeds=True)
-                            last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-                            logging.info(
-                                "Sent known-address acknowledgement message to channel %s",
-                                channel_id,
-                            )
-                        except Exception as e:
-                            logging.warning(
-                                "Failed to send known-address acknowledgement message: %s",
-                                e,
-                            )
-                elif is_data_intent and resolved_kind == "contract_unknown":
-                    system_hints.append(
-                        "Resolved address has contract code but is not a known Yearn vault, strategy, or staking wrapper on the current chain. "
-                        "Do not assume it is the user's wallet. If wallet ownership changes the next step, ask whether this is the user's wallet address or a target contract address."
-                    )
-                elif is_data_intent and wallet_first_data_intent and not tx_hash_present_in_message:
-                    last_wallet_by_channel[channel_id] = parsed_address
-                    investigation_job.remember_wallet(parsed_address)
-                    current_user_content = _canonicalize_current_user_message(
-                        aggregated_text,
-                        run_context,
-                        parsed_address,
-                    )
-                    system_hints.append(
-                        f"Resolved wallet address for this turn: {parsed_address}. Use this exact address for any wallet-based tool call."
-                    )
-                elif resolved_kind == "eoa_or_missing_code" and last_wallet and parsed_address != last_wallet:
-                    pending_wallet_confirmation_by_channel[channel_id] = parsed_address
-                    system_hints.append(
-                        f"User provided a new address {parsed_address} but previous wallet was {last_wallet}. "
-                        "Ask to confirm whether the new address is their wallet before replacing."
-                    )
-                elif resolved_kind == "eoa_or_missing_code" and not tx_hash_present_in_message:
-                    last_wallet_by_channel[channel_id] = parsed_address
-                    investigation_job.remember_wallet(parsed_address)
-                    current_user_content = _canonicalize_current_user_message(
-                        aggregated_text,
-                        run_context,
-                        parsed_address,
-                    )
-
-                if (
-                    is_data_intent
-                    and resolved_kind == "eoa_or_missing_code"
-                    and wallet_first_data_intent
-                    and not tx_hash_present_in_message
-                ):
-                    ack_message = f"Thank you. I've received the address `{parsed_address}` and am looking up the information now. This may take a moment..."
-                    try:
-                        await channel.send(ack_message, suppress_embeds=True)
-                        last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-                        logging.info(f"Sent pre-run acknowledgement message to channel {channel_id}")
-                    except Exception as e:
-                        logging.warning(f"Failed to send pre-run acknowledgement message: {e}")
+            except Exception as exc:
+                logging.warning(
+                    "Failed to send ticket intake acknowledgement message: %s",
+                    exc,
+                )
 
         current_history = conversation_threads.get(channel_id, [])
-        input_list: List[TResponseInputItem] = current_history + [{"role": "user", "content": current_user_content}]
+        input_list: List[TResponseInputItem] = current_history + [
+            {"role": "user", "content": preparation.current_user_content}
+        ]
 
-        if system_hints:
-            input_list = input_list[:-1] + [{"role": "system", "content": " ".join(system_hints)}] + [input_list[-1]]
+        if preparation.system_hints:
+            input_list = input_list[:-1] + [
+                {"role": "system", "content": " ".join(preparation.system_hints)}
+            ] + [input_list[-1]]
 
         contextual_hints = self.investigation_runtime.build_contextual_hints(
             investigation_job,
@@ -1671,6 +1575,7 @@ class TicketBot(discord.Client):
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
                 return
+            guild_id = getattr(getattr(channel, "guild", None), "id", None)
 
             current_history, input_list = await self._build_ticket_turn_input(
                 channel=channel,
@@ -1694,25 +1599,13 @@ class TicketBot(discord.Client):
                     should_stop_processing = True
                     stop_reason = "boundary_stop"
                     reset_ticket_channel_for_terminal_reply(channel_id)
-                    notice = await _notify_handoff(
+                    await _notify_and_record_ticket_handoff(
                         route=_moderator_access_handoff_route(),
                         summary=aggregated_text,
                         channel_id=channel_id,
-                        guild_id=getattr(getattr(channel, "guild", None), "id", None),
-                        source="ticket",
+                        guild_id=guild_id,
+                        investigation_job=investigation_job,
                     )
-                    investigation_job.mark_escalated_to_human()
-                    if notice is not None:
-                        remember_team_handoff_notice(
-                            channel_id,
-                            TeamHandoffNotice(
-                                telegram_chat_id=notice.chat_id,
-                                telegram_message_id=notice.message_id,
-                                target="support_manual",
-                                reason="moderator or Discord access check",
-                                message_text=notice.message_text,
-                            ),
-                        )
                 else:
                     boundary_output = await _outer_support_boundary_result(aggregated_text)
                     boundary_reply = _boundary_reply_from_output(boundary_output)
@@ -1731,25 +1624,13 @@ class TicketBot(discord.Client):
                                 explicit_target="security_team",
                                 explicit_reason="security-process exception follow-up",
                             )
-                            notice = await _notify_handoff(
+                            await _notify_and_record_ticket_handoff(
                                 route=route,
                                 summary=aggregated_text,
                                 channel_id=channel_id,
-                                guild_id=getattr(getattr(channel, "guild", None), "id", None),
-                                source="ticket",
+                                guild_id=guild_id,
+                                investigation_job=investigation_job,
                             )
-                            investigation_job.mark_escalated_to_human()
-                            if notice is not None:
-                                remember_team_handoff_notice(
-                                    channel_id,
-                                    TeamHandoffNotice(
-                                        telegram_chat_id=notice.chat_id,
-                                        telegram_message_id=notice.message_id,
-                                        target=route.target,
-                                        reason=route.reason,
-                                        message_text=notice.message_text,
-                                    ),
-                                )
                         if should_stop_processing:
                             stop_reason = "boundary_stop"
                             reset_ticket_channel_for_terminal_reply(channel_id)
@@ -1784,25 +1665,13 @@ class TicketBot(discord.Client):
                                     raw_final_reply,
                                     route,
                                 )
-                                notice = await _notify_handoff(
+                                await _notify_and_record_ticket_handoff(
                                     route=route,
                                     summary=aggregated_text,
                                     channel_id=channel_id,
-                                    guild_id=getattr(getattr(channel, "guild", None), "id", None),
-                                    source="ticket",
+                                    guild_id=guild_id,
+                                    investigation_job=investigation_job,
                                 )
-                                investigation_job.mark_escalated_to_human()
-                                if notice is not None:
-                                    remember_team_handoff_notice(
-                                        channel_id,
-                                        TeamHandoffNotice(
-                                            telegram_chat_id=notice.chat_id,
-                                            telegram_message_id=notice.message_id,
-                                            target=route.target,
-                                            reason=route.reason,
-                                            message_text=notice.message_text,
-                                        ),
-                                    )
                             else:
                                 final_reply = _render_support_reply(raw_final_reply)
                             if flow_outcome.requires_human_handoff:
@@ -1837,25 +1706,13 @@ class TicketBot(discord.Client):
                                 )
                             route = _runtime_error_handoff_route(aggregated_text, base_reply)
                             final_reply = build_user_handoff_reply(base_reply, route)
-                            notice = await _notify_handoff(
+                            await _notify_and_record_ticket_handoff(
                                 route=route,
                                 summary=aggregated_text,
                                 channel_id=channel_id,
-                                guild_id=getattr(getattr(channel, "guild", None), "id", None),
-                                source="ticket",
+                                guild_id=guild_id,
+                                investigation_job=investigation_job,
                             )
-                            investigation_job.mark_escalated_to_human()
-                            if notice is not None:
-                                remember_team_handoff_notice(
-                                    channel_id,
-                                    TeamHandoffNotice(
-                                        telegram_chat_id=notice.chat_id,
-                                        telegram_message_id=notice.message_id,
-                                        target=route.target,
-                                        reason=route.reason,
-                                        message_text=notice.message_text,
-                                    ),
-                                )
                             should_stop_processing = True
                             stop_reason = "runtime_error"
                         except AgentsException as e:
@@ -1868,25 +1725,13 @@ class TicketBot(discord.Client):
                                 f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again.",
                                 route,
                             )
-                            notice = await _notify_handoff(
+                            await _notify_and_record_ticket_handoff(
                                 route=route,
                                 summary=aggregated_text,
                                 channel_id=channel_id,
-                                guild_id=getattr(getattr(channel, "guild", None), "id", None),
-                                source="ticket",
+                                guild_id=guild_id,
+                                investigation_job=investigation_job,
                             )
-                            investigation_job.mark_escalated_to_human()
-                            if notice is not None:
-                                remember_team_handoff_notice(
-                                    channel_id,
-                                    TeamHandoffNotice(
-                                        telegram_chat_id=notice.chat_id,
-                                        telegram_message_id=notice.message_id,
-                                        target=route.target,
-                                        reason=route.reason,
-                                        message_text=notice.message_text,
-                                    ),
-                                )
                             should_stop_processing = True
                             stop_reason = "runtime_error"
                         except Exception as e:
@@ -1899,25 +1744,13 @@ class TicketBot(discord.Client):
                                 "An unexpected error occurred.",
                                 route,
                             )
-                            notice = await _notify_handoff(
+                            await _notify_and_record_ticket_handoff(
                                 route=route,
                                 summary=aggregated_text,
                                 channel_id=channel_id,
-                                guild_id=getattr(getattr(channel, "guild", None), "id", None),
-                                source="ticket",
+                                guild_id=guild_id,
+                                investigation_job=investigation_job,
                             )
-                            investigation_job.mark_escalated_to_human()
-                            if notice is not None:
-                                remember_team_handoff_notice(
-                                    channel_id,
-                                    TeamHandoffNotice(
-                                        telegram_chat_id=notice.chat_id,
-                                        telegram_message_id=notice.message_id,
-                                        target=route.target,
-                                        reason=route.reason,
-                                        message_text=notice.message_text,
-                                    ),
-                                )
                             should_stop_processing = True
                             stop_reason = "runtime_error"
                         finally:

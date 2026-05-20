@@ -1,40 +1,31 @@
 # tools_lib.py
 import asyncio
-from dataclasses import dataclass
 import logging
 import json
 import requests
 import re
 import aiohttp
 from datetime import datetime, timezone
-from time import monotonic
-from typing import Dict, Optional, Union, Any, Literal
+from typing import Dict, Optional, Union, Any
 
 from web3 import Web3
 from web3._utils.events import get_event_data
 
+import chain_access
 import config
 import docs_repo_tools
+import yearn_targets
 
-WEB3_INSTANCES = {}
-_YDAEMON_ADDRESS_CACHE_TTL_SECONDS = 300.0
-_YDAEMON_VAULT_CATALOG_CACHE: dict[str, Any] = {
-    "fetched_at": 0.0,
-    "vaults": None,
-    "address_index": None,
-}
 
-# Loop through URLs defined in config.py
-for name, url in config.RPC_URLS.items():
-    try:
-        # Create the connection
-        WEB3_INSTANCES[name] = Web3(Web3.HTTPProvider(url))
-        
-        # Optional: Check connection immediately (good for debugging logs)
-        if not WEB3_INSTANCES[name].is_connected():
-             print(f"Warning: Failed to connect to Web3 for {name}")
-    except Exception as e:
-        print(f"Error initializing Web3 for {name}: {e}")
+WEB3_INSTANCES = chain_access.WEB3_INSTANCES
+ResolvedYearnAddressKind = yearn_targets.ResolvedYearnAddressKind
+ResolvedYearnAddressTarget = yearn_targets.ResolvedYearnAddressTarget
+resolve_yearn_address_target = yearn_targets.resolve_yearn_address_target
+_extract_yearn_vault_url_target = yearn_targets.extract_yearn_vault_url_target
+_inspect_contract_profile = chain_access.inspect_contract_profile
+ensure_web3_instances = chain_access.ensure_web3_instances
+get_web3_instance = chain_access.get_web3_instance
+resolve_ens_name = chain_access.resolve_ens_name
 
 # Load v1 Vaults List (Consider making this dynamic or configurable)
 try:
@@ -45,29 +36,6 @@ except Exception as e:
     V1_VAULTS = []
 
 
-ResolvedYearnAddressKind = Literal[
-    "vault",
-    "strategy",
-    "wrapper_or_gauge",
-    "contract_unknown",
-    "eoa_or_missing_code",
-    "unknown",
-]
-
-
-@dataclass
-class ResolvedYearnAddressTarget:
-    address: str
-    kind: ResolvedYearnAddressKind
-    chain: str | None = None
-    label: str | None = None
-    vault_address: str | None = None
-    vault_label: str | None = None
-    contract_profile_kind: str | None = None
-    is_contract: bool | None = None
-
-
-
 def _json_loads_or_default(raw_value: Optional[str], default: Any) -> Any:
     if raw_value in (None, ""):
         return default
@@ -76,211 +44,6 @@ def _json_loads_or_default(raw_value: Optional[str], default: Any) -> Any:
 
 def _normalize_chain(chain: str) -> str:
     return (chain or "").strip().lower()
-
-
-def _safe_checksum_address(value: str | None) -> str | None:
-    if not value or not Web3.is_address(value):
-        return None
-    return Web3.to_checksum_address(value)
-
-
-def _describe_vault_entry(vault_data: dict[str, Any]) -> str:
-    name = str(vault_data.get("name") or "").strip()
-    symbol = str(vault_data.get("symbol") or "").strip()
-    if name and symbol:
-        return f"{name} ({symbol})"
-    return name or symbol or "Yearn vault"
-
-
-def _build_ydaemon_address_index(
-    vaults: list[dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    index: dict[str, list[dict[str, Any]]] = {}
-
-    def add_entry(address: str | None, entry: dict[str, Any]) -> None:
-        checksum = _safe_checksum_address(address)
-        if checksum is None:
-            return
-        payload = dict(entry)
-        payload["address"] = checksum
-        index.setdefault(checksum, []).append(payload)
-
-    for vault in vaults:
-        chain_name = _normalize_chain(config.ID_TO_CHAIN_NAME.get(vault.get("chainID"), ""))
-        vault_address = _safe_checksum_address(vault.get("address"))
-        vault_label = _describe_vault_entry(vault)
-        if vault_address is not None:
-            add_entry(
-                vault_address,
-                {
-                    "kind": "vault",
-                    "chain": chain_name or None,
-                    "label": vault_label,
-                    "vault_address": vault_address,
-                    "vault_label": vault_label,
-                },
-            )
-
-        for strategy in vault.get("strategies") or []:
-            add_entry(
-                strategy.get("address"),
-                {
-                    "kind": "strategy",
-                    "chain": chain_name or None,
-                    "label": str(strategy.get("name") or "Yearn strategy").strip(),
-                    "vault_address": vault_address,
-                    "vault_label": vault_label,
-                },
-            )
-
-        staking = vault.get("staking") or {}
-        if staking.get("available"):
-            staking_label = str(staking.get("source") or "Yearn staking wrapper").strip()
-            add_entry(
-                staking.get("address"),
-                {
-                    "kind": "wrapper_or_gauge",
-                    "chain": chain_name or None,
-                    "label": staking_label,
-                    "vault_address": vault_address,
-                    "vault_label": vault_label,
-                },
-            )
-
-    return index
-
-
-async def _fetch_ydaemon_vault_catalog() -> list[dict[str, Any]]:
-    cache_age = monotonic() - float(_YDAEMON_VAULT_CATALOG_CACHE["fetched_at"] or 0.0)
-    cached_vaults = _YDAEMON_VAULT_CATALOG_CACHE.get("vaults")
-    if isinstance(cached_vaults, list) and cache_age < _YDAEMON_ADDRESS_CACHE_TTL_SECONDS:
-        return cached_vaults
-
-    api_url = (
-        "https://ydaemon.yearn.fi/vaults/detected"
-        "?hideAlways=false&strategiesDetails=withDetails&strategiesCondition=all&limit=2000"
-    )
-    timeout = aiohttp.ClientTimeout(total=25)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(api_url) as response:
-            response.raise_for_status()
-            vaults = await response.json()
-    if not isinstance(vaults, list):
-        raise ValueError("Unexpected yDaemon vault catalog response.")
-    _YDAEMON_VAULT_CATALOG_CACHE["vaults"] = vaults
-    _YDAEMON_VAULT_CATALOG_CACHE["address_index"] = _build_ydaemon_address_index(vaults)
-    _YDAEMON_VAULT_CATALOG_CACHE["fetched_at"] = monotonic()
-    return vaults
-
-
-async def _get_ydaemon_address_index() -> dict[str, list[dict[str, Any]]]:
-    cache_age = monotonic() - float(_YDAEMON_VAULT_CATALOG_CACHE["fetched_at"] or 0.0)
-    cached_index = _YDAEMON_VAULT_CATALOG_CACHE.get("address_index")
-    if isinstance(cached_index, dict) and cache_age < _YDAEMON_ADDRESS_CACHE_TTL_SECONDS:
-        return cached_index
-    await _fetch_ydaemon_vault_catalog()
-    refreshed_index = _YDAEMON_VAULT_CATALOG_CACHE.get("address_index")
-    return refreshed_index if isinstance(refreshed_index, dict) else {}
-
-
-def _select_yearn_address_entry(
-    entries: list[dict[str, Any]],
-    *,
-    chain_hint: str | None,
-) -> dict[str, Any] | None:
-    if not entries:
-        return None
-    normalized_chain = _normalize_chain(chain_hint or "")
-    candidates = entries
-    if normalized_chain:
-        filtered = [
-            entry for entry in entries
-            if _normalize_chain(str(entry.get("chain") or "")) == normalized_chain
-        ]
-        if len(filtered) == 1:
-            return filtered[0]
-        if filtered:
-            candidates = filtered
-    if len(candidates) == 1:
-        return candidates[0]
-    return None
-
-
-async def resolve_yearn_address_target(
-    address: str,
-    *,
-    chain_hint: str | None = None,
-) -> ResolvedYearnAddressTarget | None:
-    checksum_address = _safe_checksum_address(address)
-    if checksum_address is None:
-        return None
-
-    try:
-        address_index = await _get_ydaemon_address_index()
-    except Exception as exc:
-        logging.warning("Failed to fetch yDaemon address index for %s: %s", checksum_address, exc)
-        address_index = {}
-
-    entry = _select_yearn_address_entry(
-        list(address_index.get(checksum_address, [])),
-        chain_hint=chain_hint,
-    )
-    if entry is not None:
-        return ResolvedYearnAddressTarget(
-            address=checksum_address,
-            kind=str(entry.get("kind") or "unknown"),  # type: ignore[arg-type]
-            chain=entry.get("chain"),
-            label=entry.get("label"),
-            vault_address=entry.get("vault_address"),
-            vault_label=entry.get("vault_label"),
-            is_contract=True,
-        )
-
-    normalized_chain = _normalize_chain(chain_hint or "")
-    web3_instance = WEB3_INSTANCES.get(normalized_chain)
-    if web3_instance is None:
-        return ResolvedYearnAddressTarget(
-            address=checksum_address,
-            kind="unknown",
-            chain=normalized_chain or None,
-        )
-
-    try:
-        profile = await _inspect_contract_profile(
-            web3_instance,
-            checksum_address,
-        )
-    except Exception as exc:
-        logging.warning(
-            "Failed to inspect contract profile for %s on %s: %s",
-            checksum_address,
-            normalized_chain,
-            exc,
-        )
-        return ResolvedYearnAddressTarget(
-            address=checksum_address,
-            kind="unknown",
-            chain=normalized_chain or None,
-        )
-
-    profile_kind = str(profile.get("kind") or "unknown")
-    if profile_kind == "eoa_or_missing_code":
-        return ResolvedYearnAddressTarget(
-            address=checksum_address,
-            kind="eoa_or_missing_code",
-            chain=normalized_chain or None,
-            is_contract=False,
-            contract_profile_kind=profile_kind,
-        )
-
-    return ResolvedYearnAddressTarget(
-        address=checksum_address,
-        kind="contract_unknown",
-        chain=normalized_chain or None,
-        label=str(profile.get("name") or profile.get("symbol") or "").strip() or None,
-        is_contract=bool(profile.get("has_code")),
-        contract_profile_kind=profile_kind,
-    )
 
 
 def _parse_block_identifier(value: Optional[str]) -> Optional[Union[str, int]]:
@@ -484,117 +247,6 @@ def _standard_tx_event_abis() -> list[dict[str, Any]]:
             "type": "event",
         },
     ]
-
-
-async def _call_optional_contract_function(
-    web3_instance: Web3,
-    contract_address: str,
-    function_abi: dict[str, Any],
-    *,
-    block_identifier: Any = None,
-) -> Any:
-    contract = web3_instance.eth.contract(address=contract_address, abi=[function_abi])
-    contract_call = getattr(contract.functions, function_abi["name"])()
-    if block_identifier is None:
-        return await asyncio.to_thread(contract_call.call)
-    return await asyncio.to_thread(contract_call.call, block_identifier=block_identifier)
-
-
-async def _inspect_contract_profile(
-    web3_instance: Web3,
-    contract_address: str,
-    *,
-    block_identifier: Any = None,
-) -> dict[str, Any]:
-    checksum_address = Web3.to_checksum_address(contract_address)
-    profile: dict[str, Any] = {
-        "address": checksum_address,
-        "symbol": None,
-        "name": None,
-        "decimals": None,
-        "asset": None,
-        "asset_symbol": None,
-        "asset_decimals": None,
-        "kind": "unclassified",
-    }
-    code = await asyncio.to_thread(web3_instance.eth.get_code, checksum_address)
-    profile["has_code"] = bool(code and code != b"")
-    if not profile["has_code"]:
-        profile["kind"] = "eoa_or_missing_code"
-        return profile
-
-    symbol_abi = {
-        "type": "function",
-        "name": "symbol",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "string"}],
-    }
-    name_abi = {
-        "type": "function",
-        "name": "name",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "string"}],
-    }
-    decimals_abi = {
-        "type": "function",
-        "name": "decimals",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "uint8"}],
-    }
-    asset_abi = {
-        "type": "function",
-        "name": "asset",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "address"}],
-    }
-    for field_name, abi in (
-        ("symbol", symbol_abi),
-        ("name", name_abi),
-        ("decimals", decimals_abi),
-    ):
-        try:
-            profile[field_name] = await _call_optional_contract_function(
-                web3_instance,
-                checksum_address,
-                abi,
-                block_identifier=block_identifier,
-            )
-        except Exception:
-            continue
-
-    try:
-        asset_address = await _call_optional_contract_function(
-            web3_instance,
-            checksum_address,
-            asset_abi,
-            block_identifier=block_identifier,
-        )
-        if Web3.is_address(asset_address):
-            checksum_asset = Web3.to_checksum_address(asset_address)
-            profile["asset"] = checksum_asset
-            profile["kind"] = "erc4626_like"
-            for asset_field, abi in (
-                ("asset_symbol", symbol_abi),
-                ("asset_decimals", decimals_abi),
-            ):
-                try:
-                    profile[asset_field] = await _call_optional_contract_function(
-                        web3_instance,
-                        checksum_asset,
-                        abi,
-                        block_identifier=block_identifier,
-                    )
-                except Exception:
-                    continue
-    except Exception:
-        if profile["symbol"] is not None or profile["decimals"] is not None:
-            profile["kind"] = "erc20_like"
-
-    return profile
 
 
 def _format_token_amount(raw_value: Any, decimals: Any) -> str | None:
@@ -843,10 +495,11 @@ async def core_inspect_onchain(
     max_results: int = 10,
 ) -> str:
     chain_name = _normalize_chain(chain)
-    if chain_name not in WEB3_INSTANCES:
-        return f"Unsupported chain '{chain}'. Supported chains: {', '.join(sorted(WEB3_INSTANCES))}."
+    web3_instances = ensure_web3_instances()
+    if chain_name not in web3_instances:
+        return f"Unsupported chain '{chain}'. Supported chains: {', '.join(sorted(web3_instances))}."
 
-    web3_instance = WEB3_INSTANCES[chain_name]
+    web3_instance = web3_instances[chain_name]
     mode_normalized = (mode or "").strip().lower()
     max_results = max(1, min(max_results, 25))
 
@@ -1065,75 +718,10 @@ def extract_address_or_ens(text: str) -> Optional[str]:
 
 
 def extract_yearn_vault_url_target(text: str) -> tuple[str, str] | None:
-    if not text:
-        return None
-
-    match = re.search(
-        r"https?://(?:www\.)?(?:yearn\.fi/vaults|legacy\.yearn\.fi/v3)/(?P<chain_id>\d+)/(?P<address>0x[a-fA-F0-9]{40})\b",
-        text,
-        re.IGNORECASE,
-    )
-    if not match:
-        return None
-
-    chain_id_raw = match.group("chain_id")
-    address = match.group("address")
-    try:
-        chain_id = int(chain_id_raw)
-    except ValueError:
-        return None
-
-    chain_name = str(config.ID_TO_CHAIN_NAME.get(chain_id) or "").strip().lower()
-    checksum_address = _safe_checksum_address(address)
-    if not chain_name or checksum_address is None:
-        return None
-    return (chain_name, checksum_address)
+    return _extract_yearn_vault_url_target(text)
 
 def resolve_ens(name: str) -> Optional[str]:
-    """
-    Resolves an ENS name or a SAFE-style prefixed address (e.g., 'eth:0x...') to a standard checksummed address.
-    Returns the checksummed address if valid, otherwise None.
-    """
-    if not isinstance(name, str):
-        return None
-        
-    address_to_check = name.strip()
-
-    # --- Handle SAFE-style prefixes (e.g., 'eth:') ---
-    if ':' in address_to_check:
-        parts = address_to_check.split(':', 1)
-        if len(parts) == 2:
-            prefix, potential_address = parts
-            logging.info(f"Detected prefixed address. Prefix: '{prefix}', Address part: '{potential_address}'")
-            address_to_check = potential_address.strip()
-
-    # Basic address check (on the potentially stripped address)
-    if Web3.is_address(address_to_check):
-        try:
-            return Web3.to_checksum_address(address_to_check)
-        except ValueError:
-            # This can happen if the address has mixed-case but an invalid checksum
-            logging.warning(f"Address '{address_to_check}' has invalid checksum.")
-            return None
-
-    # ENS check (only if it ends with .eth and we have an Ethereum instance)
-    if address_to_check.endswith(".eth") and "ethereum" in WEB3_INSTANCES:
-        try:
-            logging.info(f"Attempting to resolve ENS name: '{address_to_check}'")
-            resolved = WEB3_INSTANCES["ethereum"].ens.address(address_to_check)
-            if resolved and Web3.is_address(resolved):
-                logging.info(f"Successfully resolved ENS '{address_to_check}' to '{resolved}'")
-                return Web3.to_checksum_address(resolved)
-            else:
-                 logging.warning(f"ENS name '{address_to_check}' did not resolve to a valid address.")
-                 return None
-        except Exception as e:
-            logging.error(f"Error resolving ENS '{address_to_check}': {e}")
-            return None
-            
-    # If it's not a valid address format or a resolvable ENS name
-    logging.warning(f"Input '{name}' could not be resolved to a valid address.")
-    return None
+    return resolve_ens_name(name)
 
 async def _fetch_vault_and_gauge_balances(
     vault_info: Dict,
@@ -1215,14 +803,15 @@ async def query_active_deposits_logic(resolved_address: str, chain: Optional[str
     logging.info(f"[Logic:query_active_deposits] Checking Active for {resolved_address}, Chain: {chain}, Token: {token_symbol}")
 
     chains_to_check = []
+    web3_instances = ensure_web3_instances()
     if chain:
         chain_lower = chain.lower()
-        if chain_lower in WEB3_INSTANCES:
+        if chain_lower in web3_instances:
             chains_to_check.append(chain_lower)
         else:
             return f"Unsupported chain: {chain}."
     else:
-        chains_to_check = [c for c in WEB3_INSTANCES.keys() if c != 'berachain']
+        chains_to_check = [c for c in web3_instances.keys() if c != 'berachain']
 
     all_vaults_data = []
 
@@ -1245,7 +834,7 @@ async def query_active_deposits_logic(resolved_address: str, chain: Optional[str
     all_results = []
     total_deposits_found = 0
     for chain_name in chains_to_check:
-        web3_instance = WEB3_INSTANCES.get(chain_name)
+        web3_instance = web3_instances.get(chain_name)
         if not web3_instance:
             continue
 
@@ -1321,10 +910,9 @@ async def query_v1_deposits_logic(resolved_address: str, token_symbol: Optional[
     logging.info(f"[Logic:query_v1_deposits] Checking V1 for {resolved_address}, Token: {token_symbol}")
     if not V1_VAULTS:
         return "V1 vault data is not loaded."
-    if "ethereum" not in WEB3_INSTANCES:
+    web3_eth = get_web3_instance("ethereum")
+    if web3_eth is None:
         return "Ethereum connection unavailable."
-
-    web3_eth = WEB3_INSTANCES["ethereum"]
     try:
         user_checksum_addr = Web3.to_checksum_address(resolved_address)
     except ValueError:
@@ -1425,7 +1013,7 @@ async def core_get_withdrawal_instructions(user_address_or_ens: Optional[str], v
                   user_checksum_addr = None
 
     chain_lower = chain.lower()
-    web3_instance = WEB3_INSTANCES.get(chain_lower)
+    web3_instance = get_web3_instance(chain_lower)
     chain_id = config.CHAIN_NAME_TO_ID.get(chain_lower)
     explorer_base_url = config.BLOCK_EXPLORER_URLS.get(chain_lower)
 

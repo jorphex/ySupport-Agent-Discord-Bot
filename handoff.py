@@ -182,6 +182,20 @@ def build_closed_handoff_notice(original_notice: str) -> str:
     return f"{original_notice}\n\n{closed_footer}"
 
 
+def build_pending_delivery_handoff_notice(original_notice: str) -> str:
+    lines = original_notice.splitlines()
+    footer = (
+        "Reply to this message with what I should tell the user or do next. "
+        "Your reply will be used for the next ticket update. "
+        "Only one reply is accepted."
+    )
+    pending_footer = "<i>Reply received. Delivering update...</i>"
+    if lines and lines[-1].strip() == footer:
+        lines[-1] = pending_footer
+        return "\n".join(lines)
+    return f"{original_notice}\n\n{pending_footer}"
+
+
 def build_archived_handoff_notice(original_notice: str) -> str:
     lines = original_notice.splitlines()
     footer = (

@@ -113,7 +113,10 @@ class ConfigSummaryTests(unittest.TestCase):
             rpc_urls["sonic"],
             "https://sonic-mainnet.g.alchemy.com/v2/alchemy-test-key",
         )
-        self.assertEqual(rpc_urls["katana"], "https://rpc.katana.network")
+        self.assertEqual(
+            rpc_urls["katana"],
+            "https://katana-mainnet.g.alchemy.com/v2/alchemy-test-key",
+        )
 
     def test_ticket_execution_runtime_summary_includes_fallback_and_codex_details(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
@@ -580,6 +583,7 @@ class TicketTransportTests(unittest.TestCase):
                 "aggregated_text",
                 "input_list",
                 "current_history",
+                "attachments",
                 "run_context",
                 "investigation_job",
                 "workflow_name",

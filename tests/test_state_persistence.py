@@ -283,7 +283,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                         reason="manual follow-up needed",
                         message_text="Ticket-0107: support_manual",
                         reply_consumed=True,
-                        status="pending_delivery",
+                        status="delivered_pending_close",
                         pending_reply_text="tell the user we queued the tx",
                         pending_reply_message_id=789,
                     ),
@@ -301,7 +301,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 self.assertEqual(notice.reason, "manual follow-up needed")
                 self.assertEqual(notice.message_text, "Ticket-0107: support_manual")
                 self.assertTrue(notice.reply_consumed)
-                self.assertEqual(notice.status, "pending_delivery")
+                self.assertEqual(notice.status, "delivered_pending_close")
                 self.assertEqual(notice.pending_reply_text, "tell the user we queued the tx")
                 self.assertEqual(notice.pending_reply_message_id, 789)
 
