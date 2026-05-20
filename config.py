@@ -140,6 +140,10 @@ YEARN_PUBLIC_TRIGGER_CHAR = os.getenv("YEARN_PUBLIC_TRIGGER_CHAR")
 HUMAN_HANDOFF_TARGET_USER_ID = os.getenv("HUMAN_HANDOFF_TARGET_USER_ID")
 HUMAN_HANDOFF_TAG_PLACEHOLDER = os.getenv("HUMAN_HANDOFF_TAG_PLACEHOLDER", "{HUMAN_HANDOFF_TAG_PLACEHOLDER}",
 )
+SECURITY_ALTERNATE_CONTACT_MESSAGE = os.getenv(
+    "SECURITY_ALTERNATE_CONTACT_MESSAGE",
+    "If you cannot use Yearn's normal security submission path because of KYC, jurisdiction, or platform issues, use the alternate security contacts in https://github.com/yearn/yearn-security/blob/master/SECURITY.md or email security@yearn.finance. Human help is required beyond that path.",
+)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_YSUPPORT_CHAT = os.getenv("TELEGRAM_YSUPPORT_CHAT", "").strip()
 

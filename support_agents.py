@@ -47,6 +47,30 @@ from support_tools import (
 _SUPPORT_SCOPE_TX_HASH_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{64}")
 _SUPPORT_SCOPE_ADDRESS_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{40}")
 _SECURITY_PROCESS_URL = "https://docs.yearn.fi/developers/security"
+_SECURITY_PROCESS_EXCEPTION_REQUIRED_TOKENS = (
+    "immunefi",
+    "zkpassport",
+    "kyc",
+    "jurisdiction",
+)
+_SECURITY_PROCESS_EXCEPTION_BLOCKERS = (
+    "blocked",
+    "block",
+    "cannot use",
+    "can't use",
+    "cant use",
+    "unable to use",
+    "cannot submit",
+    "can't submit",
+    "cant submit",
+    "unable to submit",
+    "not working",
+    "isn't working",
+    "isnt working",
+    "unavailable",
+    "restriction",
+    "restricted",
+)
 
 
 class SupportBoundaryCheckOutput(BaseModel):
@@ -100,7 +124,21 @@ def _security_process_boundary_message() -> str:
     )
 
 
+def is_security_process_exception_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not lowered:
+        return False
+    if not any(token in lowered for token in _SECURITY_PROCESS_EXCEPTION_REQUIRED_TOKENS):
+        return False
+    return any(token in lowered for token in _SECURITY_PROCESS_EXCEPTION_BLOCKERS)
+
+
+def _security_process_exception_message() -> str:
+    return config.SECURITY_ALTERNATE_CONTACT_MESSAGE
+
+
 def _message_for_support_boundary(
+    text_input: str,
     classification: str,
     business_subtype: str | None,
 ) -> str | None:
@@ -113,6 +151,8 @@ def _message_for_support_boundary(
             return JOB_INQUIRY_REDIRECT_MESSAGE
         return STANDARD_REDIRECT_MESSAGE
     if classification == "security_process_boundary":
+        if is_security_process_exception_request(text_input):
+            return _security_process_exception_message()
         return _security_process_boundary_message()
     if classification == "non_support_assistant":
         return OUT_OF_SCOPE_SUPPORT_MESSAGE
@@ -226,6 +266,7 @@ async def evaluate_support_boundary(text_input: str) -> dict[str, Any]:
             else None
         )
         message_to_send = _message_for_support_boundary(
+            text_input,
             check_output.classification,
             business_subtype,
         )

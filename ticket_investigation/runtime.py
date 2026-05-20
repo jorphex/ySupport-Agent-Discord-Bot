@@ -23,6 +23,36 @@ TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
 ADDRESS_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
 ACTIVE_DEPOSITS_HEADER_RE = re.compile(r"\*\*(?P<chain>[A-Za-z0-9 _/-]+) Active Deposits:\*\*")
 CHAIN_NAMES = ("ethereum", "base", "arbitrum", "optimism", "polygon", "sonic", "katana")
+YEARN_APP_URL_RE = re.compile(r"https?://(?:www\.)?(?:yearn\.fi|legacy\.yearn\.fi)/", re.IGNORECASE)
+EXPLICIT_HUMAN_REQUEST_TOKENS = (
+    "need a human",
+    "human asap",
+    "real person",
+    "person asap",
+    "support team",
+    "manual review",
+    "human review",
+    "someone from the team",
+    "team review",
+)
+UI_FAILURE_REPRO_TOKENS = (
+    "button",
+    "spinner",
+    "spinning",
+    "connect wallet",
+    "wallet popup",
+    "wallet pop up",
+    "approve",
+    "disabled",
+    "blocked",
+    "not working",
+    "doesn't work",
+    "doesnt work",
+    "stuck",
+    "never opens",
+    "won't open",
+    "wont open",
+)
 ROUTE_ACTION_TO_AGENT_KEY = {
     "route_data": "data",
     "route_docs": "docs",
@@ -159,6 +189,46 @@ def _normalize_ticket_triage_decision(
         action=decision.action,
         message=message,
         reasoning=decision.reasoning,
+    )
+
+
+def _contains_explicit_human_request(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in EXPLICIT_HUMAN_REQUEST_TOKENS)
+
+
+def _contains_ui_failure_repro_marker(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in UI_FAILURE_REPRO_TOKENS)
+
+
+def _has_sufficient_repro_context_for_human_handoff(text: str) -> bool:
+    if TX_HASH_RE.search(text):
+        return True
+    if YEARN_APP_URL_RE.search(text) and _contains_ui_failure_repro_marker(text):
+        return True
+    if ADDRESS_RE.search(text) and _contains_ui_failure_repro_marker(text):
+        return True
+    return False
+
+
+def _maybe_force_human_escalation_for_explicit_human_request(
+    decision: TicketTriageDecision,
+    text: str,
+) -> TicketTriageDecision:
+    if decision.action != "route_bug":
+        return decision
+    if not _contains_explicit_human_request(text):
+        return decision
+    if not _has_sufficient_repro_context_for_human_handoff(text):
+        return decision
+    return TicketTriageDecision(
+        action="human_escalation",
+        message=(
+            "This needs manual review from the team. "
+            f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+        ),
+        reasoning=f"{decision.reasoning}; explicit human request with concrete repro context",
     )
 
 
@@ -439,6 +509,10 @@ class TicketInvestigationRuntime:
             )
             decision = _normalize_ticket_triage_decision(
                 router_result.final_output_as(TicketTriageDecision)
+            )
+            decision = _maybe_force_human_escalation_for_explicit_human_request(
+                decision,
+                request.aggregated_text,
             )
             logging.info(
                 "Ticket triage router decision for channel %s: action=%s reasoning=%s",

@@ -9,6 +9,7 @@ import discord
 
 from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE, SECURITY_VENDOR_BOUNDARY_MESSAGE
 import config
+import tools_lib
 from router import select_starting_agent
 from state import (
     BotRunContext,
@@ -34,6 +35,7 @@ from state import (
 )
 from handoff import (
     HandoffRoute,
+    TelegramSentMessage,
     build_archived_handoff_notice,
     build_closed_handoff_notice,
     build_handoff_notice,
@@ -643,6 +645,29 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
             "security_process_boundary",
         )
 
+    async def test_security_process_exception_uses_alternate_contact_message(self) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return SupportBoundaryCheckOutput(
+                    classification="security_process_boundary",
+                    business_subtype=None,
+                    reasoning="immunefi unavailable for reporter",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        disclosure = (
+            "I need to report a Yearn vulnerability, but Immunefi KYC is blocked and zkPassport is not working for me."
+        )
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_boundary(disclosure)
+
+        self.assertTrue(result["tripwire_triggered"])
+        self.assertEqual(result["classification"], "security_process_boundary")
+        self.assertIn("security@yearn.finance", result["message"].lower())
+
     async def test_outer_support_boundary_reply_prefers_bug_bounty_boundary(self) -> None:
         async def fake_boundary(_text: str):
             return {
@@ -1069,6 +1094,60 @@ class _FakeTriggerMessage:
 
 
 class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_extract_yearn_vault_url_target_parses_supported_urls(self) -> None:
+        self.assertEqual(
+            tools_lib.extract_yearn_vault_url_target(
+                "https://yearn.fi/vaults/1/0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204"
+            ),
+            ("ethereum", "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204"),
+        )
+        self.assertEqual(
+            tools_lib.extract_yearn_vault_url_target(
+                "https://legacy.yearn.fi/v3/747474/0x80c34BD3A3569E126e7055831036aa7b212cB159"
+            ),
+            ("katana", "0x80c34BD3A3569E126e7055831036aa7b212cB159"),
+        )
+
+    async def test_resolve_yearn_address_target_prefers_known_strategy_match(self) -> None:
+        address = "0x1111111111111111111111111111111111111111"
+        with patch(
+            "tools_lib._get_ydaemon_address_index",
+            return_value={
+                "0x1111111111111111111111111111111111111111": [
+                    {
+                        "kind": "strategy",
+                        "chain": "ethereum",
+                        "label": "Morpho Looper",
+                        "vault_address": "0x2222222222222222222222222222222222222222",
+                        "vault_label": "yvUSD",
+                    }
+                ]
+            },
+        ):
+            resolved = await tools_lib.resolve_yearn_address_target(address, chain_hint="ethereum")
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.kind, "strategy")
+        self.assertEqual(resolved.chain, "ethereum")
+        self.assertEqual(resolved.label, "Morpho Looper")
+        self.assertEqual(resolved.vault_label, "yvUSD")
+
+    async def test_resolve_yearn_address_target_falls_back_to_contract_profile(self) -> None:
+        address = "0x3333333333333333333333333333333333333333"
+        with patch("tools_lib._get_ydaemon_address_index", return_value={}):
+            with patch(
+                "tools_lib._inspect_contract_profile",
+                return_value={"kind": "erc20_like", "has_code": True, "symbol": "TEST", "name": "Test Contract"},
+            ):
+                resolved = await tools_lib.resolve_yearn_address_target(address, chain_hint="ethereum")
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.kind, "contract_unknown")
+        self.assertTrue(resolved.is_contract)
+        self.assertEqual(resolved.contract_profile_kind, "erc20_like")
+
     async def test_process_ticket_message_uses_same_resolved_wallet_for_ack_and_turn_input(self) -> None:
         channel_id = 64
         fake_channel = _FakeDiscordChannel(channel_id)
@@ -1113,9 +1192,18 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         resolved_wallet = "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
         try:
             with patch("ysupport.tools_lib.resolve_ens", return_value=resolved_wallet):
-                with patch("ysupport.send_long_message", new=fake_channel.send):
-                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
-                        await bot.process_ticket_message(channel_id, run_context)
+                with patch(
+                    "ysupport.tools_lib.resolve_yearn_address_target",
+                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                        address=resolved_wallet,
+                        kind="eoa_or_missing_code",
+                        chain=None,
+                        is_contract=False,
+                    ),
+                ):
+                    with patch("ysupport.send_long_message", new=fake_channel.send):
+                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                            await bot.process_ticket_message(channel_id, run_context)
             observed_last_wallet = last_wallet_by_channel.get(channel_id)
         finally:
             pending_messages.pop(channel_id, None)
@@ -1136,6 +1224,325 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(observed_last_wallet, resolved_wallet)
+
+    async def test_process_ticket_message_treats_known_vault_address_as_target_not_wallet(self) -> None:
+        channel_id = 164
+        fake_channel = _FakeDiscordChannel(channel_id)
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _FakeExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                request.investigation_job.complete_specialist_turn("data")
+                request.investigation_job.mark_waiting_for_user()
+                return type(
+                    "_FakeWorkerResult",
+                    (),
+                    {
+                        "flow_outcome": TicketAgentFlowOutcome(
+                            raw_final_reply="Vault info.",
+                            conversation_history=[],
+                            completed_agent_key="data",
+                            requires_human_handoff=False,
+                        ),
+                        "updated_job": request.investigation_job,
+                    },
+                )()
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FakeExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="data_vault_search",
+        )
+
+        vault_address = "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204"
+        pending_messages[channel_id] = vault_address
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        last_wallet_by_channel.pop(channel_id, None)
+        pending_wallet_confirmation_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        try:
+            with patch("ysupport.tools_lib.resolve_ens", return_value=vault_address):
+                with patch(
+                    "ysupport.tools_lib.resolve_yearn_address_target",
+                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                        address=vault_address,
+                        kind="vault",
+                        chain="ethereum",
+                        label="USDC V3 Vault",
+                        vault_address=vault_address,
+                        vault_label="USDC V3 Vault",
+                        is_contract=True,
+                    ),
+                ):
+                    with patch("ysupport.send_long_message", new=fake_channel.send):
+                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                            await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_wallet_by_channel.pop(channel_id, None)
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(captured_requests), 1)
+        self.assertIn("identified `USDC V3 Vault` as a Yearn vault", fake_channel.sent_messages[0])
+        self.assertIsNone(last_wallet_by_channel.get(channel_id))
+        self.assertTrue(
+            any(
+                item.get("role") == "system"
+                and "known Yearn vault" in item.get("content", "")
+                for item in captured_requests[0].input_list
+            )
+        )
+
+    async def test_process_ticket_message_does_not_assume_unknown_contract_is_wallet(self) -> None:
+        channel_id = 264
+        fake_channel = _FakeDiscordChannel(channel_id)
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _FakeExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                request.investigation_job.complete_specialist_turn("data")
+                request.investigation_job.mark_waiting_for_user()
+                return type(
+                    "_FakeWorkerResult",
+                    (),
+                    {
+                        "flow_outcome": TicketAgentFlowOutcome(
+                            raw_final_reply="Need clarification.",
+                            conversation_history=[],
+                            completed_agent_key="data",
+                            requires_human_handoff=False,
+                        ),
+                        "updated_job": request.investigation_job,
+                    },
+                )()
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FakeExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="data_deposit_check",
+        )
+
+        contract_address = "0x4444444444444444444444444444444444444444"
+        pending_messages[channel_id] = contract_address
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        last_wallet_by_channel.pop(channel_id, None)
+        pending_wallet_confirmation_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        try:
+            with patch("ysupport.tools_lib.resolve_ens", return_value=contract_address):
+                with patch(
+                    "ysupport.tools_lib.resolve_yearn_address_target",
+                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                        address=contract_address,
+                        kind="contract_unknown",
+                        chain="ethereum",
+                        label="Unknown Contract",
+                        is_contract=True,
+                    ),
+                ):
+                    with patch("ysupport.send_long_message", new=fake_channel.send):
+                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                            await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_wallet_by_channel.pop(channel_id, None)
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(captured_requests), 1)
+        self.assertIsNone(last_wallet_by_channel.get(channel_id))
+        self.assertFalse(
+            any(
+                isinstance(message, str) and "I've received the address" in message
+                for message in fake_channel.sent_messages
+            )
+        )
+        self.assertTrue(
+            any(
+                item.get("role") == "system"
+                and "Do not assume it is the user's wallet" in item.get("content", "")
+                for item in captured_requests[0].input_list
+            )
+        )
+
+    async def test_process_ticket_message_tx_hash_keeps_message_context_over_wallet_canonicalization(self) -> None:
+        channel_id = 364
+        fake_channel = _FakeDiscordChannel(channel_id)
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _FakeExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                request.investigation_job.complete_specialist_turn("data")
+                request.investigation_job.mark_waiting_for_user()
+                return type(
+                    "_FakeWorkerResult",
+                    (),
+                    {
+                        "flow_outcome": TicketAgentFlowOutcome(
+                            raw_final_reply="Checking the transaction.",
+                            conversation_history=[],
+                            completed_agent_key="data",
+                            requires_human_handoff=False,
+                        ),
+                        "updated_job": request.investigation_job,
+                    },
+                )()
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FakeExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="data_deposit_check",
+        )
+
+        resolved_wallet = "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
+        tx_hash = "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        prompt_text = (
+            f"I transferred USDC from {resolved_wallet} in tx {tx_hash} and it did not show up."
+        )
+        pending_messages[channel_id] = prompt_text
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        last_wallet_by_channel.pop(channel_id, None)
+        pending_wallet_confirmation_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        try:
+            with patch("ysupport.tools_lib.resolve_ens", return_value=resolved_wallet):
+                with patch(
+                    "ysupport.tools_lib.resolve_yearn_address_target",
+                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                        address=resolved_wallet,
+                        kind="eoa_or_missing_code",
+                        chain="ethereum",
+                        is_contract=False,
+                    ),
+                ):
+                    with patch("ysupport.send_long_message", new=fake_channel.send):
+                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                            await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_wallet_by_channel.pop(channel_id, None)
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(captured_requests), 1)
+        self.assertEqual(captured_requests[0].input_list[-1]["content"], prompt_text)
+        self.assertIsNone(last_wallet_by_channel.get(channel_id))
+        self.assertFalse(
+            any(
+                isinstance(message, str) and "I've received the address" in message
+                for message in fake_channel.sent_messages
+            )
+        )
+        self.assertTrue(
+            any(
+                item.get("role") == "system"
+                and "Investigate the transaction directly before falling back to wallet-position lookup" in item.get("content", "")
+                for item in captured_requests[0].input_list
+            )
+        )
+
+    async def test_process_ticket_message_uses_vault_url_as_target_not_wallet(self) -> None:
+        channel_id = 464
+        fake_channel = _FakeDiscordChannel(channel_id)
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _FakeExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                request.investigation_job.complete_specialist_turn("data")
+                request.investigation_job.mark_waiting_for_user()
+                return type(
+                    "_FakeWorkerResult",
+                    (),
+                    {
+                        "flow_outcome": TicketAgentFlowOutcome(
+                            raw_final_reply="Vault info.",
+                            conversation_history=[],
+                            completed_agent_key="data",
+                            requires_human_handoff=False,
+                        ),
+                        "updated_job": request.investigation_job,
+                    },
+                )()
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FakeExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="data_vault_search",
+        )
+
+        vault_address = "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204"
+        prompt_text = f"https://yearn.fi/vaults/1/{vault_address}"
+        pending_messages[channel_id] = prompt_text
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        last_wallet_by_channel.pop(channel_id, None)
+        pending_wallet_confirmation_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        try:
+            with patch("ysupport.tools_lib.resolve_yearn_address_target") as mock_resolve_target:
+                mock_resolve_target.return_value = tools_lib.ResolvedYearnAddressTarget(
+                    address=vault_address,
+                    kind="vault",
+                    chain="ethereum",
+                    label="USDC V3 Vault",
+                    vault_address=vault_address,
+                    vault_label="USDC V3 Vault",
+                    is_contract=True,
+                )
+                with patch("ysupport.send_long_message", new=fake_channel.send):
+                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                        await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_wallet_by_channel.pop(channel_id, None)
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(captured_requests), 1)
+        self.assertIsNone(last_wallet_by_channel.get(channel_id))
+        self.assertTrue(
+            any(
+                item.get("role") == "system"
+                and "User referenced a Yearn vault page URL" in item.get("content", "")
+                for item in captured_requests[0].input_list
+            )
+        )
 
     async def test_process_ticket_message_applies_outer_boundary_before_executor(self) -> None:
         channel_id = 65
@@ -1273,6 +1680,74 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             conversation_threads.pop(channel_id, None)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
             stopped_channels.discard(channel_id)
+            clear_ticket_investigation_job(channel_id)
+
+    async def test_process_ticket_message_security_exception_notifies_security_team(self) -> None:
+        channel_id = 167
+        fake_channel = _FakeDiscordChannel(channel_id)
+        captured_routes: list[HandoffRoute] = []
+
+        class _FailingExecutor:
+            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
+                raise AssertionError("Security-process boundary should stop before executor runs.")
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _FailingExecutor()
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="other_free_form",
+        )
+
+        pending_messages[channel_id] = (
+            "I need to report a vulnerability, but Immunefi KYC is blocked and zkPassport is not working."
+        )
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        stopped_channels.discard(channel_id)
+        clear_ticket_investigation_job(channel_id)
+        clear_team_handoff_notice(channel_id)
+
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "security_process_boundary",
+                "tripwire_triggered": True,
+                "message": config.SECURITY_ALTERNATE_CONTACT_MESSAGE,
+            }
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        async def fake_notify_handoff(*, route, summary, channel_id, guild_id, source):
+            captured_routes.append(route)
+            return TelegramSentMessage(
+                chat_id="12345",
+                message_id=67890,
+                message_text="notice",
+            )
+
+        try:
+            with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
+                with patch("ysupport._notify_handoff", new=fake_notify_handoff):
+                    with patch("ysupport.send_long_message", new=fake_send_long_message):
+                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                            await bot.process_ticket_message(channel_id, run_context)
+            self.assertEqual(fake_channel.sent_messages, [config.SECURITY_ALTERNATE_CONTACT_MESSAGE])
+            self.assertNotIn(channel_id, stopped_channels)
+            self.assertEqual(len(captured_routes), 1)
+            self.assertEqual(captured_routes[0].target, "security_team")
+            notice = team_handoff_notice_by_channel.get(channel_id)
+            self.assertIsNotNone(notice)
+            assert notice is not None
+            self.assertEqual(notice.target, "security_team")
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            stopped_channels.discard(channel_id)
+            clear_team_handoff_notice(channel_id)
             clear_ticket_investigation_job(channel_id)
 
     async def test_process_ticket_message_runtime_error_preserves_ticket_context(self) -> None:
@@ -2087,6 +2562,93 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
             ),
         )
+
+    async def test_ticket_agent_flow_forces_handoff_for_explicit_human_request_with_repro_context(self) -> None:
+        channel_id = 38
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=None,
+                    last_agent=None,
+                    _history=[],
+                    _decision=TicketTriageDecision(
+                        action="route_bug",
+                        message=None,
+                        reasoning="likely web issue",
+                    ),
+                ),
+            ]
+        )
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        prompt_text = (
+            "I need a human asap. The withdraw button on "
+            "https://yearn.fi/vaults/1/0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204 "
+            "just spins and never opens the wallet."
+        )
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text=prompt_text,
+                    input_list=[{"role": "user", "content": prompt_text}],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 1)
+        self.assertIsNone(outcome.completed_agent_key)
+        self.assertTrue(outcome.requires_human_handoff)
+        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, outcome.raw_final_reply)
+
+    async def test_ticket_agent_flow_keeps_bug_lane_when_human_request_lacks_repro_context(self) -> None:
+        channel_id = 39
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output=None,
+                    last_agent=None,
+                    _history=[],
+                    _decision=TicketTriageDecision(
+                        action="route_bug",
+                        message=None,
+                        reasoning="likely web issue",
+                    ),
+                ),
+                _FakeResult(
+                    final_output="Please share the exact page and what happens when you click the button.",
+                    last_agent=yearn_bug_triage_agent,
+                    _history=[],
+                ),
+            ]
+        )
+        context = BotRunContext(channel_id=channel_id, project_context="yearn")
+        prompt_text = "I need a human asap. The button is broken."
+        try:
+            runtime = TicketInvestigationRuntime(fake_runner)
+            outcome = await runtime.run_turn(
+                TicketTurnRequest(
+                    aggregated_text=prompt_text,
+                    input_list=[{"role": "user", "content": prompt_text}],
+                    current_history=[],
+                    run_context=context,
+                    investigation_job=investigation_job,
+                    workflow_name="tests.ticket_flow",
+                )
+            )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertEqual(outcome.completed_agent_key, "bug")
+        self.assertFalse(outcome.requires_human_handoff)
+        self.assertIn("exact page", outcome.raw_final_reply.lower())
 
     async def test_ticket_agent_flow_short_circuits_bug_bounty_intake_boundary(self) -> None:
         channel_id = 37
