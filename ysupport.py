@@ -15,6 +15,7 @@ from agents import (
 
 import config
 from handoff import (
+    build_archived_handoff_notice,
     build_closed_handoff_notice,
     TelegramSentMessage,
     HandoffRoute,
@@ -1823,6 +1824,22 @@ class TicketBot(discord.Client):
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         if not isinstance(channel, discord.TextChannel):
             return
+        notice = team_handoff_notice_by_channel.get(channel.id)
+        if notice is not None:
+            try:
+                await edit_handoff_notice(
+                    chat_id=notice.telegram_chat_id,
+                    message_id=notice.telegram_message_id,
+                    message_text=build_archived_handoff_notice(
+                        notice.message_text or "Ticket closed. Replies disabled."
+                    ),
+                )
+            except Exception:
+                logging.warning(
+                    "Failed to archive Telegram handoff notice for deleted channel %s.",
+                    channel.id,
+                    exc_info=True,
+                )
         clear_ticket_channel_state(channel.id, keep_stopped=False, delete_persisted=True)
 
 

@@ -32,7 +32,12 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from handoff import HandoffRoute, build_closed_handoff_notice, build_handoff_notice
+from handoff import (
+    HandoffRoute,
+    build_archived_handoff_notice,
+    build_closed_handoff_notice,
+    build_handoff_notice,
+)
 from ticket_investigation.worker import TicketInvestigationWorker
 from support_agents import (
     SupportBoundaryCheckOutput,
@@ -1869,6 +1874,48 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             clear_team_handoff_notice(channel_id)
             clear_ticket_investigation_job(channel_id)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+    async def test_deleted_ticket_archives_open_telegram_handoff_notice(self) -> None:
+        channel_id = 188
+        original_notice = build_handoff_notice(
+            HandoffRoute(
+                target="support_manual",
+                team_label="support team",
+                reason="manual follow-up needed",
+            ),
+            summary="need human",
+            channel_id=channel_id,
+            guild_id=734804446353031319,
+        )
+        team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            target="support_manual",
+            reason="manual follow-up needed",
+            message_text=original_notice,
+        )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        fake_channel = _FakeDiscordChannel(channel_id)
+        edits: list[tuple[str, int, str]] = []
+
+        async def fake_edit_handoff_notice(*, chat_id: str, message_id: int, message_text: str) -> bool:
+            edits.append((chat_id, message_id, message_text))
+            return True
+
+        try:
+            with patch("ysupport.discord.TextChannel", _FakeDiscordChannel), patch(
+                "ysupport.edit_handoff_notice",
+                side_effect=fake_edit_handoff_notice,
+            ), patch("state.reset_ticket_codex_session"):
+                await bot.on_guild_channel_delete(fake_channel)
+            self.assertEqual(
+                edits,
+                [("123", 456, build_archived_handoff_notice(original_notice))],
+            )
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+        finally:
+            clear_team_handoff_notice(channel_id)
 
     async def test_resolve_freeform_starting_agent_reuses_ticket_router_for_public_lane_selection(self) -> None:
         fake_runner = _FakeRunner(
