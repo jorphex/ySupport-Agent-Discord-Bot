@@ -1518,7 +1518,10 @@ class TicketBot(discord.Client):
         if existing_task and not existing_task.done():
             existing_task.cancel()
             try:
-                await message.channel.send("Got it — updating based on your latest message.", suppress_embeds=True)
+                await message.channel.send(
+                    "I’m re-checking this with your latest message.",
+                    suppress_embeds=True,
+                )
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
             except Exception:
                 pass
