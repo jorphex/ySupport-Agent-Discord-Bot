@@ -11,6 +11,8 @@ import sys
 from typing import Any, Literal
 from urllib import request
 
+from openai import AsyncOpenAI
+
 import config
 
 
@@ -97,6 +99,8 @@ _VAGUE_TEAM_REPLIES = {
     "got it",
     "done",
 }
+
+_handoff_summary_async_client: AsyncOpenAI | None = None
 
 
 def strip_handoff_placeholder(text: str | None) -> str:
@@ -217,6 +221,75 @@ async def send_handoff_notice(message_text: str) -> TelegramSentMessage | None:
     )
 
 
+async def summarize_handoff_summary(
+    *,
+    route: HandoffRoute,
+    summary: str,
+    recent_user_messages: list[str] | None = None,
+    known_facts: list[str] | None = None,
+) -> str | None:
+    if "unittest" in sys.modules and os.getenv("YSUPPORT_ALLOW_TEST_LLM") != "1":
+        return None
+    if not config.OPENAI_API_KEY:
+        return None
+
+    cleaned_summary = _summarize_text(summary, limit=600)
+    cleaned_messages = [
+        _summarize_text(message, limit=500)
+        for message in (recent_user_messages or [])
+        if (message or "").strip()
+    ]
+    cleaned_facts = [
+        _summarize_text(fact, limit=160)
+        for fact in (known_facts or [])
+        if (fact or "").strip()
+    ]
+    if not cleaned_messages and not cleaned_summary:
+        return None
+
+    payload = {
+        "route": route.target,
+        "reason": route.reason,
+        "latest_text": cleaned_summary,
+        "recent_user_messages": cleaned_messages[-8:],
+        "known_facts": cleaned_facts[:6],
+    }
+    prompt = (
+        "Return a JSON object with a single key named summary. "
+        "Write one short internal-team summary sentence for a Telegram handoff notice. "
+        "Use the recent user context to describe the real issue and what the user currently needs. "
+        "If the latest text is only a short confirmation or escalation request, rely on earlier user context instead of summarizing only that confirmation. "
+        "Include the most relevant concrete facts when useful, but stay concise and factual.\n\n"
+        f"Context JSON:\n{json.dumps(payload, ensure_ascii=True)}"
+    )
+    try:
+        response = await _get_handoff_summary_async_client().responses.create(
+            model=config.TELEGRAM_HANDOFF_SUMMARY_MODEL,
+            input=prompt,
+            max_output_tokens=120,
+            reasoning={"effort": config.TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT},
+            text={"format": {"type": "json_object"}},
+            timeout=config.TELEGRAM_HANDOFF_SUMMARY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logging.warning("Telegram handoff summary generation failed: %s", exc)
+        return None
+
+    try:
+        raw_output = (response.output_text or "").strip()
+        if not raw_output:
+            return None
+        parsed = json.loads(raw_output)
+    except Exception as exc:
+        logging.warning("Telegram handoff summary parsing failed: %s", exc)
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+    candidate = str(parsed.get("summary") or "").strip()
+    return _summarize_text(candidate) if candidate else None
+
+
 async def send_telegram_message(
     *,
     chat_id: str | None,
@@ -321,6 +394,13 @@ async def _telegram_api_call(
     except Exception as exc:
         logging.error("Telegram API call %s failed: %s", method, exc, exc_info=True)
         return None
+
+
+def _get_handoff_summary_async_client() -> AsyncOpenAI:
+    global _handoff_summary_async_client
+    if _handoff_summary_async_client is None:
+        _handoff_summary_async_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+    return _handoff_summary_async_client
 
 
 def _default_ticket_label(channel_id: int) -> str:

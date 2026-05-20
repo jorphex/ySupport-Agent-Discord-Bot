@@ -772,7 +772,16 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         async def fake_send_long_message(channel, message, **kwargs):
             await channel.send(message, **kwargs)
 
-        async def fake_notify_handoff(*, route, summary, channel_id, guild_id, source):
+        async def fake_notify_handoff(
+            *,
+            route,
+            summary,
+            channel_id,
+            guild_id,
+            source,
+            recent_user_messages=None,
+            known_facts=None,
+        ):
             captured_routes.append(route)
             return TelegramSentMessage(
                 chat_id="12345",

@@ -53,6 +53,7 @@ from ticket_investigation.runtime import (
 )
 from ysupport import (
     TicketBot,
+    _notify_handoff,
 )
 from tests.test_ticket_intake import (
     _FakeDiscordChannel,
@@ -104,6 +105,84 @@ class _FakeInvestigationExecutor:
 
 
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_notify_handoff_uses_model_summary_when_available(self) -> None:
+        route = HandoffRoute(
+            target="support_manual",
+            team_label="support team",
+            reason="manual follow-up needed",
+        )
+        notices: list[str] = []
+
+        async def fake_summarize_handoff_summary(**kwargs) -> str | None:
+            self.assertEqual(kwargs["summary"], "yes please tell them")
+            self.assertTrue(
+                any(
+                    "withdraw button spins forever" in message
+                    for message in kwargs["recent_user_messages"]
+                )
+            )
+            self.assertIn("chain: Ethereum", kwargs["known_facts"])
+            return "Withdraw button spins forever on the vault page and the user needs a manual team review."
+
+        async def fake_send_handoff_notice(message_text: str):
+            notices.append(message_text)
+            return True
+
+        with (
+            patch("ysupport.summarize_handoff_summary", new=fake_summarize_handoff_summary),
+            patch("ysupport.send_handoff_notice", new=fake_send_handoff_notice),
+        ):
+            await _notify_handoff(
+                route=route,
+                summary="yes please tell them",
+                channel_id=1506309610192113917,
+                guild_id=734804446353031319,
+                source="ticket",
+                recent_user_messages=[
+                    "withdraw button spins forever on the vault page",
+                    "yes please tell them",
+                ],
+                known_facts=["chain: Ethereum"],
+            )
+
+        self.assertEqual(len(notices), 1)
+        self.assertIn(
+            "<b>Summary</b>: Withdraw button spins forever on the vault page and the user needs a manual team review.",
+            notices[0],
+        )
+
+    async def test_notify_handoff_falls_back_to_raw_summary_when_model_summary_missing(self) -> None:
+        route = HandoffRoute(
+            target="support_manual",
+            team_label="support team",
+            reason="manual follow-up needed",
+        )
+        notices: list[str] = []
+
+        async def fake_summarize_handoff_summary(**kwargs) -> str | None:
+            return None
+
+        async def fake_send_handoff_notice(message_text: str):
+            notices.append(message_text)
+            return True
+
+        with (
+            patch("ysupport.summarize_handoff_summary", new=fake_summarize_handoff_summary),
+            patch("ysupport.send_handoff_notice", new=fake_send_handoff_notice),
+        ):
+            await _notify_handoff(
+                route=route,
+                summary="yes please tell them",
+                channel_id=1506309610192113917,
+                guild_id=734804446353031319,
+                source="ticket",
+                recent_user_messages=["withdraw button spins forever on the vault page"],
+                known_facts=["chain: Ethereum"],
+            )
+
+        self.assertEqual(len(notices), 1)
+        self.assertIn("<b>Summary</b>: yes please tell them", notices[0])
+
     async def test_public_trigger_applies_outer_boundary_before_executor(self) -> None:
         original_author_id = 70
         channel_id = 71

@@ -30,6 +30,7 @@ from handoff import (
     send_handoff_notice,
     send_telegram_message,
     strip_handoff_placeholder,
+    summarize_handoff_summary,
 )
 from router import is_bug_report_query
 from support_agents import evaluate_support_boundary, is_security_process_exception_request
@@ -305,6 +306,46 @@ def _should_ack_waiting_for_team(channel_id: int, *, cooldown_seconds: int = 180
     return (datetime.now(timezone.utc) - last_reply_at).total_seconds() >= cooldown_seconds
 
 
+def _recent_user_messages_for_handoff(
+    channel_id: int,
+    latest_user_text: str,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    history = conversation_threads.get(channel_id, [])
+    messages = [
+        str(item.get("content") or "").strip()
+        for item in history
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    latest_cleaned = latest_user_text.strip()
+    if latest_cleaned and (not messages or messages[-1] != latest_cleaned):
+        messages.append(latest_cleaned)
+    return [message for message in messages if message][-limit:]
+
+
+def _handoff_known_facts(investigation_job: TicketInvestigationJob) -> list[str]:
+    facts: list[str] = []
+    if investigation_job.evidence.chain:
+        facts.append(f"chain: {investigation_job.evidence.chain}")
+    if investigation_job.evidence.wallet:
+        facts.append(f"wallet: {investigation_job.evidence.wallet}")
+    if investigation_job.evidence.tx_hashes:
+        facts.append(
+            "tx hashes: " + ", ".join(investigation_job.evidence.tx_hashes[:3])
+        )
+    if (
+        investigation_job.evidence.withdrawal_target_chain
+        and investigation_job.evidence.withdrawal_target_vault
+    ):
+        facts.append(
+            "withdrawal target: "
+            f"{investigation_job.evidence.withdrawal_target_chain} "
+            f"{investigation_job.evidence.withdrawal_target_vault}"
+        )
+    return facts
+
+
 async def _notify_handoff(
     *,
     route: HandoffRoute,
@@ -312,11 +353,19 @@ async def _notify_handoff(
     channel_id: int,
     guild_id: int | None,
     source: Literal["ticket", "public"],
+    recent_user_messages: list[str] | None = None,
+    known_facts: list[str] | None = None,
 ) -> TelegramSentMessage | None:
+    summarized_text = await summarize_handoff_summary(
+        route=route,
+        summary=summary,
+        recent_user_messages=recent_user_messages,
+        known_facts=known_facts,
+    )
     sent = await send_handoff_notice(
         build_handoff_notice(
             route,
-            summary=summary,
+            summary=summarized_text or summary,
             channel_id=channel_id,
             guild_id=guild_id,
         )
@@ -360,12 +409,16 @@ async def _notify_and_record_ticket_handoff(
     guild_id: int | None,
     investigation_job: TicketInvestigationJob,
 ) -> None:
+    recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
+    known_facts = _handoff_known_facts(investigation_job)
     notice = await _notify_handoff(
         route=route,
         summary=summary,
         channel_id=channel_id,
         guild_id=guild_id,
         source="ticket",
+        recent_user_messages=recent_user_messages,
+        known_facts=known_facts,
     )
     investigation_job.mark_escalated_to_human()
     _remember_sent_handoff_notice(
