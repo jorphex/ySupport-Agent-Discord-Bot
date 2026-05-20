@@ -69,6 +69,30 @@ _OPTIONAL_HANDOFF_CLAUSE_PATTERNS = (
     r",?\s*so this should get operator review\.?$",
     r",?\s*so this should get a human operator review\.?$",
 )
+_OPERATOR_ACTION_REQUEST_TERMS = (
+    "dump",
+    "swap",
+    "sell",
+    "compound",
+    "reinvest",
+    "realize",
+    "realise",
+)
+_OPERATOR_ACTION_CONTEXT_TERMS = (
+    "reward",
+    "rewards",
+    "yield",
+    "strategy",
+    "vault",
+    "pool",
+    "crv",
+    "cvx",
+    "dola",
+)
+_OPERATOR_ACTION_HANDOFF_REASON = (
+    "manual strategy or ops action is required to perform the requested reward or yield operation"
+)
+_OPERATOR_ACTION_ANSWER_PREFIX = "This requires a manual strategy-team action."
 
 
 CODEX_SUPPORT_RESULT_SCHEMA: dict[str, Any] = {
@@ -107,11 +131,15 @@ class SupportTurnRequest:
     evidence: dict[str, Any]
     support_state: dict[str, Any]
     constraints: dict[str, Any]
+    current_turn_source: str = "user"
+    current_turn_instruction: str | None = None
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "current_user_message": self.current_user_message,
+            "current_turn_source": self.current_turn_source,
+            "current_turn_instruction": self.current_turn_instruction,
             "recent_transcript": list(self.recent_transcript),
             "attachments": list(self.attachments),
             "channel_type": self.channel_type,
@@ -160,6 +188,8 @@ class SupportTurnRequest:
             }
         return cls(
             current_user_message=request.aggregated_text,
+            current_turn_source=str(request.turn_source or "user"),
+            current_turn_instruction=_normalize_optional_text(request.turn_instruction),
             recent_transcript=recent_history,
             attachments=attachments,
             channel_type=channel_type,
@@ -295,6 +325,14 @@ def verify_support_turn_result(
         evidence_summary=result.evidence_summary,
         used_tools=result.used_tools,
     )
+    if _is_explicit_operator_action_request(request) and not normalized_result.requires_human_handoff:
+        normalized_result = SupportTurnResult(
+            answer=_ensure_operator_action_acknowledgement(normalized_result.answer),
+            requires_human_handoff=True,
+            handoff_reason=_OPERATOR_ACTION_HANDOFF_REASON,
+            evidence_summary=normalized_result.evidence_summary,
+            used_tools=normalized_result.used_tools,
+        )
     if normalized_result.requires_human_handoff and not _handoff_is_allowed(
         normalized_result,
         request,
@@ -363,6 +401,10 @@ def _handoff_is_allowed(
 ) -> bool:
     if request.support_state.get("human_handoff_active"):
         return True
+    if _is_explicit_operator_action_request(request):
+        return True
+    if request.current_turn_source != "user":
+        return False
     current_message = request.current_user_message.lower()
     if any(pattern in current_message for pattern in _EXPLICIT_HANDOFF_REQUEST_PATTERNS):
         return True
@@ -399,6 +441,36 @@ def _strip_optional_handoff_language(answer: str) -> str:
     if not filtered:
         return answer.strip()
     return " ".join(filtered).strip()
+
+
+def _is_explicit_operator_action_request(request: SupportTurnRequest) -> bool:
+    if request.current_turn_source != "user":
+        return False
+    current_message = request.current_user_message.lower()
+    return any(term in current_message for term in _OPERATOR_ACTION_REQUEST_TERMS) and any(
+        term in current_message for term in _OPERATOR_ACTION_CONTEXT_TERMS
+    )
+
+
+def _ensure_operator_action_acknowledgement(answer: str) -> str:
+    stripped = answer.strip()
+    lowered = stripped.lower()
+    if any(
+        phrase in lowered
+        for phrase in (
+            "manual strategy-team action",
+            "manual strategy team action",
+            "manual team action",
+            "strategy team",
+            "ops action",
+        )
+    ):
+        return stripped
+    if not stripped:
+        return _OPERATOR_ACTION_ANSWER_PREFIX
+    if stripped.endswith((".", "!", "?")):
+        return f"{_OPERATOR_ACTION_ANSWER_PREFIX} {stripped}"
+    return f"{_OPERATOR_ACTION_ANSWER_PREFIX} {stripped}."
 
 
 def _derive_guardrail_profile(
@@ -462,10 +534,10 @@ def support_result_to_transport_result(
         "escalated_to_human" if result.requires_human_handoff else "waiting_for_user"
     )
     updated_job["current_specialty"] = None
-    conversation_history = list(request.current_history) + [
-        {"role": "user", "content": request.aggregated_text},
-        {"role": "assistant", "content": result.answer},
-    ]
+    conversation_history = list(request.current_history)
+    if request.turn_source == "user":
+        conversation_history.append({"role": "user", "content": request.aggregated_text})
+    conversation_history.append({"role": "assistant", "content": result.answer})
     return TicketExecutionTransportResult(
         flow_outcome={
             "raw_final_reply": result.answer,

@@ -32,6 +32,8 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "input_list": {"type": "array"},
         "current_history": {"type": "array"},
         "attachments": {"type": "array"},
+        "turn_source": {"type": "string"},
+        "turn_instruction": {"type": ["string", "null"]},
         "run_context": {"type": "object"},
         "investigation_job": {"type": "object"},
         "workflow_name": {"type": "string"},
@@ -174,6 +176,8 @@ def build_smoke_transport_request() -> "TicketExecutionTransportRequest":
         input_list=[],
         current_history=[],
         attachments=[],
+        turn_source="user",
+        turn_instruction=None,
         run_context={
             "channel_id": 0,
             "category_id": None,
@@ -216,6 +220,8 @@ class TicketExecutionTransportRequest:
     run_context: dict[str, Any]
     investigation_job: dict[str, Any]
     workflow_name: str
+    turn_source: str = "user"
+    turn_instruction: str | None = None
     wants_bug_review_status: bool = False
     precomputed_boundary: dict[str, Any] | None = None
     smoke_mode: str | None = None
@@ -227,6 +233,8 @@ class TicketExecutionTransportRequest:
             "input_list": list(self.input_list),
             "current_history": list(self.current_history),
             "attachments": list(self.attachments),
+            "turn_source": self.turn_source,
+            "turn_instruction": self.turn_instruction,
             "run_context": dict(self.run_context),
             "investigation_job": dict(self.investigation_job),
             "workflow_name": self.workflow_name,
@@ -249,6 +257,8 @@ class TicketExecutionTransportRequest:
             input_list=list(payload.get("input_list", [])),
             current_history=list(payload.get("current_history", [])),
             attachments=list(payload.get("attachments", [])),
+            turn_source=str(payload.get("turn_source", "user") or "user"),
+            turn_instruction=payload.get("turn_instruction"),
             run_context=dict(payload.get("run_context", {})),
             investigation_job=dict(payload.get("investigation_job", {})),
             workflow_name=payload["workflow_name"],
@@ -280,6 +290,8 @@ class TicketExecutionTransportRequest:
             input_list=list(request.input_list),
             current_history=list(request.current_history),
             attachments=list(request.attachments),
+            turn_source=request.turn_source,
+            turn_instruction=request.turn_instruction,
             run_context=serialize_run_context(request.run_context),
             investigation_job=serialize_investigation_job(request.investigation_job),
             workflow_name=request.workflow_name,
@@ -300,6 +312,8 @@ class TicketExecutionTransportRequest:
             input_list=list(self.input_list),
             current_history=list(self.current_history),
             attachments=list(self.attachments),
+            turn_source=self.turn_source,
+            turn_instruction=self.turn_instruction,
             run_context=deserialize_run_context(self.run_context),
             investigation_job=deserialize_investigation_job(self.investigation_job),
             workflow_name=self.workflow_name,

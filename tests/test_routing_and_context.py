@@ -13,9 +13,13 @@ from router import select_starting_agent
 from state import (
     BotRunContext,
     TicketInvestigationJob,
+    TeamHandoffNotice,
+    channel_intent_after_button,
+    clear_team_handoff_notice,
     clear_ticket_investigation_job,
     conversation_threads,
     get_or_create_ticket_investigation_job,
+    is_ticket_waiting_for_team,
     last_bot_reply_ts_by_channel,
     last_wallet_by_channel,
     pending_messages,
@@ -24,9 +28,11 @@ from state import (
     PublicConversation,
     stopped_channels,
     stop_reasons_by_channel,
+    team_handoff_notice_by_channel,
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
+from handoff import HandoffRoute, build_closed_handoff_notice, build_handoff_notice
 from ticket_investigation.worker import TicketInvestigationWorker
 from support_agents import (
     SupportBoundaryCheckOutput,
@@ -167,6 +173,27 @@ class RoutingTests(unittest.TestCase):
             "contributor_override",
         )
 
+    def test_build_handoff_notice_includes_one_reply_instruction(self) -> None:
+        notice = build_handoff_notice(
+            HandoffRoute(
+                target="support_manual",
+                team_label="support team",
+                reason="manual follow-up needed",
+            ),
+            summary="i need a human asap",
+            channel_id=1506309610192113917,
+            guild_id=734804446353031319,
+        )
+        self.assertIn("Only one reply is accepted.", notice)
+        self.assertIn(
+            "Reply to this message with what I should tell the user or do next.",
+            notice,
+        )
+        self.assertIn(
+            "discord.com/channels/734804446353031319/1506309610192113917",
+            notice,
+        )
+
     @patch("ysupport._is_contributor_member")
     def test_runtime_stopped_ticket_recovers_for_owner_message(
         self,
@@ -270,7 +297,8 @@ class RoutingTests(unittest.TestCase):
         self.assertIsNotNone(reply)
         assert reply is not None
         self.assertIn("A moderator needs to check this.", reply)
-        self.assertIn("<@", reply)
+        self.assertIn("I've notified the support team", reply)
+        self.assertNotIn("<@", reply)
 
     def test_select_starting_agent_uses_data_button_intent(self) -> None:
         context = BotRunContext(
@@ -978,6 +1006,8 @@ class _FakeDiscordChannel:
     def __init__(self, channel_id: int):
         self.id = channel_id
         self.sent_messages: list[str] = []
+        self.category = None
+        self.guild = None
 
     async def send(self, message: str, *args, **kwargs):
         self.sent_messages.append(message)
@@ -1414,6 +1444,11 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         fake_executor = _FakeInvestigationExecutor(exc=MaxTurnsExceeded("Max turns exceeded"))
         bot = TicketBot(intents=discord.Intents.none())
         bot.investigation_executor = fake_executor
+        handoff_notices: list[str] = []
+
+        async def fake_send_handoff_notice(message_text: str) -> bool:
+            handoff_notices.append(message_text)
+            return True
 
         public_conversations[original_author_id] = PublicConversation(
             history=[{"role": "assistant", "content": "Earlier context"}],
@@ -1421,7 +1456,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with (
-                patch.object(config, "HUMAN_HANDOFF_TARGET_USER_ID", "999"),
+                patch("ysupport.send_handoff_notice", new=fake_send_handoff_notice),
             ):
                 handled = await bot._handle_public_trigger_message(trigger_message, "y")
         finally:
@@ -1437,9 +1472,12 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(original_author_id, public_conversations)
         self.assertEqual(len(original_message.replies), 1)
         self.assertIn("internal analysis limit", original_message.replies[0][0].lower())
-        self.assertIn("<@999>", original_message.replies[0][0])
+        self.assertIn("I've notified the support team", original_message.replies[0][0])
+        self.assertNotIn("<@", original_message.replies[0][0])
         self.assertFalse(original_message.replies[0][1]["mention_author"])
         self.assertTrue(original_message.replies[0][1]["suppress_embeds"])
+        self.assertEqual(len(handoff_notices), 1)
+        self.assertIn("<code>support_manual</code>", handoff_notices[0])
 
     async def test_public_trigger_uses_transport_executor_and_persists_public_state(self) -> None:
         original_author_id = 91
@@ -1492,6 +1530,345 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(trigger_channel.sent_messages, ["Use the stYFI dashboard."])
         finally:
             public_conversations.pop(original_author_id, None)
+
+    async def test_process_ticket_message_formats_handoff_reply_and_notifies_telegram(self) -> None:
+        channel_id = 93
+        fake_channel = _FakeDiscordChannel(channel_id)
+        handoff_notices: list[str] = []
+
+        updated_job = TicketInvestigationJob(channel_id=channel_id)
+        fake_executor = _FakeInvestigationExecutor(
+            result=type(
+                "_Result",
+                (),
+                {
+                    "flow_outcome": TicketAgentFlowOutcome(
+                        raw_final_reply=(
+                            "This likely needs manual review. "
+                            f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                        ),
+                        conversation_history=[
+                            {"role": "user", "content": "PPS is flat and rewards need to be dumped."},
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "This likely needs manual review. "
+                                    f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+                                ),
+                            },
+                        ],
+                        completed_agent_key=None,
+                        requires_human_handoff=True,
+                    ),
+                    "updated_job": updated_job,
+                },
+            )()
+        )
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = fake_executor
+
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="investigate_issue",
+            conversation_owner_id=777,
+        )
+
+        pending_messages[channel_id] = "PPS is flat and rewards need to be dumped."
+        conversation_threads[channel_id] = []
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+        clear_ticket_investigation_job(channel_id)
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        async def fake_send_handoff_notice(message_text: str) -> bool:
+            handoff_notices.append(message_text)
+            return True
+
+        try:
+            with patch("ysupport.send_long_message", new=fake_send_long_message):
+                with patch("ysupport.send_handoff_notice", new=fake_send_handoff_notice):
+                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                        await bot.process_ticket_message(channel_id, run_context)
+        finally:
+            pending_messages.pop(channel_id, None)
+            conversation_threads.pop(channel_id, None)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            stopped_channels.discard(channel_id)
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_channel.sent_messages), 1)
+        self.assertIn("This likely needs manual review.", fake_channel.sent_messages[0])
+        self.assertIn("I've notified the strategy team", fake_channel.sent_messages[0])
+        self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, fake_channel.sent_messages[0])
+        self.assertEqual(len(handoff_notices), 1)
+        self.assertIn("<code>strategist_ops</code>", handoff_notices[0])
+
+    async def test_waiting_for_team_ticket_stores_followup_and_sends_parked_ack(self) -> None:
+        channel_id = 94
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+        owner = SimpleNamespace(id=777, bot=False, name="owner")
+        message = SimpleNamespace(
+            author=owner,
+            content="here are more details",
+            channel=fake_channel,
+            reference=None,
+            created_at=datetime.now(timezone.utc),
+            attachments=[],
+        )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        conversation_threads[channel_id] = [{"role": "assistant", "content": "Team notified."}]
+        ticket_owner_user_id_by_channel[channel_id] = 777
+        job = get_or_create_ticket_investigation_job(channel_id)
+        job.mark_escalated_to_human()
+        last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+        try:
+            with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                with patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}):
+                    await bot.on_message(message)
+            self.assertTrue(is_ticket_waiting_for_team(channel_id))
+            self.assertEqual(
+                conversation_threads[channel_id][-1]["content"],
+                "here are more details",
+            )
+            self.assertEqual(len(fake_channel.sent_messages), 1)
+            self.assertIn(
+                "The team has already been notified",
+                fake_channel.sent_messages[0],
+            )
+        finally:
+            conversation_threads.pop(channel_id, None)
+            ticket_owner_user_id_by_channel.pop(channel_id, None)
+            clear_ticket_investigation_job(channel_id)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+    async def test_telegram_handoff_reply_consumes_notice_and_posts_update(self) -> None:
+        channel_id = 95
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+
+        conversation_threads[channel_id] = [{"role": "user", "content": "initial issue"}]
+        ticket_owner_user_id_by_channel[channel_id] = 777
+        original_notice = build_handoff_notice(
+            HandoffRoute(
+                target="support_manual",
+                team_label="support team",
+                reason="manual follow-up needed",
+            ),
+            summary="initial issue",
+            channel_id=channel_id,
+            guild_id=2,
+        )
+        team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            target="support_manual",
+            reason="manual follow-up needed",
+            message_text=original_notice,
+        )
+        job = get_or_create_ticket_investigation_job(channel_id)
+        job.mark_escalated_to_human()
+        channel_intent_after_button[channel_id] = "investigate_issue"
+        edited_messages: list[tuple[str, int, str]] = []
+        internal_turn_calls: list[dict[str, str]] = []
+
+        update = {
+            "update_id": 1,
+            "message": {
+                "message_id": 999,
+                "chat": {"id": "123"},
+                "text": "tell the user the tx is queued pending signatures",
+                "reply_to_message": {"message_id": 456},
+            },
+        }
+
+        async def fake_edit_handoff_notice(*, chat_id: str, message_id: int, message_text: str) -> bool:
+            edited_messages.append((chat_id, message_id, message_text))
+            return True
+
+        async def fake_internal_turn(**kwargs) -> str:
+            internal_turn_calls.append(
+                {
+                    "prompt_text": kwargs["prompt_text"],
+                    "instruction_text": kwargs["instruction_text"],
+                }
+            )
+            return "The transaction has been queued and is pending multisig signatures."
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"):
+                with patch("ysupport.edit_handoff_notice", new=fake_edit_handoff_notice):
+                    with patch("ysupport._run_internal_instruction_turn", new=fake_internal_turn):
+                        with patch("ysupport.send_long_message", new=fake_send_long_message):
+                            await bot._handle_telegram_handoff_update(update)
+            self.assertEqual(
+                edited_messages,
+                [("123", 456, build_closed_handoff_notice(original_notice))],
+            )
+            self.assertEqual(
+                fake_channel.sent_messages,
+                ["The transaction has been queued and is pending multisig signatures."],
+            )
+            self.assertEqual(len(internal_turn_calls), 1)
+            self.assertEqual(
+                internal_turn_calls[0]["prompt_text"],
+                "tell the user the tx is queued pending signatures",
+            )
+            self.assertIn("This input is from the internal team", internal_turn_calls[0]["instruction_text"])
+            self.assertIn("Write directly to the user, not back to the team", internal_turn_calls[0]["instruction_text"])
+            self.assertIn("Expand shorthand like `pending sigs`", internal_turn_calls[0]["instruction_text"])
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            self.assertEqual(ticket_investigation_jobs[channel_id].mode, "waiting_for_user")
+        finally:
+            conversation_threads.pop(channel_id, None)
+            ticket_owner_user_id_by_channel.pop(channel_id, None)
+            channel_intent_after_button.pop(channel_id, None)
+            clear_team_handoff_notice(channel_id)
+            clear_ticket_investigation_job(channel_id)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+    async def test_telegram_handoff_reply_rejects_vague_team_message(self) -> None:
+        channel_id = 195
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+
+        team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            target="support_manual",
+            reason="manual follow-up needed",
+        )
+        job = get_or_create_ticket_investigation_job(channel_id)
+        job.mark_escalated_to_human()
+
+        update = {
+            "update_id": 2,
+            "message": {
+                "message_id": 999,
+                "chat": {"id": "123"},
+                "text": "ok",
+                "reply_to_message": {"message_id": 456},
+            },
+        }
+        telegram_feedback: list[tuple[str | None, str, int | None]] = []
+
+        async def fake_send_telegram_message(
+            *,
+            chat_id: str | None,
+            message_text: str,
+            reply_to_message_id: int | None = None,
+        ):
+            telegram_feedback.append((chat_id, message_text, reply_to_message_id))
+            return None
+
+        try:
+            with patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"):
+                with patch("ysupport.send_telegram_message", new=fake_send_telegram_message):
+                    await bot._handle_telegram_handoff_update(update)
+            self.assertEqual(fake_channel.sent_messages, [])
+            self.assertEqual(
+                telegram_feedback,
+                [(
+                    "123",
+                    "That reply is too vague to send to the user. Reply with the exact update I should give them. Only one clear reply will be used.",
+                    999,
+                )],
+            )
+            notice = team_handoff_notice_by_channel[channel_id]
+            self.assertFalse(notice.reply_consumed)
+            self.assertEqual(notice.status, "open")
+            self.assertIsNone(notice.pending_reply_text)
+        finally:
+            clear_team_handoff_notice(channel_id)
+            clear_ticket_investigation_job(channel_id)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+    async def test_pending_telegram_handoff_reply_resumes_and_posts_update(self) -> None:
+        channel_id = 96
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+
+        conversation_threads[channel_id] = [{"role": "user", "content": "initial issue"}]
+        ticket_owner_user_id_by_channel[channel_id] = 777
+        original_notice = build_handoff_notice(
+            HandoffRoute(
+                target="support_manual",
+                team_label="support team",
+                reason="manual follow-up needed",
+            ),
+            summary="initial issue",
+            channel_id=channel_id,
+            guild_id=2,
+        )
+        team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            target="support_manual",
+            reason="manual follow-up needed",
+            message_text=original_notice,
+            reply_consumed=True,
+            status="pending_delivery",
+            pending_reply_text="tell the user the tx is queued pending signatures",
+            pending_reply_message_id=999,
+        )
+        job = get_or_create_ticket_investigation_job(channel_id)
+        job.mark_escalated_to_human()
+        channel_intent_after_button[channel_id] = "investigate_issue"
+        edited_messages: list[tuple[str, int, str]] = []
+
+        async def fake_edit_handoff_notice(*, chat_id: str, message_id: int, message_text: str) -> bool:
+            edited_messages.append((chat_id, message_id, message_text))
+            return True
+
+        async def fake_internal_turn(**kwargs) -> str:
+            return "The transaction has been queued and is pending multisig signatures."
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with patch("ysupport.edit_handoff_notice", new=fake_edit_handoff_notice):
+                with patch("ysupport._run_internal_instruction_turn", new=fake_internal_turn):
+                    with patch("ysupport.send_long_message", new=fake_send_long_message):
+                        await bot._resume_pending_telegram_handoff_replies()
+            self.assertEqual(
+                edited_messages,
+                [("123", 456, build_closed_handoff_notice(original_notice))],
+            )
+            self.assertEqual(
+                fake_channel.sent_messages,
+                ["The transaction has been queued and is pending multisig signatures."],
+            )
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            self.assertEqual(ticket_investigation_jobs[channel_id].mode, "waiting_for_user")
+        finally:
+            conversation_threads.pop(channel_id, None)
+            ticket_owner_user_id_by_channel.pop(channel_id, None)
+            channel_intent_after_button.pop(channel_id, None)
+            clear_team_handoff_notice(channel_id)
+            clear_ticket_investigation_job(channel_id)
+            last_bot_reply_ts_by_channel.pop(channel_id, None)
 
     async def test_resolve_freeform_starting_agent_reuses_ticket_router_for_public_lane_selection(self) -> None:
         fake_runner = _FakeRunner(

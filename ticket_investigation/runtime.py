@@ -49,6 +49,8 @@ class TicketTurnRequest:
     precomputed_boundary: dict[str, Any] | None = None
     send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None
     attachments: List[dict[str, Any]] = field(default_factory=list)
+    turn_source: str = "user"
+    turn_instruction: str | None = None
 
 
 def _resolve_agent(agent_key: str):

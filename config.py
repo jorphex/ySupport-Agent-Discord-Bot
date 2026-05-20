@@ -140,6 +140,8 @@ YEARN_PUBLIC_TRIGGER_CHAR = os.getenv("YEARN_PUBLIC_TRIGGER_CHAR")
 HUMAN_HANDOFF_TARGET_USER_ID = os.getenv("HUMAN_HANDOFF_TARGET_USER_ID")
 HUMAN_HANDOFF_TAG_PLACEHOLDER = os.getenv("HUMAN_HANDOFF_TAG_PLACEHOLDER", "{HUMAN_HANDOFF_TAG_PLACEHOLDER}",
 )
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_YSUPPORT_CHAT = os.getenv("TELEGRAM_YSUPPORT_CHAT", "").strip()
 
 CATEGORY_CONTEXT_MAP = (
     {YEARN_TICKET_CATEGORY_ID: "yearn"}
@@ -393,8 +395,6 @@ def runtime_environment_validation_issues() -> list[str]:
         issues.append("YEARN_PUBLIC_TRIGGER_CHAR is required")
     if PR_MARKETING_CHANNEL_ID is None:
         issues.append("PR_MARKETING_CHANNEL_ID is required")
-    if not HUMAN_HANDOFF_TARGET_USER_ID:
-        issues.append("HUMAN_HANDOFF_TARGET_USER_ID is required")
     return issues
 
 

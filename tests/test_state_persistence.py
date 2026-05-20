@@ -10,10 +10,12 @@ import state
 from state import (
     apply_initial_button_intent,
     PublicConversation,
+    TeamHandoffNotice,
     TicketInvestigationJob,
     bug_report_debounce_channels,
     channel_intent_after_button,
     channels_awaiting_initial_button_press,
+    clear_team_handoff_notice,
     clear_public_conversation,
     clear_ticket_channel_state,
     conversation_threads,
@@ -28,10 +30,12 @@ from state import (
     persist_ticket_state,
     public_conversations,
     recover_ticket_channel_from_runtime_stop,
+    remember_team_handoff_notice,
     reset_ticket_channel_for_terminal_reply,
     stop_reasons_by_channel,
     stopped_channels,
     stop_ticket_channel,
+    team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
     ticket_investigation_jobs,
 )
@@ -260,6 +264,62 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 assert payload is not None
                 self.assertFalse(payload["stopped"])
                 self.assertIsNone(payload["stop_reason"])
+
+    def test_team_handoff_notice_persists_and_round_trips(self) -> None:
+        channel_id = 107
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+            ):
+                remember_team_handoff_notice(
+                    channel_id,
+                    TeamHandoffNotice(
+                        telegram_chat_id="123",
+                        telegram_message_id=456,
+                        target="support_manual",
+                        reason="manual follow-up needed",
+                        message_text="Ticket-0107: support_manual",
+                        reply_consumed=True,
+                        status="pending_delivery",
+                        pending_reply_text="tell the user we queued the tx",
+                        pending_reply_message_id=789,
+                    ),
+                )
+
+                team_handoff_notice_by_channel.pop(channel_id, None)
+                hydrate_ticket_state(channel_id)
+
+                notice = team_handoff_notice_by_channel.get(channel_id)
+                self.assertIsNotNone(notice)
+                assert notice is not None
+                self.assertEqual(notice.telegram_chat_id, "123")
+                self.assertEqual(notice.telegram_message_id, 456)
+                self.assertEqual(notice.target, "support_manual")
+                self.assertEqual(notice.reason, "manual follow-up needed")
+                self.assertEqual(notice.message_text, "Ticket-0107: support_manual")
+                self.assertTrue(notice.reply_consumed)
+                self.assertEqual(notice.status, "pending_delivery")
+                self.assertEqual(notice.pending_reply_text, "tell the user we queued the tx")
+                self.assertEqual(notice.pending_reply_message_id, 789)
+
+                clear_team_handoff_notice(channel_id)
+                self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+
+    def test_telegram_update_offset_persists_and_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            telegram_state_path = Path(temp_dir) / "telegram_state.json"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+                patch.object(state, "_TELEGRAM_STATE_PATH", telegram_state_path),
+            ):
+                state.persist_telegram_update_offset(12345)
+                self.assertEqual(state.load_telegram_update_offset(), 12345)
 
 
 class PublicStatePersistenceTests(unittest.TestCase):

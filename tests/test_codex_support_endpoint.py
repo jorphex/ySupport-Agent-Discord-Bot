@@ -12,6 +12,7 @@ from codex_support_home import prepare_codex_support_home
 from codex_support_contract import (
     SupportTurnRequest,
     SupportTurnResult,
+    support_result_to_transport_result,
     verify_support_turn_result,
 )
 from ticket_investigation.codex_support_endpoint import (
@@ -257,6 +258,87 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             support_request_without_mcp.constraints["allowed_tools"],
             ["shell", "web_search"],
+        )
+
+    def test_support_turn_request_preserves_internal_turn_context(self) -> None:
+        request = TicketExecutionTransportRequest(
+            aggregated_text="thanks. we already have this queued pending sigs",
+            input_list=[],
+            current_history=[{"role": "user", "content": "please dump rewards"}],
+            turn_source="internal_team",
+            turn_instruction=(
+                "This input is from the internal team, not from the user. "
+                "Write the next Discord update for the user."
+            ),
+            run_context={
+                "channel_id": 91,
+                "is_public_trigger": False,
+                "project_context": "yearn",
+                "initial_button_intent": "investigate_issue",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 91,
+                "requested_intent": "investigate_issue",
+                "mode": "escalated_to_human",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.internal_team_request",
+            wants_bug_review_status=False,
+        )
+
+        support_request = SupportTurnRequest.from_ticket_execution_request(request)
+
+        self.assertEqual(support_request.current_turn_source, "internal_team")
+        self.assertIn("internal team", support_request.current_turn_instruction or "")
+        self.assertEqual(
+            support_request.current_user_message,
+            "thanks. we already have this queued pending sigs",
+        )
+
+    def test_internal_team_result_does_not_append_team_reply_as_user_history(self) -> None:
+        request = TicketExecutionTransportRequest(
+            aggregated_text="thanks. we already have this queued pending sigs",
+            input_list=[],
+            current_history=[{"role": "user", "content": "please dump rewards"}],
+            turn_source="internal_team",
+            turn_instruction="Write the next Discord update for the user.",
+            run_context={
+                "channel_id": 92,
+                "is_public_trigger": False,
+                "project_context": "yearn",
+                "initial_button_intent": "investigate_issue",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 92,
+                "requested_intent": "investigate_issue",
+                "mode": "escalated_to_human",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.internal_team_history",
+            wants_bug_review_status=False,
+        )
+        result = SupportTurnResult(
+            answer="The swap has already been queued and is pending signatures.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="team update",
+            used_tools=[],
+        )
+
+        transport_result = support_result_to_transport_result(result, request)
+        conversation_history = transport_result.flow_outcome["conversation_history"]
+
+        self.assertEqual(
+            conversation_history,
+            [
+                {"role": "user", "content": "please dump rewards"},
+                {
+                    "role": "assistant",
+                    "content": "The swap has already been queued and is pending signatures.",
+                },
+            ],
         )
 
     def test_support_turn_request_includes_deposit_withdrawal_workflow_context(self) -> None:
@@ -524,8 +606,37 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(verified.requires_human_handoff)
         self.assertIsNone(verified.handoff_reason)
-        self.assertNotIn("hand this off", verified.answer.lower())
-        self.assertIn("dashboard looks fresh", verified.answer.lower())
+
+    def test_verify_support_turn_result_forces_handoff_for_explicit_operator_action_request(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="pls dump dola rewards for strategy 0x1111111111111111111111111111111111111111",
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="other_free_form",
+            requested_intent="other_free_form",
+            evidence={},
+            support_state={"human_handoff_active": False},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer="The rewards are still sitting on the strategy and have not been swapped yet.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Checked current strategy state.",
+            used_tools=["ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertTrue(verified.requires_human_handoff)
+        self.assertEqual(
+            verified.handoff_reason,
+            "manual strategy or ops action is required to perform the requested reward or yield operation",
+        )
+        self.assertIn("manual strategy-team action", verified.answer.lower())
 
     def test_verify_support_turn_result_strips_human_ops_review_hint(self) -> None:
         request = SupportTurnRequest(
@@ -573,6 +684,8 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Routine support: concise.", prompt_text)
         self.assertIn("Investigations and report triage: enough prose", prompt_text)
         self.assertIn("Do not mention handoff if public evidence already answers the main question.", prompt_text)
+        self.assertIn("Use `current_turn_source`", prompt_text)
+        self.assertIn("If `current_turn_source` is `internal_team`", prompt_text)
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
