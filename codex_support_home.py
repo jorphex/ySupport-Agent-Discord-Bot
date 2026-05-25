@@ -65,16 +65,11 @@ def prepare_codex_support_home(
         encoding="utf-8",
     )
 
-    if auth_source:
-        source_path = Path(auth_source)
-        sync_path = Path(auth_sync_source) if auth_sync_source else None
-        _sync_codex_auth_file(source_path, sync_path)
-        if source_path.exists():
-            _copy_file_if_distinct(source_path, auth_path)
-    elif auth_sync_source:
-        sync_path = Path(auth_sync_source)
-        if sync_path.exists():
-            _copy_file_if_distinct(sync_path, auth_path)
+    sync_codex_auth_state(
+        home_auth_path=auth_path,
+        auth_source_path=Path(auth_source) if auth_source else None,
+        auth_sync_source_path=Path(auth_sync_source) if auth_sync_source else None,
+    )
 
     return CodexSupportHome(
         home_dir=home_dir,
@@ -85,13 +80,43 @@ def prepare_codex_support_home(
     )
 
 
-def _sync_codex_auth_file(
-    auth_source_path: Path,
-    sync_source_path: Path | None,
-) -> None:
-    if sync_source_path is None or not sync_source_path.exists():
-        return
-    _copy_file_if_distinct(sync_source_path, auth_source_path)
+def sync_codex_auth_state(
+    *,
+    home_auth_path: Path,
+    auth_source_path: Path | None = None,
+    auth_sync_source_path: Path | None = None,
+) -> Path | None:
+    candidate_paths = _unique_paths(
+        home_auth_path,
+        auth_source_path,
+        auth_sync_source_path,
+    )
+    existing_paths = [path for path in candidate_paths if path.exists()]
+    if not existing_paths:
+        return None
+    freshest_path = max(
+        existing_paths,
+        key=lambda path: (path.stat().st_mtime_ns, str(path.resolve())),
+    )
+    for target_path in candidate_paths:
+        if target_path == freshest_path:
+            continue
+        _copy_file_if_distinct(freshest_path, target_path)
+    return freshest_path
+
+
+def _unique_paths(*paths: Path | None) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path is None:
+            continue
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
 
 
 def _copy_file_if_distinct(source_path: Path, destination_path: Path) -> None:

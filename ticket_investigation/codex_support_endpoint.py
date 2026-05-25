@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from codex_support_home import prepare_codex_support_home
+from codex_support_home import prepare_codex_support_home, sync_codex_auth_state
 from codex_support_contract import (
     CODEX_SUPPORT_RESULT_SCHEMA,
     SupportTurnRequest,
@@ -303,8 +303,19 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 if attempt == 0 and _is_codex_auth_error_text(str(exc)):
                     continue
                 raise
+            finally:
+                self._sync_support_home_auth_state()
         assert last_error is not None
         raise last_error
+
+    def _sync_support_home_auth_state(self) -> None:
+        if self.codex_home is None:
+            return
+        sync_codex_auth_state(
+            home_auth_path=self.codex_home / "auth.json",
+            auth_source_path=self.codex_auth_source,
+            auth_sync_source_path=self.codex_auth_sync_source,
+        )
 
     def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:
         stderr_path = run_dir / "stderr.txt"
