@@ -394,6 +394,86 @@
         "**/artifacts/**",
         "**/cache/**"
       ]
+    },
+    {
+      "owner": "flexmeow",
+      "repo": "flex-contracts",
+      "ref": null,
+      "product_tag": "flex",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "contracts/*.vy",
+        "contracts/**/*.vy",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "interfaces/*.vy",
+        "interfaces/**/*.vy",
+        "src/*.sol",
+        "src/**/*.sol",
+        "src/*.vy",
+        "src/**/*.vy",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
+    },
+    {
+      "owner": "flexmeow",
+      "repo": "dutch-taker-contracts",
+      "ref": null,
+      "product_tag": "flex",
+      "authority_tag": "contract_code",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "SECURITY.md",
+        "SPECIFICATION.md",
+        "TECH_SPEC.md",
+        "contracts/*.sol",
+        "contracts/**/*.sol",
+        "contracts/*.vy",
+        "contracts/**/*.vy",
+        "interfaces/*.sol",
+        "interfaces/**/*.sol",
+        "interfaces/*.vy",
+        "interfaces/**/*.vy",
+        "src/*.sol",
+        "src/**/*.sol",
+        "src/*.vy",
+        "src/**/*.vy",
+        "**/deploy*.json",
+        "**/deployment*.json",
+        "**/addresses*.json",
+        "audits/**/*.md",
+        "docs/**/*.md"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/script/**",
+        "**/scripts/**",
+        "**/node_modules/**",
+        "**/artifacts/**",
+        "**/cache/**"
+      ]
     }
   ]
 }
