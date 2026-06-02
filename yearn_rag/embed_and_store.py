@@ -29,6 +29,10 @@ EMBEDDING_SOURCES = {
     "yips": {
         "input_json": "cleaned_yips.json",
         "namespace": "yearn-yips" # The "Historical Context" namespace
+    },
+    "flex_docs": {
+        "input_json": "cleaned_flex_docs.json",
+        "namespace": "flex-docs"
     }
 }
 

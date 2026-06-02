@@ -27,6 +27,16 @@ DOC_SOURCES = {
         "output_json": "cleaned_yips.json",
         "excluded_folders": [],
         "source_type": "yip"
+    },
+    "flex": {
+        "source_dir": "flex-docs",
+        "output_json": "cleaned_flex_docs.json",
+        "excluded_folders": [
+            "llms.md"
+        ],
+        "base_url": "https://flexmeow.com",
+        "route_base_path": "/",
+        "source_type": "documentation"
     }
 }
 
