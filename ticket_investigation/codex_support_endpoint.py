@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import json
 import os
 from pathlib import Path
+import re
 from typing import Sequence
 from urllib.parse import urlparse
 
@@ -50,6 +52,12 @@ class CodexSupportExecutionBundle:
     support_request_path: Path
     response_schema_path: Path
     resumed_session_id: str | None
+
+
+@dataclass
+class CodexSupportExecutionOutput:
+    final_response_text: str
+    documentation_answers: list[str] | None = None
 
 
 class _ConversationExecutionLocks:
@@ -199,7 +207,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 )
                 exported_run_dir: Path | None = None
                 try:
-                    response_text = await self._run_with_auth_retry(
+                    execution_output = await self._run_with_auth_retry(
                         bundle=bundle,
                         run_dir=run_dir,
                         hooks=hooks,
@@ -236,8 +244,13 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             ),
                         )
                 support_result = verify_support_turn_result(
-                    SupportTurnResult.from_json(response_text),
+                    SupportTurnResult.from_json(execution_output.final_response_text),
                     support_request,
+                )
+                support_result = _maybe_prefer_documentation_answer(
+                    support_result,
+                    support_request,
+                    execution_output.documentation_answers,
                 )
                 return support_result_to_transport_result(support_result, request).to_json()
 
@@ -262,7 +275,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         bundle: CodexSupportExecutionBundle,
         run_dir: Path,
         hooks: TicketExecutionHooks | None,
-    ) -> str:
+    ) -> CodexSupportExecutionOutput:
         last_error: Exception | None = None
         for attempt in range(2):
             if attempt > 0:
@@ -573,6 +586,9 @@ def _codex_support_prompt(
         "If a boundary or off-scope message reaches you, reply briefly and stay on the boundary.\n"
         "Use only the tools listed in `constraints.allowed_tools`.\n"
         "If `ysupport_mcp` is listed, prefer it for Yearn-specific docs, repo context, vault context, and support facts.\n"
+        "If a Yearn documentation tool already returns a complete answer, use that answer as the primary output form instead of rewriting it from scratch.\n"
+        "Do not add web search or external sources to a docs/mechanics/product-explanation answer when the Yearn docs result already answers the question.\n"
+        "If you keep a docs-tool answer structure, preserve its paragraph and list formatting rather than flattening it.\n"
         "No file writes.\n"
         "Do not tell the user to go to Discord or open a Discord ticket.\n"
         "If the exact fact is known, give it first.\n"
@@ -607,7 +623,7 @@ async def _run_codex_support_json_subprocess(
     metadata: dict[str, object],
     artifact_run_dir: Path | None,
     progress_callback,
-) -> str:
+) -> CodexSupportExecutionOutput:
     creation_kwargs = (
         {"creationflags": 0}
         if os.name == "nt"
@@ -699,13 +715,33 @@ async def _run_codex_support_json_subprocess(
     if process.returncode != 0:
         error_text = stderr_text or "Codex support execution exited without stderr output."
         raise RuntimeError(error_text[:max_error_chars])
-    if final_response_text is None:
-        if not stdout_text:
-            raise RuntimeError(empty_stdout_message)
-        raise RuntimeError("Codex support execution returned JSON events without a final agent message.")
-    if len(final_response_text) > max_output_chars:
+    if not stdout_text:
+        raise RuntimeError(empty_stdout_message)
+    execution_output = _parse_codex_support_execution_output(stdout_text)
+    if len(execution_output.final_response_text) > max_output_chars:
         raise RuntimeError(oversized_stdout_message)
-    return final_response_text
+    return execution_output
+
+
+def _parse_codex_support_execution_output(stdout_text: str) -> CodexSupportExecutionOutput:
+    final_response_text: str | None = None
+    documentation_answers: list[str] = []
+    for line in stdout_text.splitlines():
+        event = _parse_json_event(line)
+        if event is None:
+            continue
+        response_text = _final_response_from_codex_event(event)
+        if response_text:
+            final_response_text = response_text
+        docs_text = _documentation_answer_from_codex_event(event)
+        if docs_text:
+            documentation_answers.append(docs_text)
+    if final_response_text is None:
+        raise RuntimeError("Codex support execution returned JSON events without a final agent message.")
+    return CodexSupportExecutionOutput(
+        final_response_text=final_response_text,
+        documentation_answers=documentation_answers,
+    )
 
 
 def _parse_json_event(text: str) -> dict[str, object] | None:
@@ -740,6 +776,117 @@ def _final_response_from_codex_event(event: dict[str, object]) -> str | None:
         return None
     text = item.get("text")
     return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def _documentation_answer_from_codex_event(event: dict[str, object]) -> str | None:
+    if event.get("type") != "item.completed":
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    item_type = str(item.get("type") or "").strip().lower()
+    if item_type not in {"mcp_tool_call", "function_call"}:
+        return None
+    tool_name = str(item.get("tool") or item.get("name") or "").strip().lower()
+    if not tool_name:
+        return None
+    if "search_documentation" not in tool_name and "answer_from_docs" not in tool_name:
+        return None
+    result = item.get("result")
+    if not isinstance(result, dict):
+        return None
+    structured = result.get("structured_content")
+    if isinstance(structured, dict):
+        structured_result = structured.get("result")
+        if isinstance(structured_result, str) and structured_result.strip():
+            return structured_result.strip()
+    content = result.get("content")
+    if isinstance(content, list):
+        for entry in content:
+            if not isinstance(entry, dict):
+                continue
+            text = entry.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return None
+
+
+def _maybe_prefer_documentation_answer(
+    support_result: SupportTurnResult,
+    support_request: SupportTurnRequest,
+    documentation_answers: list[str] | None,
+) -> SupportTurnResult:
+    if not documentation_answers or support_result.requires_human_handoff:
+        return support_result
+    if support_request.current_turn_source != "user":
+        return support_result
+    used_tools = set(support_result.used_tools)
+    if not used_tools:
+        return support_result
+    has_docs_tool = any(
+        tool == "ysupport_mcp.search_documentation"
+        or tool == "answer_from_docs_tool"
+        or tool.endswith(".search_documentation")
+        or tool.endswith(".answer_from_docs")
+        or tool == "ysupport_mcp"
+        for tool in used_tools
+    )
+    if not has_docs_tool:
+        return support_result
+    safe_tools = {
+        "ysupport_mcp",
+        "ysupport_mcp.search_documentation",
+        "answer_from_docs_tool",
+        "web_search",
+    }
+    if any(tool not in safe_tools for tool in used_tools):
+        return support_result
+    documentation_answer = _select_best_documentation_answer(
+        support_result.answer,
+        documentation_answers,
+    )
+    if not documentation_answer:
+        return support_result
+    return SupportTurnResult(
+        answer=documentation_answer,
+        requires_human_handoff=support_result.requires_human_handoff,
+        handoff_reason=support_result.handoff_reason,
+        evidence_summary=support_result.evidence_summary,
+        used_tools=support_result.used_tools,
+    )
+
+
+def _select_best_documentation_answer(
+    final_answer: str,
+    documentation_answers: list[str],
+) -> str | None:
+    normalized_final = _normalize_docs_answer_for_match(final_answer)
+    if not normalized_final:
+        return None
+    best_answer: str | None = None
+    best_score = 0.0
+    for candidate in documentation_answers:
+        normalized_candidate = _normalize_docs_answer_for_match(candidate)
+        if not normalized_candidate:
+            continue
+        score = SequenceMatcher(None, normalized_final, normalized_candidate).ratio()
+        if normalized_final in normalized_candidate or normalized_candidate in normalized_final:
+            score = max(score, 0.98)
+        if score > best_score:
+            best_score = score
+            best_answer = candidate
+    if best_score < 0.7:
+        return None
+    return best_answer
+
+
+def _normalize_docs_answer_for_match(text: str) -> str:
+    normalized = (text or "").lower()
+    normalized = normalized.replace("•", "-")
+    normalized = re.sub(r"https?://\S+", " ", normalized)
+    normalized = re.sub(r"[*_`>#-]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
 
 
 def _progress_update_from_codex_event(event: dict[str, object]) -> str | None:

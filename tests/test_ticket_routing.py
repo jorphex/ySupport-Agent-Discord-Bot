@@ -18,6 +18,7 @@ from state import (
 from handoff import (
     HandoffRoute,
     build_handoff_notice,
+    strip_handoff_placeholder,
 )
 from support_agents import (
     SupportBoundaryCheckOutput,
@@ -167,6 +168,18 @@ class RoutingTests(unittest.TestCase):
         self.assertIn(
             "discord.com/channels/734804446353031319/1506309610192113917",
             notice,
+        )
+
+    def test_strip_handoff_placeholder_preserves_newlines(self) -> None:
+        text = (
+            "Main difference from Aave:\n"
+            "- Flex uses fixed rates.\n"
+            "- Aave uses variable rates.\n\n"
+            f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
+        )
+        self.assertEqual(
+            strip_handoff_placeholder(text),
+            "Main difference from Aave:\n- Flex uses fixed rates.\n- Aave uses variable rates.",
         )
 
     @patch("ysupport._is_contributor_member")
@@ -948,4 +961,3 @@ class TriageDecisionTests(unittest.TestCase):
             )
         )
         self.assertFalse(_contains_report_artifact_evidence("No artifact URL here."))
-

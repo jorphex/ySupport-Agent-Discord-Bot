@@ -64,6 +64,26 @@ def _truncate_rerank_document(text: str, max_chars: int = 3000) -> str:
     return normalized[:max_chars].rstrip()
 
 
+def _should_include_flex_docs(query_lower: str) -> bool:
+    if re.search(r"\bflex\b", query_lower):
+        return True
+    strong_markers = (
+        r"\btroves?\b",
+        r"\bredeemers?\b",
+        r"\blender vaults?\b",
+        r"\bfixed[- ]rate (?:money market|lending market)\b",
+        r"\bliquity\b",
+    )
+    if any(re.search(pattern, query_lower) for pattern in strong_markers):
+        return True
+    if re.search(r"\bredemptions?\b", query_lower):
+        return any(
+            marker in query_lower
+            for marker in ("fixed-rate", "fixed rate", "trove", "lender vault", "liquity")
+        )
+    return False
+
+
 def _extract_repo_artifact_refs(text: str) -> list[str]:
     refs = re.findall(r"(?:segment|fact):\d+", text or "")
     seen: set[str] = set()
@@ -213,7 +233,11 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
     query_lower = user_query.lower()
     yip_terms = ["yip", "proposal", "governance vote", "snapshot vote"]
     include_yips = any(t in query_lower for t in yip_terms)
-    namespaces_to_query = ["yearn-docs"] + (["yearn-yips"] if include_yips else [])
+    namespaces_to_query = ["yearn-docs"]
+    if include_yips:
+        namespaces_to_query.append("yearn-yips")
+    if _should_include_flex_docs(query_lower):
+        namespaces_to_query.append("flex-docs")
 
     try:
         hyde_prompt = (
@@ -224,7 +248,6 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
             model=config.LLM_DOCS_HYDE_MODEL,
             messages=[{"role": "system", "content": hyde_prompt}],
             reasoning_effort=config.LLM_DOCS_HYDE_REASONING_EFFORT,
-            verbosity=config.LLM_DOCS_HYDE_VERBOSITY,
         )
         hypothetical_answer = hyde_response.choices[0].message.content.strip()
         embedding_text = f"{user_query}\n\n{hypothetical_answer}"
@@ -266,20 +289,23 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
         meta_k = max(1, meta_k)
         docs_k = max(1, docs_k)
 
-        query_tasks = []
+        query_tasks: List[tuple[str, Any]] = []
         for ns in available_namespaces:
-            if ns == "yearn-docs":
-                query_tasks.append(
-                    asyncio.to_thread(
-                        pinecone_index.query,
-                        namespace=ns,
-                        vector=query_embedding,
-                        top_k=meta_k,
-                        include_metadata=True,
-                        filter={"source_type": {"$eq": "meta_context"}}
-                    )
-                )
-                query_tasks.append(
+            if ns in {"yearn-docs", "flex-docs"}:
+                if ns == "yearn-docs":
+                    query_tasks.append((
+                        ns,
+                        asyncio.to_thread(
+                            pinecone_index.query,
+                            namespace=ns,
+                            vector=query_embedding,
+                            top_k=meta_k,
+                            include_metadata=True,
+                            filter={"source_type": {"$eq": "meta_context"}}
+                        ),
+                    ))
+                query_tasks.append((
+                    ns,
                     asyncio.to_thread(
                         pinecone_index.query,
                         namespace=ns,
@@ -287,10 +313,11 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
                         top_k=docs_k,
                         include_metadata=True,
                         filter={"source_type": {"$eq": "documentation"}}
-                    )
-                )
+                    ),
+                ))
             else:
-                query_tasks.append(
+                query_tasks.append((
+                    ns,
                     asyncio.to_thread(
                         pinecone_index.query,
                         namespace=ns,
@@ -298,12 +325,11 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
                         top_k=docs_k,
                         include_metadata=True,
                         filter={"source_type": {"$eq": "yip"}}
-                    )
-                )
+                    ),
+                ))
 
-        results_list = await asyncio.gather(*query_tasks)
-        for idx, res in enumerate(results_list):
-            namespace = available_namespaces[idx // 2] if len(available_namespaces) > 1 else available_namespaces[0]
+        results_list = await asyncio.gather(*(task for _, task in query_tasks))
+        for (namespace, _), res in zip(query_tasks, results_list):
             for match in res.get("matches", []):
                 all_matches.append(_normalize_match(match, namespace))
 
@@ -456,6 +482,8 @@ async def _synthesize_docs_answer(
         "15. When an exact detail is undocumented, say 'The docs do not say whether ...' or 'That is not documented here' instead of saying you checked sources.\n"
         "16. Respond in your own words; do not use canned responses or templates.\n"
         "17. NO META-COMMENTARY.\n"
+        "18. If you use bullets, render them as a real multi-line list with one item per line. Do not inline bullet markers inside a paragraph.\n"
+        "19. Put a blank line before a bullet list, and keep the introduction sentence separate from the list.\n"
     )
 
     try:
@@ -466,7 +494,6 @@ async def _synthesize_docs_answer(
                 {"role": "user", "content": f"Context:\n{context_text}\n\nYIP_STATUS_METADATA: {yip_status_summary or 'none'}\nNO_CONTEXT: {str(no_context).lower()}\n\nQuestion: {user_query}"}
             ],
             reasoning_effort=config.LLM_DOCS_SYNTH_REASONING_EFFORT,
-            verbosity=config.LLM_DOCS_SYNTH_VERBOSITY,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:

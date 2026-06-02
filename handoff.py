@@ -106,10 +106,26 @@ _handoff_summary_async_client: AsyncOpenAI | None = None
 def strip_handoff_placeholder(text: str | None) -> str:
     if not text:
         return ""
-    stripped = text.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, " ").strip()
-    stripped = re.sub(r"\s+", " ", stripped)
-    stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
-    return stripped.strip()
+    stripped = text.replace(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, " ")
+    lines = stripped.splitlines()
+    cleaned_lines: list[str] = []
+    for line in lines:
+        cleaned = re.sub(r"[ \t]+", " ", line).strip()
+        cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+        cleaned_lines.append(cleaned)
+
+    collapsed: list[str] = []
+    previous_blank = False
+    for line in cleaned_lines:
+        if not line:
+            if not previous_blank:
+                collapsed.append("")
+            previous_blank = True
+            continue
+        collapsed.append(line)
+        previous_blank = False
+
+    return "\n".join(collapsed).strip()
 
 
 def infer_handoff_route(
