@@ -53,6 +53,9 @@ from ticket_investigation.runtime import (
 )
 from ysupport import (
     TicketBot,
+    _build_discord_intents,
+    _reload_runtime_env_and_config,
+    _run_ticket_bot_with_fatal_startup_backoff,
     _notify_handoff,
 )
 from tests.test_ticket_intake import (
@@ -105,6 +108,61 @@ class _FakeInvestigationExecutor:
 
 
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_build_discord_intents_enables_expected_intents(self) -> None:
+        intents = _build_discord_intents()
+        self.assertTrue(intents.message_content)
+        self.assertTrue(intents.guilds)
+        self.assertTrue(intents.messages)
+
+    def test_reload_runtime_env_and_config_overrides_env_from_dotenv(self) -> None:
+        original_value = config.DISCORD_BOT_TOKEN
+        with patch("ysupport.load_dotenv") as mock_load, patch(
+            "ysupport.importlib.reload",
+            side_effect=lambda module: module,
+        ) as mock_reload:
+            _reload_runtime_env_and_config()
+        mock_load.assert_called_once_with(config.BASE_DIR / ".env", override=True)
+        mock_reload.assert_called_once_with(config)
+        self.assertEqual(config.DISCORD_BOT_TOKEN, original_value)
+
+    def test_run_ticket_bot_with_fatal_startup_backoff_retries_after_login_failure(self) -> None:
+        attempts = {"count": 0}
+
+        def fake_run_once():
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise discord.errors.LoginFailure("bad token")
+            return None
+
+        with patch("ysupport._reload_runtime_env_and_config") as mock_reload, patch(
+            "ysupport._run_ticket_bot_once",
+            side_effect=fake_run_once,
+        ) as mock_run_once, patch("ysupport.time.sleep") as mock_sleep:
+            with patch.object(config, "DISCORD_FATAL_STARTUP_BACKOFF_SECONDS", 123.0):
+                _run_ticket_bot_with_fatal_startup_backoff()
+
+        self.assertEqual(mock_reload.call_count, 2)
+        self.assertEqual(mock_run_once.call_count, 2)
+        mock_sleep.assert_called_once_with(123.0)
+
+    def test_run_ticket_bot_with_fatal_startup_backoff_clamps_minimum_sleep(self) -> None:
+        attempts = {"count": 0}
+
+        def fake_run_once():
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise discord.errors.PrivilegedIntentsRequired(shard_id=None)
+            return None
+
+        with patch("ysupport._reload_runtime_env_and_config"), patch(
+            "ysupport._run_ticket_bot_once",
+            side_effect=fake_run_once,
+        ), patch("ysupport.time.sleep") as mock_sleep:
+            with patch.object(config, "DISCORD_FATAL_STARTUP_BACKOFF_SECONDS", 5.0):
+                _run_ticket_bot_with_fatal_startup_backoff()
+
+        mock_sleep.assert_called_once_with(60.0)
+
     async def test_notify_handoff_uses_model_summary_when_available(self) -> None:
         route = HandoffRoute(
             target="support_manual",

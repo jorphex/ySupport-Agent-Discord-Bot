@@ -21,10 +21,6 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from handoff import (
-    HandoffRoute,
-    TelegramSentMessage,
-)
 from ticket_intake import canonicalize_current_user_message as _canonicalize_current_user_message
 from ticket_investigation.runtime import (
     TicketAgentFlowOutcome,
@@ -734,10 +730,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             stopped_channels.discard(channel_id)
             clear_ticket_investigation_job(channel_id)
 
-    async def test_process_ticket_message_security_exception_notifies_security_team(self) -> None:
+    async def test_process_ticket_message_security_exception_does_not_notify_security_team(self) -> None:
         channel_id = 167
         fake_channel = _FakeDiscordChannel(channel_id)
-        captured_routes: list[HandoffRoute] = []
 
         class _FailingExecutor:
             async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
@@ -772,37 +767,14 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         async def fake_send_long_message(channel, message, **kwargs):
             await channel.send(message, **kwargs)
 
-        async def fake_notify_handoff(
-            *,
-            route,
-            summary,
-            channel_id,
-            guild_id,
-            source,
-            recent_user_messages=None,
-            known_facts=None,
-        ):
-            captured_routes.append(route)
-            return TelegramSentMessage(
-                chat_id="12345",
-                message_id=67890,
-                message_text="notice",
-            )
-
         try:
             with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
-                with patch("ysupport._notify_handoff", new=fake_notify_handoff):
-                    with patch("ysupport.send_long_message", new=fake_send_long_message):
-                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
-                            await bot.process_ticket_message(channel_id, run_context)
+                with patch("ysupport.send_long_message", new=fake_send_long_message):
+                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                        await bot.process_ticket_message(channel_id, run_context)
             self.assertEqual(fake_channel.sent_messages, [config.SECURITY_ALTERNATE_CONTACT_MESSAGE])
             self.assertNotIn(channel_id, stopped_channels)
-            self.assertEqual(len(captured_routes), 1)
-            self.assertEqual(captured_routes[0].target, "security_team")
-            notice = team_handoff_notice_by_channel.get(channel_id)
-            self.assertIsNotNone(notice)
-            assert notice is not None
-            self.assertEqual(notice.target, "security_team")
+            self.assertIsNone(team_handoff_notice_by_channel.get(channel_id))
         finally:
             pending_messages.pop(channel_id, None)
             conversation_threads.pop(channel_id, None)

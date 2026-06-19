@@ -150,6 +150,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
         self.execution_locks = _ConversationExecutionLocks()
+        self.codex_runtime_lock = asyncio.Lock()
         self._prepare_support_home()
 
     async def execute_json_turn(
@@ -168,67 +169,67 @@ class CodexSupportTicketExecutionJsonEndpoint:
             ).to_json()
         conversation_key = _conversation_key_for_request(request)
         async with self.execution_locks.acquire(conversation_key):
-            ysupport_mcp_enabled = self._prepare_support_home()
-
             workspace = TicketExecutionWorkspace(
                 artifact_dir=self.artifact_dir or None,
                 run_dir_root=self.run_dir_root or None,
                 prefix="ticket-codex-support-run-",
             )
             with workspace as run_dir:
-                support_request = SupportTurnRequest.from_ticket_execution_request(
-                    request,
-                    ysupport_mcp_enabled=ysupport_mcp_enabled,
-                )
-                workflow_context = support_request.support_state.get("workflow_context", {})
-                session_record = (
-                    self.session_manager.load_for_turn(
-                        conversation_key=conversation_key,
-                        requested_intent=support_request.requested_intent,
-                        guardrail_profile=workflow_context.get("guardrail_profile"),
-                        human_handoff_active=bool(
-                            support_request.support_state.get("human_handoff_active")
-                        ),
+                async with self.codex_runtime_lock:
+                    ysupport_mcp_enabled = self._prepare_support_home()
+                    support_request = SupportTurnRequest.from_ticket_execution_request(
+                        request,
+                        ysupport_mcp_enabled=ysupport_mcp_enabled,
                     )
-                    if self.session_manager is not None and conversation_key is not None
-                    else None
-                )
-                await _prepare_support_request_attachments(
-                    support_request,
-                    run_dir=run_dir,
-                )
-                bundle = _build_codex_support_execution_bundle(
-                    support_request=support_request,
-                    run_dir=run_dir,
-                    codex_command=self.codex_command,
-                    model=self.model,
-                    reasoning_effort=self.reasoning_effort,
-                    resume_session_id=session_record.session_id if session_record else None,
-                )
-                exported_run_dir: Path | None = None
-                try:
-                    execution_output = await self._run_with_auth_retry(
-                        bundle=bundle,
-                        run_dir=run_dir,
-                        hooks=hooks,
-                    )
-                except Exception as exc:
-                    if (
-                        self.session_manager is not None
-                        and conversation_key is not None
-                        and session_record is not None
-                    ):
-                        self.session_manager.record_failure(
+                    workflow_context = support_request.support_state.get("workflow_context", {})
+                    session_record = (
+                        self.session_manager.load_for_turn(
                             conversation_key=conversation_key,
-                            error_text=str(exc),
+                            requested_intent=support_request.requested_intent,
+                            guardrail_profile=workflow_context.get("guardrail_profile"),
+                            human_handoff_active=bool(
+                                support_request.support_state.get("human_handoff_active")
+                            ),
                         )
-                    raise
-                finally:
-                    exported_run_dir = safe_export_workspace_copy(
-                        workspace,
-                        logger_name=__name__,
-                        context="codex support execution",
+                        if self.session_manager is not None and conversation_key is not None
+                        else None
                     )
+                    await _prepare_support_request_attachments(
+                        support_request,
+                        run_dir=run_dir,
+                    )
+                    bundle = _build_codex_support_execution_bundle(
+                        support_request=support_request,
+                        run_dir=run_dir,
+                        codex_command=self.codex_command,
+                        model=self.model,
+                        reasoning_effort=self.reasoning_effort,
+                        resume_session_id=session_record.session_id if session_record else None,
+                    )
+                    exported_run_dir: Path | None = None
+                    try:
+                        execution_output = await self._run_with_auth_retry(
+                            bundle=bundle,
+                            run_dir=run_dir,
+                            hooks=hooks,
+                        )
+                    except Exception as exc:
+                        if (
+                            self.session_manager is not None
+                            and conversation_key is not None
+                            and session_record is not None
+                        ):
+                            self.session_manager.record_failure(
+                                conversation_key=conversation_key,
+                                error_text=str(exc),
+                            )
+                        raise
+                    finally:
+                        exported_run_dir = safe_export_workspace_copy(
+                            workspace,
+                            logger_name=__name__,
+                            context="codex support execution",
+                        )
 
                 if self.session_manager is not None and conversation_key is not None:
                     session_id = self._extract_session_id_from_run_dir(run_dir)
@@ -269,6 +270,16 @@ class CodexSupportTicketExecutionJsonEndpoint:
         )
         return support_home.ysupport_mcp_enabled
 
+    def _prime_support_home_auth_state(self) -> None:
+        if self.codex_home is None:
+            return
+        sync_codex_auth_state(
+            home_auth_path=self.codex_home / "auth.json",
+            auth_source_path=self.codex_auth_source,
+            auth_sync_source_path=self.codex_auth_sync_source,
+            preferred_source_path=self.codex_auth_sync_source,
+        )
+
     async def _run_with_auth_retry(
         self,
         *,
@@ -278,6 +289,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
     ) -> CodexSupportExecutionOutput:
         last_error: Exception | None = None
         for attempt in range(2):
+            self._prime_support_home_auth_state()
             if attempt > 0:
                 self._prepare_support_home()
             try:

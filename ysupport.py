@@ -1,6 +1,8 @@
 import asyncio
 from copy import deepcopy
+import importlib
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, List, Literal
 
@@ -33,7 +35,7 @@ from handoff import (
     summarize_handoff_summary,
 )
 from router import is_bug_report_query
-from support_agents import evaluate_support_boundary, is_security_process_exception_request
+from support_agents import evaluate_support_boundary
 from state import (
     BotRunContext,
     PublicConversation,
@@ -1667,23 +1669,6 @@ class TicketBot(discord.Client):
                         should_stop_processing = _should_stop_for_boundary_output(
                             boundary_output
                         )
-                        if (
-                            boundary_output.get("classification") == "security_process_boundary"
-                            and is_security_process_exception_request(aggregated_text)
-                        ):
-                            route = infer_handoff_route(
-                                aggregated_text,
-                                final_reply,
-                                explicit_target="security_team",
-                                explicit_reason="security-process exception follow-up",
-                            )
-                            await _notify_and_record_ticket_handoff(
-                                route=route,
-                                summary=aggregated_text,
-                                channel_id=channel_id,
-                                guild_id=guild_id,
-                                investigation_job=investigation_job,
-                            )
                         if should_stop_processing:
                             stop_reason = "boundary_stop"
                             reset_ticket_channel_for_terminal_reply(channel_id)
@@ -1862,15 +1847,48 @@ class TicketBot(discord.Client):
         clear_ticket_channel_state(channel.id, keep_stopped=False, delete_persisted=True)
 
 
-# Run the Bot
-if __name__ == "__main__":
-    config.validate_runtime_environment_config()
-    config.validate_ticket_execution_runtime_config()
-
+def _build_discord_intents() -> discord.Intents:
     intents = discord.Intents.default()
     intents.message_content = True
     intents.guilds = True
     intents.messages = True
+    return intents
 
-    client = TicketBot(intents=intents)
+
+def _reload_runtime_env_and_config() -> None:
+    load_dotenv(config.BASE_DIR / ".env", override=True)
+    importlib.reload(config)
+
+
+def _run_ticket_bot_once() -> None:
+    config.validate_runtime_environment_config()
+    config.validate_ticket_execution_runtime_config()
+    client = TicketBot(intents=_build_discord_intents())
     client.run(config.DISCORD_BOT_TOKEN)
+
+
+def _run_ticket_bot_with_fatal_startup_backoff() -> None:
+    while True:
+        _reload_runtime_env_and_config()
+        try:
+            _run_ticket_bot_once()
+            return
+        except (
+            discord.errors.LoginFailure,
+            discord.errors.PrivilegedIntentsRequired,
+        ):
+            backoff_seconds = max(
+                float(config.DISCORD_FATAL_STARTUP_BACKOFF_SECONDS or 0.0),
+                60.0,
+            )
+            logging.critical(
+                "Fatal Discord startup failure. Backing off for %.0f seconds before retrying.",
+                backoff_seconds,
+                exc_info=True,
+            )
+            time.sleep(backoff_seconds)
+
+
+# Run the Bot
+if __name__ == "__main__":
+    _run_ticket_bot_with_fatal_startup_backoff()

@@ -647,7 +647,7 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["tripwire_triggered"])
         self.assertEqual(result["classification"], "security_process_boundary")
-        self.assertIn("security@yearn.finance", result["message"].lower())
+        self.assertIn("contact-information", result["message"].lower())
 
     async def test_outer_support_boundary_reply_prefers_bug_bounty_boundary(self) -> None:
         async def fake_boundary(_text: str):

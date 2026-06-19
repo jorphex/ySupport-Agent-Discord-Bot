@@ -128,6 +128,10 @@ YEARN_PINECONE_NAMESPACE = os.getenv("YEARN_PINECONE_NAMESPACE")
 
 # --- Discord ---
 # IDs can be overridden via env to keep repo clean of internal identifiers.
+DISCORD_FATAL_STARTUP_BACKOFF_SECONDS = _env_float(
+    "DISCORD_FATAL_STARTUP_BACKOFF_SECONDS",
+    900.0,
+)
 PUBLIC_TRIGGER_USER_IDS = set(
     v.strip()
     for v in os.getenv("PUBLIC_TRIGGER_USER_IDS", "").split(",")
@@ -140,7 +144,7 @@ HUMAN_HANDOFF_TAG_PLACEHOLDER = os.getenv("HUMAN_HANDOFF_TAG_PLACEHOLDER", "{HUM
 )
 SECURITY_ALTERNATE_CONTACT_MESSAGE = os.getenv(
     "SECURITY_ALTERNATE_CONTACT_MESSAGE",
-    "If you cannot use Yearn's normal security submission path because of KYC, jurisdiction, or platform issues, use the alternate security contacts in https://github.com/yearn/yearn-security/blob/master/SECURITY.md or email security@yearn.finance. Human help is required beyond that path.",
+    "If you cannot use Yearn's normal security submission path because of KYC, jurisdiction, or platform issues, send your report to the email addresses listed in the contact-information section of https://github.com/yearn/yearn-security/blob/master/SECURITY.md#contact-information.",
 )
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_YSUPPORT_CHAT = os.getenv("TELEGRAM_YSUPPORT_CHAT", "").strip()

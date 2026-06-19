@@ -156,6 +156,36 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 '{"auth_mode":"canonical-new"}',
             )
 
+    def test_sync_codex_auth_state_prefers_canonical_source_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home_auth = Path(temp_dir) / "bot-home" / "auth.json"
+            source_auth = Path(temp_dir) / "auth-source.json"
+            canonical_auth = Path(temp_dir) / "canonical-auth.json"
+            home_auth.parent.mkdir(parents=True, exist_ok=True)
+            home_auth.write_text('{"auth_mode":"bot-stale"}', encoding="utf-8")
+            source_auth.write_text('{"auth_mode":"source-stale"}', encoding="utf-8")
+            canonical_auth.write_text('{"auth_mode":"canonical-good"}', encoding="utf-8")
+            os.utime(home_auth, (5, 5))
+            os.utime(source_auth, (4, 4))
+            os.utime(canonical_auth, (1, 1))
+
+            chosen = sync_codex_auth_state(
+                home_auth_path=home_auth,
+                auth_source_path=source_auth,
+                auth_sync_source_path=canonical_auth,
+                preferred_source_path=canonical_auth,
+            )
+
+            self.assertEqual(chosen, canonical_auth)
+            self.assertEqual(
+                home_auth.read_text(encoding="utf-8"),
+                '{"auth_mode":"canonical-good"}',
+            )
+            self.assertEqual(
+                source_auth.read_text(encoding="utf-8"),
+                '{"auth_mode":"canonical-good"}',
+            )
+
     def test_read_codex_mcp_url_from_home_reads_ysupport_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             codex_home = Path(temp_dir)
@@ -1135,6 +1165,201 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 canonical_source.read_text(encoding="utf-8"),
                 '{"auth_mode":"bot-refreshed"}',
             )
+
+    async def test_codex_support_endpoint_syncs_auth_before_first_attempt(self) -> None:
+        response = SupportTurnResult(
+            answer="support-ok",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="checked",
+            used_tools=["shell"],
+        ).to_json()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_source = Path(temp_dir) / "auth-source.json"
+            auth_source.write_text('{"auth_mode":"source-old"}', encoding="utf-8")
+            canonical_source = Path(temp_dir) / "canonical-auth.json"
+            canonical_source.write_text(
+                '{"auth_mode":"canonical-fresh"}',
+                encoding="utf-8",
+            )
+            os.utime(auth_source, (4, 4))
+            os.utime(canonical_source, (1, 1))
+            bot_home = Path(temp_dir) / "bot-home"
+            bot_home.mkdir(parents=True, exist_ok=True)
+            (bot_home / "auth.json").write_text(
+                '{"auth_mode":"bot-stale"}',
+                encoding="utf-8",
+            )
+            os.utime(bot_home / "auth.json", (5, 5))
+
+            seen_home_auth = {}
+
+            async def fake_run_streaming_subprocess(**kwargs):
+                seen_home_auth["text"] = (bot_home / "auth.json").read_text(
+                    encoding="utf-8"
+                )
+                return CodexSupportExecutionOutput(final_response_text=response)
+
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=["codex", "exec"],
+                codex_home=bot_home,
+                codex_auth_source=auth_source,
+                codex_auth_sync_source=canonical_source,
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+            request = TicketExecutionTransportRequest(
+                aggregated_text="investigate support",
+                input_list=[],
+                current_history=[],
+                run_context={
+                    "channel_id": 113,
+                    "project_context": "yearn",
+                    "repo_last_search_artifact_refs": [],
+                },
+                investigation_job={
+                    "channel_id": 113,
+                    "requested_intent": "docs_qa",
+                    "mode": "waiting_for_user",
+                    "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
+                },
+                workflow_name="tests.endpoint.codex_support_exec",
+                wants_bug_review_status=False,
+            )
+
+            with mock.patch(
+                "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+                side_effect=fake_run_streaming_subprocess,
+            ):
+                response_json = await endpoint.execute_json_turn(request.to_json())
+
+            transport_result = TicketExecutionTransportResult.from_json(response_json)
+            self.assertEqual(
+                transport_result.flow_outcome["raw_final_reply"],
+                "support-ok",
+            )
+            self.assertEqual(
+                seen_home_auth["text"],
+                '{"auth_mode":"canonical-fresh"}',
+            )
+            self.assertEqual(
+                auth_source.read_text(encoding="utf-8"),
+                '{"auth_mode":"canonical-fresh"}',
+            )
+            self.assertEqual(
+                canonical_source.read_text(encoding="utf-8"),
+                '{"auth_mode":"canonical-fresh"}',
+            )
+
+    async def test_codex_support_endpoint_serializes_codex_runs_across_conversations(
+        self,
+    ) -> None:
+        response = SupportTurnResult(
+            answer="support-ok",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="checked",
+            used_tools=["shell"],
+        ).to_json()
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        second_entered = asyncio.Event()
+        in_flight = 0
+        max_in_flight = 0
+
+        async def fake_run_streaming_subprocess(**kwargs):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            if not first_entered.is_set():
+                first_entered.set()
+                await release_first.wait()
+            else:
+                second_entered.set()
+            in_flight -= 1
+            return CodexSupportExecutionOutput(final_response_text=response)
+
+        endpoint = CodexSupportTicketExecutionJsonEndpoint(
+            codex_command=["codex", "exec"],
+            allowed_command_prefixes=[["codex", "exec"]],
+        )
+        request_one = TicketExecutionTransportRequest(
+            aggregated_text="first",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 201,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 201,
+                "requested_intent": "docs_qa",
+                "mode": "waiting_for_user",
+                "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.codex_support_exec",
+            wants_bug_review_status=False,
+        )
+        request_two = TicketExecutionTransportRequest(
+            aggregated_text="second",
+            input_list=[],
+            current_history=[],
+            run_context={
+                "channel_id": 202,
+                "project_context": "yearn",
+                "repo_last_search_artifact_refs": [],
+            },
+            investigation_job={
+                "channel_id": 202,
+                "requested_intent": "docs_qa",
+                "mode": "waiting_for_user",
+                "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.codex_support_exec",
+            wants_bug_review_status=False,
+        )
+
+        with mock.patch.object(
+            endpoint,
+            "_prepare_support_home",
+            return_value=False,
+        ), mock.patch(
+            "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+            side_effect=fake_run_streaming_subprocess,
+        ):
+            first_task = asyncio.create_task(
+                endpoint.execute_json_turn(request_one.to_json())
+            )
+            await first_entered.wait()
+            second_task = asyncio.create_task(
+                endpoint.execute_json_turn(request_two.to_json())
+            )
+            await asyncio.sleep(0.05)
+            self.assertFalse(
+                second_entered.is_set(),
+                "second Codex run should not enter while the first run is active",
+            )
+            release_first.set()
+            first_response, second_response = await asyncio.gather(
+                first_task,
+                second_task,
+            )
+
+        self.assertEqual(max_in_flight, 1)
+        self.assertTrue(second_entered.is_set())
+        self.assertEqual(
+            TicketExecutionTransportResult.from_json(first_response).flow_outcome[
+                "raw_final_reply"
+            ],
+            "support-ok",
+        )
+        self.assertEqual(
+            TicketExecutionTransportResult.from_json(second_response).flow_outcome[
+                "raw_final_reply"
+            ],
+            "support-ok",
+        )
 
     def test_parse_codex_support_execution_output_captures_documentation_answer(self) -> None:
         stdout_text = "\n".join(

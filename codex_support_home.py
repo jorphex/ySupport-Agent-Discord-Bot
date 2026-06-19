@@ -69,6 +69,7 @@ def prepare_codex_support_home(
         home_auth_path=auth_path,
         auth_source_path=Path(auth_source) if auth_source else None,
         auth_sync_source_path=Path(auth_sync_source) if auth_sync_source else None,
+        preferred_source_path=Path(auth_sync_source) if auth_sync_source else None,
     )
 
     return CodexSupportHome(
@@ -85,6 +86,7 @@ def sync_codex_auth_state(
     home_auth_path: Path,
     auth_source_path: Path | None = None,
     auth_sync_source_path: Path | None = None,
+    preferred_source_path: Path | None = None,
 ) -> Path | None:
     candidate_paths = _unique_paths(
         home_auth_path,
@@ -94,7 +96,11 @@ def sync_codex_auth_state(
     existing_paths = [path for path in candidate_paths if path.exists()]
     if not existing_paths:
         return None
-    freshest_path = max(
+    preferred_existing_path = _match_existing_path(
+        existing_paths,
+        preferred_source_path,
+    )
+    freshest_path = preferred_existing_path or max(
         existing_paths,
         key=lambda path: (path.stat().st_mtime_ns, str(path.resolve())),
     )
@@ -117,6 +123,19 @@ def _unique_paths(*paths: Path | None) -> list[Path]:
         seen.add(resolved)
         unique.append(path)
     return unique
+
+
+def _match_existing_path(
+    existing_paths: list[Path],
+    preferred_source_path: Path | None,
+) -> Path | None:
+    if preferred_source_path is None:
+        return None
+    preferred_resolved = preferred_source_path.resolve(strict=False)
+    for path in existing_paths:
+        if path.resolve(strict=False) == preferred_resolved:
+            return path
+    return None
 
 
 def _copy_file_if_distinct(source_path: Path, destination_path: Path) -> None:
