@@ -690,6 +690,49 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             ["shell", "ysupport_mcp.search_vaults", "mcp__ysupport__search_documentation"],
         )
 
+    def test_verify_support_turn_result_accepts_dot_prefixed_ysupport_mcp_tools(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="Why is TVL not updating after my deposit?",
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="data_deposits_withdrawals_start",
+            requested_intent="data_deposits_withdrawals_start",
+            evidence={},
+            support_state={},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult.from_json(
+            json.dumps(
+                {
+                    "answer": "TVL updates can lag slightly after deposit.",
+                    "requires_human_handoff": False,
+                    "handoff_reason": None,
+                    "evidence_summary": "Checked vault metadata and docs.",
+                    "used_tools": [
+                        "mcp__ysupport.search_vaults",
+                        "mcp__ysupport.support_dashboard_discover",
+                        "mcp__ysupport.support_dashboard_token_venues",
+                        "mcp__ysupport.search_documentation",
+                        "mcp__ysupport.search_repo_context",
+                    ],
+                }
+            )
+        )
+        verified = verify_support_turn_result(result, request)
+        self.assertEqual(
+            verified.used_tools,
+            [
+                "mcp__ysupport.search_vaults",
+                "mcp__ysupport.support_dashboard_discover",
+                "mcp__ysupport.support_dashboard_token_venues",
+                "mcp__ysupport.search_documentation",
+                "mcp__ysupport.search_repo_context",
+            ],
+        )
+
     def test_verify_support_turn_result_downgrades_optional_handoff_offer(self) -> None:
         request = SupportTurnRequest(
             current_user_message="vault hasn't harvested after 10 days",
@@ -1540,6 +1583,34 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             handoff_reason=None,
             evidence_summary="checked docs",
             used_tools=["ysupport_mcp.search_documentation", "web_search"],
+        )
+        preferred = _maybe_prefer_documentation_answer(
+            support_result,
+            support_request,
+            ["Docs answer\n\n- bullet"],
+        )
+        self.assertEqual(preferred.answer, "Docs answer\n\n- bullet")
+
+    def test_maybe_prefer_documentation_answer_accepts_dot_prefixed_docs_tool(self) -> None:
+        support_request = SupportTurnRequest(
+            current_user_message="What is Flex?",
+            recent_transcript=[],
+            channel_type="public",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="test",
+            initial_button_intent=None,
+            requested_intent=None,
+            evidence={},
+            support_state={},
+            constraints={},
+        )
+        support_result = SupportTurnResult(
+            answer="Docs answer - bullet",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="checked docs",
+            used_tools=["mcp__ysupport.search_documentation", "web_search"],
         )
         preferred = _maybe_prefer_documentation_answer(
             support_result,

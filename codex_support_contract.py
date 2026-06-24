@@ -383,7 +383,7 @@ def _is_allowed_reported_tool(tool: str, allowed_tools: set[str]) -> bool:
     if tool in allowed_tools:
         return True
     prefixes = {
-        "ysupport_mcp": ("ysupport_mcp.", "mcp__ysupport__"),
+        "ysupport_mcp": ("ysupport_mcp.", "mcp__ysupport__", "mcp__ysupport."),
         "web_search": ("web_search", "browser", "web."),
         "shell": ("shell", "bash", "exec", "command"),
         "view_image": ("view_image",),

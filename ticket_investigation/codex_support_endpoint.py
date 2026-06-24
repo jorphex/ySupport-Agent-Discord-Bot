@@ -858,6 +858,7 @@ def _maybe_prefer_documentation_answer(
     safe_tools = {
         "ysupport_mcp",
         "ysupport_mcp.search_documentation",
+        "mcp__ysupport.search_documentation",
         "answer_from_docs_tool",
         "web_search",
     }

@@ -1735,60 +1735,25 @@ class TicketBot(discord.Client):
                         except MaxTurnsExceeded:
                             logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                             if run_context.repo_search_calls:
-                                base_reply = (
+                                final_reply = (
                                     "I hit an internal analysis limit while reviewing repo evidence for this report."
                                 )
                             else:
-                                base_reply = (
+                                final_reply = (
                                     "This conversation has reached its maximum length."
                                 )
-                            route = _runtime_error_handoff_route(aggregated_text, base_reply)
-                            final_reply = build_user_handoff_reply(base_reply, route)
-                            await _notify_and_record_ticket_handoff(
-                                route=route,
-                                summary=aggregated_text,
-                                channel_id=channel_id,
-                                guild_id=guild_id,
-                                investigation_job=investigation_job,
-                            )
                             should_stop_processing = True
                             stop_reason = "runtime_error"
                         except AgentsException as e:
                             logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                            route = _runtime_error_handoff_route(
-                                aggregated_text,
-                                f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again.",
-                            )
-                            final_reply = build_user_handoff_reply(
-                                f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again.",
-                                route,
-                            )
-                            await _notify_and_record_ticket_handoff(
-                                route=route,
-                                summary=aggregated_text,
-                                channel_id=channel_id,
-                                guild_id=guild_id,
-                                investigation_job=investigation_job,
+                            final_reply = (
+                                f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again."
                             )
                             should_stop_processing = True
                             stop_reason = "runtime_error"
                         except Exception as e:
                             logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                            route = _runtime_error_handoff_route(
-                                aggregated_text,
-                                "An unexpected error occurred.",
-                            )
-                            final_reply = build_user_handoff_reply(
-                                "An unexpected error occurred.",
-                                route,
-                            )
-                            await _notify_and_record_ticket_handoff(
-                                route=route,
-                                summary=aggregated_text,
-                                channel_id=channel_id,
-                                guild_id=guild_id,
-                                investigation_job=investigation_job,
-                            )
+                            final_reply = "An unexpected error occurred."
                             should_stop_processing = True
                             stop_reason = "runtime_error"
                         finally:

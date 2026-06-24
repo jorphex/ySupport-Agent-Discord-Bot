@@ -817,11 +817,13 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                 with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
                     await bot.process_ticket_message(channel_id, run_context)
 
+            self.assertEqual(fake_channel.sent_messages, ["An unexpected error occurred."])
             self.assertIn(channel_id, stopped_channels)
             self.assertEqual(stop_reasons_by_channel[channel_id], "runtime_error")
             self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 123)
             self.assertEqual(last_wallet_by_channel[channel_id], "0xabc")
             self.assertIn(channel_id, ticket_investigation_jobs)
+            self.assertIsNone(team_handoff_notice_by_channel.get(channel_id))
             self.assertEqual(
                 conversation_threads[channel_id],
                 [{"role": "user", "content": "Earlier context"}],
