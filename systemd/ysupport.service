@@ -1,0 +1,18 @@
+[Unit]
+Description=ySupport Discord bot
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ysupport
+WorkingDirectory=/opt/ysupport
+EnvironmentFile=/opt/ysupport/.env
+ExecStart=/opt/ysupport/scripts/run_ysupport_host.sh
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

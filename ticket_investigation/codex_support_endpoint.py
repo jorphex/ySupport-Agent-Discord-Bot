@@ -13,7 +13,10 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from codex_support_home import prepare_codex_support_home, sync_codex_auth_state
+from codex_support_home import (
+    prepare_codex_auth_state,
+    prepare_codex_support_home,
+)
 from codex_support_contract import (
     CODEX_SUPPORT_RESULT_SCHEMA,
     SupportTurnRequest,
@@ -93,6 +96,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         codex_home: str | Path | None = None,
         codex_auth_source: str | Path | None = None,
         codex_auth_sync_source: str | Path | None = None,
+        codex_auth_link_source: str | Path | None = None,
         session_dir: str | Path | None = None,
         session_max_age_hours: int | None = None,
         ysupport_mcp_url: str | None = None,
@@ -120,6 +124,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.codex_auth_source = Path(codex_auth_source) if codex_auth_source else None
         self.codex_auth_sync_source = (
             Path(codex_auth_sync_source) if codex_auth_sync_source else None
+        )
+        self.codex_auth_link_source = (
+            Path(codex_auth_link_source) if codex_auth_link_source else None
         )
         self.session_manager = (
             CodexSupportSessionManager(
@@ -264,6 +271,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
             mcp_container_name=self.ysupport_mcp_container,
             auth_source=self.codex_auth_source,
             auth_sync_source=self.codex_auth_sync_source,
+            auth_link_source=self.codex_auth_link_source,
             ysupport_mcp_url=self.ysupport_mcp_url,
             mcp_server_api_key=self.mcp_server_api_key,
             web_search_mode=self.web_search_mode,
@@ -273,10 +281,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
     def _prime_support_home_auth_state(self) -> None:
         if self.codex_home is None:
             return
-        sync_codex_auth_state(
+        prepare_codex_auth_state(
             home_auth_path=self.codex_home / "auth.json",
             auth_source_path=self.codex_auth_source,
             auth_sync_source_path=self.codex_auth_sync_source,
+            auth_link_source_path=self.codex_auth_link_source,
             preferred_source_path=self.codex_auth_sync_source,
         )
 
@@ -336,10 +345,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
     def _sync_support_home_auth_state(self) -> None:
         if self.codex_home is None:
             return
-        sync_codex_auth_state(
+        prepare_codex_auth_state(
             home_auth_path=self.codex_home / "auth.json",
             auth_source_path=self.codex_auth_source,
             auth_sync_source_path=self.codex_auth_sync_source,
+            auth_link_source_path=self.codex_auth_link_source,
         )
 
     def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:

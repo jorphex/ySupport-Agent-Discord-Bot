@@ -28,6 +28,7 @@ def prepare_codex_support_home(
     mcp_container_name: str | None = None,
     auth_source: str | Path | None = None,
     auth_sync_source: str | Path | None = None,
+    auth_link_source: str | Path | None = None,
     web_search_mode: str = "live",
 ) -> CodexSupportHome:
     home_dir = Path(codex_home)
@@ -65,10 +66,11 @@ def prepare_codex_support_home(
         encoding="utf-8",
     )
 
-    sync_codex_auth_state(
+    prepare_codex_auth_state(
         home_auth_path=auth_path,
         auth_source_path=Path(auth_source) if auth_source else None,
         auth_sync_source_path=Path(auth_sync_source) if auth_sync_source else None,
+        auth_link_source_path=Path(auth_link_source) if auth_link_source else None,
         preferred_source_path=Path(auth_sync_source) if auth_sync_source else None,
     )
 
@@ -78,6 +80,47 @@ def prepare_codex_support_home(
         auth_path=auth_path,
         instructions_path=instructions_path,
         ysupport_mcp_enabled=ysupport_mcp_enabled,
+    )
+
+
+def prepare_codex_auth_link(
+    *,
+    home_auth_path: Path,
+    auth_link_source_path: Path,
+) -> Path:
+    source_resolved = auth_link_source_path.resolve(strict=False)
+    home_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    if home_auth_path.is_symlink():
+        current_target = home_auth_path.resolve(strict=False)
+        if current_target == source_resolved:
+            return auth_link_source_path
+        home_auth_path.unlink()
+    elif home_auth_path.exists():
+        if home_auth_path.resolve(strict=False) == source_resolved:
+            return auth_link_source_path
+        home_auth_path.unlink()
+    home_auth_path.symlink_to(auth_link_source_path)
+    return auth_link_source_path
+
+
+def prepare_codex_auth_state(
+    *,
+    home_auth_path: Path,
+    auth_source_path: Path | None = None,
+    auth_sync_source_path: Path | None = None,
+    auth_link_source_path: Path | None = None,
+    preferred_source_path: Path | None = None,
+) -> Path | None:
+    if auth_link_source_path is not None:
+        return prepare_codex_auth_link(
+            home_auth_path=home_auth_path,
+            auth_link_source_path=auth_link_source_path,
+        )
+    return sync_codex_auth_state(
+        home_auth_path=home_auth_path,
+        auth_source_path=auth_source_path,
+        auth_sync_source_path=auth_sync_source_path,
+        preferred_source_path=preferred_source_path,
     )
 
 
