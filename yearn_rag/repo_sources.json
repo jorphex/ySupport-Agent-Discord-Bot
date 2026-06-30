@@ -474,6 +474,31 @@
         "**/artifacts/**",
         "**/cache/**"
       ]
+    },
+    {
+      "repo": "risk-score",
+      "ref": null,
+      "product_tag": "risk",
+      "authority_tag": "support_data",
+      "legacy": false,
+      "include": [
+        "README.md",
+        "reports/**/*.md",
+        "vaults/**/*.json",
+        "vaults/**/*.md",
+        "scripts/**/*.py",
+        "api/**/*.ts",
+        "pyproject.toml",
+        "package.json"
+      ],
+      "exclude": [
+        "**/test/**",
+        "**/tests/**",
+        "**/node_modules/**",
+        "**/.next/**",
+        "**/dist/**",
+        "**/coverage/**"
+      ]
     }
   ]
 }
