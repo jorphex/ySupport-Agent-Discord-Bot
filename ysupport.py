@@ -1104,6 +1104,8 @@ class TicketBot(discord.Client):
         message: discord.Message,
         trigger_char_used: str,
     ) -> bool:
+        original_message: discord.Message | None = None
+        original_author_id: int | None = None
         logging.info(
             "Stateful public trigger '%s' detected by %s in channel %s",
             trigger_char_used,
@@ -1334,6 +1336,22 @@ class TicketBot(discord.Client):
             return True
         except Exception as e:
             logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
+            if original_author_id is not None:
+                public_conversations.pop(original_author_id, None)
+                clear_public_conversation(original_author_id)
+            if original_message is not None:
+                try:
+                    await original_message.reply(
+                        "Sorry, an error occurred while preparing that request. Please try again.",
+                        mention_author=False,
+                        suppress_embeds=True,
+                    )
+                except Exception:
+                    logging.warning(
+                        "Failed to send public trigger setup error reply for message %s.",
+                        message.id,
+                        exc_info=True,
+                    )
             return True
 
     async def _collect_aggregated_ticket_payload(

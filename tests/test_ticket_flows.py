@@ -352,6 +352,40 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(original_message.replies[0][0], "Boundary reply")
         self.assertFalse(original_message.replies[0][1]["mention_author"])
 
+    async def test_public_trigger_outer_setup_failure_replies_and_clears_state(self) -> None:
+        original_author_id = 201
+        original_message = _FakeOriginalMessage(
+            author_id=original_author_id,
+            content="Can you check my Yearn vault?",
+        )
+        trigger_channel = _FakePublicChannel(202, original_message)
+        trigger_message = _FakeTriggerMessage(
+            trigger_channel,
+            reference_message_id=12345,
+        )
+        public_conversations[original_author_id] = PublicConversation(
+            history=[{"role": "assistant", "content": "stale context"}],
+            last_interaction_time=datetime.now(timezone.utc),
+        )
+        bot = TicketBot(intents=discord.Intents.none())
+
+        try:
+            with patch(
+                "ysupport._outer_support_boundary_result",
+                side_effect=RuntimeError("classifier unavailable"),
+            ):
+                handled = await bot._handle_public_trigger_message(trigger_message, "y")
+
+            self.assertTrue(handled)
+            self.assertNotIn(original_author_id, public_conversations)
+            self.assertEqual(len(original_message.replies), 1)
+            self.assertIn("preparing that request", original_message.replies[0][0])
+            self.assertIn("Please try again", original_message.replies[0][0])
+            self.assertFalse(original_message.replies[0][1]["mention_author"])
+            self.assertTrue(original_message.replies[0][1]["suppress_embeds"])
+        finally:
+            clear_public_conversation(original_author_id)
+
     async def test_public_trigger_short_circuits_moderator_access_before_executor(self) -> None:
         original_author_id = 72
         channel_id = 73
