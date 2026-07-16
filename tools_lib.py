@@ -405,8 +405,8 @@ def _extract_repo_artifact_refs(text: str) -> list[str]:
     return docs_repo_tools._extract_repo_artifact_refs(text)
 
 
-async def close_shared_openai_clients() -> None:
-    await docs_repo_tools.close_shared_openai_clients()
+async def close_shared_clients() -> None:
+    await docs_repo_tools.close_shared_clients()
 
 
 async def core_answer_from_docs(user_query: str) -> str:

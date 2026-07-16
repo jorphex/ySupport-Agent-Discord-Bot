@@ -111,6 +111,32 @@ class _FakeInvestigationExecutor:
 
 
 class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        boundary_patcher = patch(
+            "ysupport._outer_support_boundary_result",
+            return_value={
+                "classification": "yearn_support",
+                "tripwire_triggered": False,
+            },
+        )
+        boundary_patcher.start()
+        self.addCleanup(boundary_patcher.stop)
+        runtime_boundary_patcher = patch(
+            "ticket_investigation.runtime.evaluate_support_boundary",
+            return_value={
+                "classification": "yearn_support",
+                "tripwire_triggered": False,
+            },
+        )
+        runtime_boundary_patcher.start()
+        self.addCleanup(runtime_boundary_patcher.stop)
+        summary_patcher = patch(
+            "ysupport.summarize_handoff_summary",
+            return_value=None,
+        )
+        summary_patcher.start()
+        self.addCleanup(summary_patcher.stop)
+
     async def test_setup_hook_registers_persistent_ticket_views(self) -> None:
         bot = TicketBot(intents=discord.Intents.none())
 

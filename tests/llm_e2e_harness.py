@@ -85,7 +85,7 @@ async def _close_agents_http_clients() -> None:
         pass
 
     try:
-        await tools_lib.close_shared_openai_clients()
+        await tools_lib.close_shared_clients()
     except Exception:
         pass
 

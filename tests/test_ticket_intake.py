@@ -142,6 +142,23 @@ class _FakeTriggerMessage:
 
 
 class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        boundary_patcher = patch(
+            "ysupport._outer_support_boundary_result",
+            return_value={
+                "classification": "yearn_support",
+                "tripwire_triggered": False,
+            },
+        )
+        boundary_patcher.start()
+        self.addCleanup(boundary_patcher.stop)
+        summary_patcher = patch(
+            "ysupport.summarize_handoff_summary",
+            return_value=None,
+        )
+        summary_patcher.start()
+        self.addCleanup(summary_patcher.stop)
+
     def test_extract_yearn_vault_url_target_parses_supported_urls(self) -> None:
         self.assertEqual(
             tools_lib.extract_yearn_vault_url_target(

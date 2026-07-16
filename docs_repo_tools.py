@@ -19,8 +19,23 @@ from repo_context import (
 
 openai_async_client: AsyncOpenAI | None = None
 openai_sync_client: OpenAI | None = None
-pc = Pinecone(api_key=config.PINECONE_API_KEY)
-pinecone_index = pc.Index(config.PINECONE_INDEX_NAME)
+pinecone_client: Pinecone | None = None
+pinecone_index: Any | None = None
+
+
+def _get_pinecone_client() -> Pinecone:
+    global pinecone_client
+    if pinecone_client is None:
+        pinecone_client = Pinecone(api_key=config.PINECONE_API_KEY)
+    return pinecone_client
+
+
+def _get_pinecone_index() -> Any:
+    global pinecone_index
+    if pinecone_index is None:
+        pinecone_index = _get_pinecone_client().Index(config.PINECONE_INDEX_NAME)
+    return pinecone_index
+
 
 def _normalize_match(match: Any, namespace: str) -> Dict[str, Any]:
     if isinstance(match, dict):
@@ -110,8 +125,8 @@ def _get_openai_sync_client() -> OpenAI:
     return openai_sync_client
 
 
-async def close_shared_openai_clients() -> None:
-    global openai_async_client, openai_sync_client
+async def close_shared_clients() -> None:
+    global openai_async_client, openai_sync_client, pinecone_client, pinecone_index
 
     if openai_async_client is not None:
         try:
@@ -126,6 +141,14 @@ async def close_shared_openai_clients() -> None:
         except Exception:
             pass
         openai_sync_client = None
+
+    if pinecone_client is not None:
+        try:
+            pinecone_client.close()
+        except Exception:
+            pass
+        pinecone_client = None
+        pinecone_index = None
 
 
 def _github_api_headers() -> dict[str, str]:
@@ -269,8 +292,10 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
 
     all_matches: List[Dict[str, Any]] = []
     try:
+        index = _get_pinecone_index()
+        client = _get_pinecone_client()
         try:
-            stats = await asyncio.to_thread(pinecone_index.describe_index_stats)
+            stats = await asyncio.to_thread(index.describe_index_stats)
             existing_namespaces = set((stats or {}).get("namespaces", {}).keys())
             available_namespaces = [ns for ns in namespaces_to_query if ns in existing_namespaces]
             if not available_namespaces:
@@ -296,7 +321,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
                     query_tasks.append((
                         ns,
                         asyncio.to_thread(
-                            pinecone_index.query,
+                            index.query,
                             namespace=ns,
                             vector=query_embedding,
                             top_k=meta_k,
@@ -307,7 +332,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
                 query_tasks.append((
                     ns,
                     asyncio.to_thread(
-                        pinecone_index.query,
+                        index.query,
                         namespace=ns,
                         vector=query_embedding,
                         top_k=docs_k,
@@ -319,7 +344,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
                 query_tasks.append((
                     ns,
                     asyncio.to_thread(
-                        pinecone_index.query,
+                        index.query,
                         namespace=ns,
                         vector=query_embedding,
                         top_k=docs_k,
@@ -336,7 +361,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
         if not all_matches:
             fallback_tasks = [
                 asyncio.to_thread(
-                    pinecone_index.query,
+                    index.query,
                     namespace=ns,
                     vector=query_embedding,
                     top_k=initial_retrieval_k,
@@ -369,7 +394,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
                 docs_to_rerank.append(f"[source_type={source_type}]\n{text_chunk}")
 
             rerank_response = await asyncio.to_thread(
-                pc.inference.rerank,
+                client.inference.rerank,
                 model="bge-reranker-v2-m3",
                 query=user_query,
                 documents=docs_to_rerank,
