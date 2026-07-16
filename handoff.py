@@ -166,6 +166,7 @@ def build_handoff_notice(
     channel_id: int,
     guild_id: int | None,
     ticket_label: str | None = None,
+    reply_enabled: bool = True,
 ) -> str:
     label = ticket_label or _default_ticket_label(channel_id)
     link_line = (
@@ -180,11 +181,14 @@ def build_handoff_notice(
     lines.append(f"<b>Reason</b>: {html.escape(route.reason)}")
     lines.append(f"<b>Summary</b>: {html.escape(_summarize_text(summary))}")
     lines.append("")
-    lines.append(
-        "Reply to this message with what I should tell the user or do next. "
-        "Your reply will be used for the next ticket update. "
-        "Only one reply is accepted."
-    )
+    if reply_enabled:
+        lines.append(
+            "Reply to this message with what I should tell the user or do next. "
+            "Your reply will be used for the next ticket update. "
+            "Only one reply is accepted."
+        )
+    else:
+        lines.append("Alert only. Follow up in the linked Discord channel.")
     return "\n".join(lines)
 
 

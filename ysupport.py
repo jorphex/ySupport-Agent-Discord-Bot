@@ -50,6 +50,7 @@ from state import (
     get_or_create_ticket_investigation_job,
     hydrate_public_conversation,
     hydrate_ticket_state,
+    hydrate_persisted_team_handoff_states,
     is_ticket_waiting_for_team,
     last_wallet_by_channel,
     last_bot_reply_ts_by_channel,
@@ -68,6 +69,7 @@ from state import (
     public_conversations,
     recover_ticket_channel_from_runtime_stop,
     remember_team_handoff_notice,
+    remember_team_handoff_followup_attachments,
     remember_ticket_owner_user_id,
     reset_ticket_channel_for_terminal_reply,
     stopped_channels,
@@ -229,7 +231,11 @@ def _record_waiting_for_team_followup(
         return
     history = conversation_threads.setdefault(channel_id, [])
     history.append({"role": "user", "content": content})
-    persist_ticket_state(channel_id)
+    attachments = _attachment_payloads_from_message(message)
+    if attachments:
+        remember_team_handoff_followup_attachments(channel_id, attachments)
+    else:
+        persist_ticket_state(channel_id)
 
 
 def _message_text_for_turn(message: discord.Message) -> str:
@@ -369,6 +375,7 @@ async def _notify_handoff(
             summary=summarized_text or summary,
             channel_id=channel_id,
             guild_id=guild_id,
+            reply_enabled=source == "ticket",
         )
     )
     if isinstance(sent, TelegramSentMessage):
@@ -409,7 +416,7 @@ async def _notify_and_record_ticket_handoff(
     channel_id: int,
     guild_id: int | None,
     investigation_job: TicketInvestigationJob,
-) -> None:
+) -> bool:
     recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
     known_facts = _handoff_known_facts(investigation_job)
     notice = await _notify_handoff(
@@ -421,12 +428,35 @@ async def _notify_and_record_ticket_handoff(
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
     )
+    if notice is None:
+        investigation_job.mark_waiting_for_user()
+        return False
     investigation_job.mark_escalated_to_human()
     _remember_sent_handoff_notice(
         channel_id=channel_id,
         route=route,
         notice=notice,
     )
+    return True
+
+
+def _handoff_delivery_failure_reply(
+    base_reply: str | None,
+    *,
+    location: Literal["ticket", "here"] = "ticket",
+) -> str:
+    cleaned = strip_handoff_placeholder(base_reply)
+    failure_notice = "I couldn't send the internal team notification automatically."
+    retry_notice = (
+        "This ticket remains active."
+        if location == "ticket"
+        else "Please try again here later."
+    )
+    failure_notice = f"{failure_notice} {retry_notice}"
+    if not cleaned:
+        return failure_notice
+    separator = " " if cleaned.endswith((".", "!", "?")) else ". "
+    return f"{cleaned}{separator}{failure_notice}"
 
 
 async def _run_internal_instruction_turn(
@@ -438,6 +468,7 @@ async def _run_internal_instruction_turn(
     prompt_text: str,
     instruction_text: str,
     workflow_suffix: str,
+    attachments: list[dict[str, Any]],
 ) -> str:
     investigation_job = deepcopy(get_or_create_ticket_investigation_job(channel_id))
     current_history = list(conversation_threads.get(channel_id, []))
@@ -458,7 +489,7 @@ async def _run_internal_instruction_turn(
                 aggregated_text=prompt_text,
                 input_list=input_list,
                 current_history=current_history,
-                attachments=[],
+                attachments=attachments,
                 turn_source="internal_team",
                 turn_instruction=instruction_text,
                 run_context=run_context,
@@ -728,10 +759,7 @@ def _outer_moderator_access_reply(text: str) -> str | None:
         or mentions_verification_access_issue
     ):
         return None
-    return build_user_handoff_reply(
-        "A moderator needs to check this.",
-        _moderator_access_handoff_route(),
-    )
+    return "A moderator needs to check this."
 
 
 # Discord Bot Implementation
@@ -768,11 +796,20 @@ class TicketBot(discord.Client):
         for warning in config.ticket_execution_runtime_warnings():
             logging.warning("Ticket execution rollout warning: %s", warning)
 
+    async def setup_hook(self) -> None:
+        self.add_view(InitialInquiryView())
+        self.add_view(StopBotView())
+
     async def on_ready(self):
         logging.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Monitoring Yearn Ticket Category ID: {config.YEARN_TICKET_CATEGORY_ID}")
         logging.info(f"Support User ID for triggers: {config.PUBLIC_TRIGGER_USER_IDS}")
         logging.info(f"Yearn Public Trigger: '{config.YEARN_PUBLIC_TRIGGER_CHAR}'")
+        hydrated_handoffs = hydrate_persisted_team_handoff_states()
+        logging.info(
+            "Hydrated %s persisted Telegram handoff state(s) before polling.",
+            hydrated_handoffs,
+        )
         if (
             config.TELEGRAM_BOT_TOKEN
             and config.TELEGRAM_YSUPPORT_CHAT
@@ -933,6 +970,7 @@ class TicketBot(discord.Client):
                         prompt_text=team_reply_text,
                         instruction_text=instruction_text,
                         workflow_suffix="team handoff reply",
+                        attachments=list(notice.followup_attachments),
                     )
                 except Exception as exc:
                     logging.error(
@@ -1123,17 +1161,30 @@ class TicketBot(discord.Client):
 
             moderator_access_reply = _outer_moderator_access_reply(original_message_text)
             if moderator_access_reply is not None:
-                public_conversations.pop(original_author_id, None)
-                clear_public_conversation(original_author_id)
-                await _notify_handoff(
-                    route=_moderator_access_handoff_route(),
+                route = _moderator_access_handoff_route()
+                notice = await _notify_handoff(
+                    route=route,
                     summary=original_message_text,
                     channel_id=message.channel.id,
                     guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
                     source="public",
                 )
+                if notice is not None:
+                    public_conversations.pop(original_author_id, None)
+                    clear_public_conversation(original_author_id)
                 await original_message.reply(
-                    moderator_access_reply,
+                    (
+                        build_user_handoff_reply(
+                            moderator_access_reply,
+                            route,
+                            location="here",
+                        )
+                        if notice is not None
+                        else _handoff_delivery_failure_reply(
+                            moderator_access_reply,
+                            location="here",
+                        )
+                    ),
                     mention_author=False,
                     suppress_embeds=True,
                 )
@@ -1198,18 +1249,26 @@ class TicketBot(discord.Client):
                             original_message_text,
                             raw_reply,
                         )
-                        final_reply = build_user_handoff_reply(
-                            raw_reply,
-                            route,
-                            location="here",
-                        )
-                        await _notify_handoff(
+                        notice = await _notify_handoff(
                             route=route,
                             summary=original_message_text,
                             channel_id=message.channel.id,
                             guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
                             source="public",
                         )
+                        if notice is not None:
+                            final_reply = build_user_handoff_reply(
+                                raw_reply,
+                                route,
+                                location="here",
+                            )
+                            public_conversations.pop(original_author_id, None)
+                            clear_public_conversation(original_author_id)
+                        else:
+                            final_reply = _handoff_delivery_failure_reply(
+                                raw_reply,
+                                location="here",
+                            )
                     else:
                         final_reply = _render_support_reply(raw_reply)
                     await progress_reporter.close()
@@ -1246,21 +1305,8 @@ class TicketBot(discord.Client):
                         base_reply = (
                             "I hit an internal analysis limit while working on that request."
                         )
-                    route = _runtime_error_handoff_route(original_message_text, base_reply)
-                    reply_text = build_user_handoff_reply(
-                        base_reply,
-                        route,
-                        location="here",
-                    )
-                    await _notify_handoff(
-                        route=route,
-                        summary=original_message_text,
-                        channel_id=message.channel.id,
-                        guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
-                        source="public",
-                    )
                     await original_message.reply(
-                        reply_text,
+                        f"{base_reply} Please try again.",
                         mention_author=False,
                         suppress_embeds=True,
                     )
@@ -1274,24 +1320,8 @@ class TicketBot(discord.Client):
                     )
                     public_conversations.pop(original_author_id, None)
                     clear_public_conversation(original_author_id)
-                    route = _runtime_error_handoff_route(
-                        original_message_text,
-                        "Sorry, an error occurred while processing that request.",
-                    )
-                    reply_text = build_user_handoff_reply(
-                        "Sorry, an error occurred while processing that request.",
-                        route,
-                        location="here",
-                    )
-                    await _notify_handoff(
-                        route=route,
-                        summary=original_message_text,
-                        channel_id=message.channel.id,
-                        guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
-                        source="public",
-                    )
                     await original_message.reply(
-                        reply_text,
+                        "Sorry, an error occurred while processing that request. Please try again.",
                         mention_author=False,
                         suppress_embeds=True,
                     )
@@ -1655,17 +1685,26 @@ class TicketBot(discord.Client):
 
                 moderator_access_reply = _outer_moderator_access_reply(aggregated_text)
                 if moderator_access_reply is not None:
-                    final_reply = moderator_access_reply
-                    should_stop_processing = True
-                    stop_reason = "boundary_stop"
-                    reset_ticket_channel_for_terminal_reply(channel_id)
-                    await _notify_and_record_ticket_handoff(
-                        route=_moderator_access_handoff_route(),
+                    route = _moderator_access_handoff_route()
+                    handoff_sent = await _notify_and_record_ticket_handoff(
+                        route=route,
                         summary=aggregated_text,
                         channel_id=channel_id,
                         guild_id=guild_id,
                         investigation_job=investigation_job,
                     )
+                    if handoff_sent:
+                        final_reply = build_user_handoff_reply(
+                            moderator_access_reply,
+                            route,
+                        )
+                        should_stop_processing = True
+                        stop_reason = "boundary_stop"
+                        reset_ticket_channel_for_terminal_reply(channel_id)
+                    else:
+                        final_reply = _handoff_delivery_failure_reply(
+                            moderator_access_reply
+                        )
                 else:
                     boundary_output = await _outer_support_boundary_result(aggregated_text)
                     boundary_reply = _boundary_reply_from_output(boundary_output)
@@ -1683,10 +1722,10 @@ class TicketBot(discord.Client):
                                 _build_turn_request(
                                     aggregated_text=aggregated_text,
                                     input_list=input_list,
-                current_history=current_history,
-                attachments=attachments,
-                run_context=run_context,
-                investigation_job=investigation_job,
+                                    current_history=current_history,
+                                    attachments=attachments,
+                                    run_context=run_context,
+                                    investigation_job=investigation_job,
                                     workflow_name=_ticket_workflow_name(run_context),
                                     precomputed_boundary=boundary_output,
                                 ),
@@ -1704,16 +1743,17 @@ class TicketBot(discord.Client):
                                     aggregated_text,
                                     raw_final_reply,
                                 )
-                                final_reply = build_user_handoff_reply(
-                                    raw_final_reply,
-                                    route,
-                                )
-                                await _notify_and_record_ticket_handoff(
+                                handoff_sent = await _notify_and_record_ticket_handoff(
                                     route=route,
                                     summary=aggregated_text,
                                     channel_id=channel_id,
                                     guild_id=guild_id,
                                     investigation_job=investigation_job,
+                                )
+                                final_reply = (
+                                    build_user_handoff_reply(raw_final_reply, route)
+                                    if handoff_sent
+                                    else _handoff_delivery_failure_reply(raw_final_reply)
                                 )
                             else:
                                 final_reply = _render_support_reply(raw_final_reply)

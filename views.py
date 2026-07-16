@@ -8,13 +8,40 @@ from bot_behavior import STANDARD_REDIRECT_MESSAGE
 from state import (
     apply_initial_button_intent,
     channels_awaiting_initial_button_press,
+    hydrate_ticket_state,
     mark_ticket_channel_stopped,
     pending_tasks,
     stop_ticket_channel,
+    ticket_owner_user_id_by_channel,
 )
 
 
-class InitialInquiryView(View):
+class _TicketOwnerView(View):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        channel_id = interaction.channel_id
+        if channel_id is not None:
+            hydrate_ticket_state(channel_id)
+        owner_user_id = (
+            ticket_owner_user_id_by_channel.get(channel_id)
+            if channel_id is not None
+            else None
+        )
+        if owner_user_id is not None and interaction.user.id == owner_user_id:
+            return True
+        message = (
+            "Only the ticket owner can use these controls."
+            if owner_user_id is not None
+            else (
+                "I couldn't verify the ticket owner yet. Send one message in this "
+                "ticket, then try the button again."
+            )
+        )
+        if not interaction.response.is_done():
+            await interaction.response.send_message(message, ephemeral=True)
+        return False
+
+
+class InitialInquiryView(_TicketOwnerView):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
 
@@ -121,7 +148,7 @@ class InitialInquiryView(View):
         logging.info(f"Button '{button_custom_id}' clicked in {interaction.channel.id}. Channel removed from awaiting_initial_button_press.")
 
 
-class StopBotView(View):
+class StopBotView(_TicketOwnerView):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
 

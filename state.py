@@ -78,6 +78,7 @@ class TeamHandoffNotice:
     status: TeamHandoffNoticeStatus = "open"
     pending_reply_text: Optional[str] = None
     pending_reply_message_id: Optional[int] = None
+    followup_attachments: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -284,8 +285,35 @@ def hydrate_ticket_state(channel_id: int) -> None:
                     if handoff_payload.get("pending_reply_message_id") is not None
                     else None
                 ),
+                followup_attachments=[
+                    dict(attachment)
+                    for attachment in handoff_payload.get("followup_attachments", [])
+                    if isinstance(attachment, dict)
+                ],
             )
     monitored_new_channels.add(channel_id)
+
+
+def hydrate_persisted_team_handoff_states() -> int:
+    hydrated = 0
+    if not _TICKET_STATE_DIR.exists():
+        return hydrated
+    for path in sorted(_TICKET_STATE_DIR.glob("*.json")):
+        payload = _read_json(path)
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("team_handoff_notice"),
+            dict,
+        ):
+            continue
+        raw_channel_id = payload.get("channel_id", path.stem)
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            continue
+        hydrate_ticket_state(channel_id)
+        if channel_id in team_handoff_notice_by_channel:
+            hydrated += 1
+    return hydrated
 
 
 def persist_ticket_state(channel_id: int) -> None:
@@ -411,6 +439,26 @@ def remember_ticket_owner_user_id(channel_id: int, user_id: int) -> None:
 
 def remember_team_handoff_notice(channel_id: int, notice: TeamHandoffNotice) -> None:
     team_handoff_notice_by_channel[channel_id] = notice
+    persist_ticket_state(channel_id)
+
+
+def remember_team_handoff_followup_attachments(
+    channel_id: int,
+    attachments: List[Dict[str, Any]],
+) -> None:
+    notice = team_handoff_notice_by_channel.get(channel_id)
+    if notice is None:
+        return
+    seen_urls = {
+        str(attachment.get("url") or "").strip()
+        for attachment in notice.followup_attachments
+    }
+    for attachment in attachments:
+        url = str(attachment.get("url") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        notice.followup_attachments.append(dict(attachment))
+        seen_urls.add(url)
     persist_ticket_state(channel_id)
 
 
@@ -603,6 +651,9 @@ def _serialize_team_handoff_notice(
         "status": notice.status,
         "pending_reply_text": notice.pending_reply_text,
         "pending_reply_message_id": notice.pending_reply_message_id,
+        "followup_attachments": [
+            dict(attachment) for attachment in notice.followup_attachments
+        ],
     }
 
 

@@ -282,11 +282,7 @@ class RoutingTests(unittest.TestCase):
         reply = _outer_moderator_access_reply(
             "I finished verification but still cannot access the Discord."
         )
-        self.assertIsNotNone(reply)
-        assert reply is not None
-        self.assertIn("A moderator needs to check this.", reply)
-        self.assertIn("I've notified the support team", reply)
-        self.assertNotIn("<@", reply)
+        self.assertEqual(reply, "A moderator needs to check this.")
 
     def test_select_starting_agent_uses_data_button_intent(self) -> None:
         context = BotRunContext(

@@ -20,6 +20,7 @@ from state import (
     clear_ticket_channel_state,
     conversation_threads,
     hydrate_public_conversation,
+    hydrate_persisted_team_handoff_states,
     hydrate_ticket_state,
     last_bot_reply_ts_by_channel,
     last_wallet_by_channel,
@@ -286,6 +287,14 @@ class TicketStatePersistenceTests(unittest.TestCase):
                         status="delivered_pending_close",
                         pending_reply_text="tell the user we queued the tx",
                         pending_reply_message_id=789,
+                        followup_attachments=[
+                            {
+                                "filename": "details.png",
+                                "url": "https://cdn.example/details.png",
+                                "content_type": "image/png",
+                                "is_image": True,
+                            }
+                        ],
                     ),
                 )
 
@@ -304,6 +313,10 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 self.assertEqual(notice.status, "delivered_pending_close")
                 self.assertEqual(notice.pending_reply_text, "tell the user we queued the tx")
                 self.assertEqual(notice.pending_reply_message_id, 789)
+                self.assertEqual(
+                    notice.followup_attachments[0]["url"],
+                    "https://cdn.example/details.png",
+                )
 
                 clear_team_handoff_notice(channel_id)
                 self.assertNotIn(channel_id, team_handoff_notice_by_channel)
@@ -320,6 +333,40 @@ class TicketStatePersistenceTests(unittest.TestCase):
             ):
                 state.persist_telegram_update_offset(12345)
                 self.assertEqual(state.load_telegram_update_offset(), 12345)
+
+    def test_startup_hydrates_only_persisted_handoff_ticket_states(self) -> None:
+        handoff_channel_id = 108
+        ordinary_channel_id = 109
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            with patch.object(state, "_TICKET_STATE_DIR", ticket_dir):
+                remember_team_handoff_notice(
+                    handoff_channel_id,
+                    TeamHandoffNotice(
+                        telegram_chat_id="123",
+                        telegram_message_id=456,
+                        target="support_manual",
+                        reason="manual follow-up needed",
+                    ),
+                )
+                conversation_threads[ordinary_channel_id] = [
+                    {"role": "user", "content": "ordinary ticket"}
+                ]
+                persist_ticket_state(ordinary_channel_id)
+
+                team_handoff_notice_by_channel.pop(handoff_channel_id, None)
+                conversation_threads.pop(ordinary_channel_id, None)
+
+                hydrated = hydrate_persisted_team_handoff_states()
+
+                self.assertEqual(hydrated, 1)
+                self.assertIn(handoff_channel_id, team_handoff_notice_by_channel)
+                self.assertNotIn(ordinary_channel_id, conversation_threads)
+
+                clear_ticket_channel_state(
+                    handoff_channel_id,
+                    delete_persisted=True,
+                )
 
 
 class PublicStatePersistenceTests(unittest.TestCase):

@@ -183,12 +183,15 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resolve_yearn_address_target_falls_back_to_contract_profile(self) -> None:
         address = "0x3333333333333333333333333333333333333333"
-        with patch("yearn_targets._get_ydaemon_address_index", return_value={}):
-            with patch(
+        with (
+            patch("yearn_targets._get_ydaemon_address_index", return_value={}),
+            patch("yearn_targets.get_web3_instance", return_value=object()),
+            patch(
                 "yearn_targets.inspect_contract_profile",
                 return_value={"kind": "erc20_like", "has_code": True, "symbol": "TEST", "name": "Test Contract"},
-            ):
-                resolved = await tools_lib.resolve_yearn_address_target(address, chain_hint="ethereum")
+            ),
+        ):
+            resolved = await tools_lib.resolve_yearn_address_target(address, chain_hint="ethereum")
 
         self.assertIsNotNone(resolved)
         assert resolved is not None
@@ -666,9 +669,12 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             await channel.send(message, **kwargs)
 
         try:
-            with patch("ysupport.send_long_message", new=fake_send_long_message):
-                with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
-                    await bot.process_ticket_message(channel_id, run_context)
+            with (
+                patch("ysupport.send_long_message", new=fake_send_long_message),
+                patch("ysupport._notify_handoff", return_value=None),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+            ):
+                await bot.process_ticket_message(channel_id, run_context)
         finally:
             pending_messages.pop(channel_id, None)
             conversation_threads.pop(channel_id, None)
@@ -678,6 +684,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(fake_channel.sent_messages), 1)
         self.assertIn("A moderator needs to check this.", fake_channel.sent_messages[0])
+        self.assertIn("couldn't send", fake_channel.sent_messages[0])
+        self.assertNotIn(channel_id, stopped_channels)
 
     async def test_process_ticket_message_keeps_security_process_boundary_ticket_active(self) -> None:
         channel_id = 67
