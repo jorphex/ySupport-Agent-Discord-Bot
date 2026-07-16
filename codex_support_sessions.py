@@ -12,6 +12,7 @@ _SESSION_ID_RE = re.compile(
     r"session id:\s*(?P<session_id>[0-9a-fA-F-]{36})",
     re.IGNORECASE,
 )
+_SESSION_UUID_RE = re.compile(r"[0-9a-fA-F-]{36}")
 
 
 @dataclass
@@ -209,6 +210,19 @@ class CodexSupportSessionManager:
         if not match:
             return None
         return match.group("session_id")
+
+    def extract_session_id_from_jsonl(self, stdout_text: str) -> str | None:
+        for line in (stdout_text or "").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "thread.started":
+                continue
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and _SESSION_UUID_RE.fullmatch(thread_id):
+                return thread_id
+        return None
 
     def _record_path(self, conversation_key: str) -> Path:
         safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", conversation_key)

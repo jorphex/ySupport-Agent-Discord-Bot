@@ -19,6 +19,7 @@ from codex_support_contract import (
     support_result_to_transport_result,
     verify_support_turn_result,
 )
+from codex_support_sessions import CodexSupportSessionManager
 from ticket_investigation.codex_support_endpoint import (
     CodexSupportExecutionOutput,
     CodexSupportTicketExecutionJsonEndpoint,
@@ -836,11 +837,15 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("real report inactivity", verified.answer.lower())
 
     def test_codex_support_prompt_requests_fuller_prose_for_investigations(self) -> None:
+        request_path = Path("support_request.json")
+        schema_path = Path("support_response_schema.json")
         prompt_text = _codex_support_prompt(
-            support_request_path=Path("support_request.json"),
-            response_schema_path=Path("support_response_schema.json"),
+            support_request_path=request_path,
+            response_schema_path=schema_path,
         )
 
+        self.assertIn(str(request_path.resolve()), prompt_text)
+        self.assertIn(str(schema_path.resolve()), prompt_text)
         self.assertIn("Routine support: concise.", prompt_text)
         self.assertIn("Investigations and report triage: enough prose", prompt_text)
         self.assertIn("Do not mention handoff if public evidence already answers the main question.", prompt_text)
@@ -915,14 +920,15 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "'--json' in sys.argv,"
             "'--output-schema' in sys.argv,"
             "(cwd/'support_response_schema.json').exists(),"
-            "'Read the support turn request from support_request.json.' in prompt"
+            "'Read the support turn request from ' in prompt and "
+            "str(cwd/'support_request.json') in prompt"
             "),"
             "'requires_human_handoff':False,"
             "'handoff_reason':None,"
             "'evidence_summary':'checked',"
             "'used_tools':['shell','ysupport_mcp']"
             "}; "
-            "sys.stdout.write(json.dumps({'type':'thread.started','thread_id':'t1'}) + '\\n'); "
+            "sys.stdout.write(json.dumps({'type':'thread.started','thread_id':'019dade1-5acf-70e2-9c61-f5ba37862a78'}) + '\\n'); "
             "sys.stdout.write(json.dumps({'type':'item.started','item':{'id':'item_1','type':'mcp_tool_call','tool_name':'support_dashboard_harvests'}}) + '\\n'); "
             "sys.stdout.write(json.dumps({'type':'item.completed','item':{'id':'item_2','type':'agent_message','text':json.dumps(response)}}))"
         )
@@ -931,6 +937,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 auth_source = Path(codex_home_dir) / "source-auth.json"
                 auth_source.write_text('{"auth_mode":"chatgpt"}', encoding="utf-8")
                 bot_home = Path(codex_home_dir) / "bot-home"
+                session_dir = Path(codex_home_dir) / "sessions"
                 progress_updates: list[str] = []
 
                 async def record_progress(text: str) -> None:
@@ -956,6 +963,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                         repo_root=Path(__file__).resolve().parents[1],
                         codex_home=bot_home,
                         codex_auth_source=auth_source,
+                        session_dir=session_dir,
                         ysupport_mcp_url="http://127.0.0.1:8000/mcp",
                         ysupport_mcp_container="ysupport-mcp",
                         mcp_server_api_key="secret-key",
@@ -1024,6 +1032,15 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                         "model_instructions_file",
                         (bot_home / "config.toml").read_text(encoding="utf-8"),
                     )
+                    session_record = CodexSupportSessionManager(session_dir).load(
+                        "ticket:109"
+                    )
+                    self.assertIsNotNone(session_record)
+                    assert session_record is not None
+                    self.assertEqual(
+                        session_record.session_id,
+                        "019dade1-5acf-70e2-9c61-f5ba37862a78",
+                    )
 
         transport_result = TicketExecutionTransportResult.from_json(response_json)
         flow_outcome = transport_result.flow_outcome
@@ -1035,6 +1052,63 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_job["mode"], "waiting_for_user")
         self.assertIsNone(updated_job["current_specialty"])
         self.assertIn("Checking recent harvests", progress_updates)
+
+    async def test_codex_support_endpoint_records_verification_failure_not_success(self) -> None:
+        invalid_response = SupportTurnResult(
+            answer="unsupported",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="unchecked",
+            used_tools=["not_allowed"],
+        ).to_json()
+        session_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir) / "sessions"
+            session_manager = CodexSupportSessionManager(session_dir)
+            session_manager.record_success(
+                conversation_key="ticket:109",
+                session_id=session_id,
+            )
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=["codex", "exec"],
+                session_dir=session_dir,
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+            request = TicketExecutionTransportRequest(
+                aggregated_text="investigate support",
+                input_list=[],
+                current_history=[],
+                run_context={
+                    "channel_id": 109,
+                    "project_context": "yearn",
+                    "initial_button_intent": "investigate_issue",
+                    "repo_last_search_artifact_refs": [],
+                },
+                investigation_job={
+                    "channel_id": 109,
+                    "requested_intent": "investigate_issue",
+                    "mode": "collecting",
+                    "evidence": {"wallet": None, "chain": "base", "tx_hashes": []},
+                },
+                workflow_name="tests.endpoint.codex_support_exec",
+                wants_bug_review_status=False,
+            )
+
+            with mock.patch(
+                "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+                return_value=CodexSupportExecutionOutput(
+                    final_response_text=invalid_response
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "not allowed"):
+                    await endpoint.execute_json_turn(request.to_json())
+
+            failed_record = session_manager.load("ticket:109")
+            self.assertIsNotNone(failed_record)
+            assert failed_record is not None
+            self.assertEqual(failed_record.run_count, 1)
+            self.assertEqual(failed_record.consecutive_failures, 1)
 
     async def test_codex_support_json_endpoint_uses_codex_support_smoke_reply(self) -> None:
         endpoint = CodexSupportTicketExecutionJsonEndpoint(

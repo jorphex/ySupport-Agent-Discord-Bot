@@ -42,6 +42,26 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             "019dade1-5acf-70e2-9c61-f5ba37862a78",
         )
 
+    def test_extract_session_id_from_thread_started_jsonl(self) -> None:
+        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
+        stdout_text = "\n".join(
+            [
+                "not-json",
+                json.dumps({"type": "item.started", "item": {}}),
+                json.dumps(
+                    {
+                        "type": "thread.started",
+                        "thread_id": "019dade1-5acf-70e2-9c61-f5ba37862a78",
+                    }
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            manager.extract_session_id_from_jsonl(stdout_text),
+            "019dade1-5acf-70e2-9c61-f5ba37862a78",
+        )
+
     def test_conversation_key_for_ticket_request(self) -> None:
         manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
         request = TicketExecutionTransportRequest(
@@ -218,6 +238,7 @@ class CodexSupportCommandBuilderTests(unittest.TestCase):
             reasoning_effort="medium",
             response_schema_path=Path("/tmp/schema.json"),
             run_dir_path=Path("/tmp/run"),
+            image_paths=[],
             resume_session_id=None,
         )
 
@@ -225,17 +246,37 @@ class CodexSupportCommandBuilderTests(unittest.TestCase):
         self.assertIn("--output-schema", command)
         self.assertIn("-C", command)
 
-    def test_resume_command_uses_exec_resume_without_schema(self) -> None:
+    def test_resume_command_uses_exec_resume_with_schema(self) -> None:
         command = _build_codex_support_command(
             codex_command=DEFAULT_CODEX_EXEC_COMMAND,
             model="gpt-5.4",
             reasoning_effort="medium",
             response_schema_path=Path("/tmp/schema.json"),
             run_dir_path=Path("/tmp/run"),
+            image_paths=[],
             resume_session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
         )
 
         self.assertEqual(command[:4], ["codex", "exec", "resume", "019dade1-5acf-70e2-9c61-f5ba37862a78"])
         self.assertNotIn("--ephemeral", command)
-        self.assertNotIn("--output-schema", command)
+        self.assertIn("--output-schema", command)
+        self.assertEqual(command[command.index("--output-schema") + 1], "/tmp/schema.json")
         self.assertEqual(command[-1], "-")
+
+    def test_command_passes_each_image_to_codex(self) -> None:
+        command = _build_codex_support_command(
+            codex_command=DEFAULT_CODEX_EXEC_COMMAND,
+            model="gpt-5.4",
+            reasoning_effort="medium",
+            response_schema_path=Path("/tmp/schema.json"),
+            run_dir_path=Path("/tmp/run"),
+            image_paths=[Path("/tmp/first.png"), Path("/tmp/second.jpg")],
+            resume_session_id=None,
+        )
+
+        image_arguments = [
+            command[index + 1]
+            for index, argument in enumerate(command)
+            if argument == "-i"
+        ]
+        self.assertEqual(image_arguments, ["/tmp/first.png", "/tmp/second.jpg"])

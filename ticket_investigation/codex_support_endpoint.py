@@ -238,8 +238,40 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             context="codex support execution",
                         )
 
+                try:
+                    support_result = verify_support_turn_result(
+                        SupportTurnResult.from_json(execution_output.final_response_text),
+                        support_request,
+                    )
+                    support_result = _maybe_prefer_documentation_answer(
+                        support_result,
+                        support_request,
+                        execution_output.documentation_answers,
+                    )
+                    response_json = support_result_to_transport_result(
+                        support_result,
+                        request,
+                    ).to_json()
+                except Exception as exc:
+                    if (
+                        self.session_manager is not None
+                        and conversation_key is not None
+                        and session_record is not None
+                    ):
+                        self.session_manager.record_failure(
+                            conversation_key=conversation_key,
+                            error_text=str(exc),
+                            artifact_dir=(
+                                str(exported_run_dir) if exported_run_dir else None
+                            ),
+                        )
+                    raise
+
                 if self.session_manager is not None and conversation_key is not None:
-                    session_id = self._extract_session_id_from_run_dir(run_dir)
+                    session_id = (
+                        self._extract_session_id_from_run_dir(run_dir)
+                        or bundle.resumed_session_id
+                    )
                     if session_id is not None:
                         self.session_manager.record_success(
                             conversation_key=conversation_key,
@@ -251,16 +283,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                                 support_request.support_state.get("human_handoff_active")
                             ),
                         )
-                support_result = verify_support_turn_result(
-                    SupportTurnResult.from_json(execution_output.final_response_text),
-                    support_request,
-                )
-                support_result = _maybe_prefer_documentation_answer(
-                    support_result,
-                    support_request,
-                    execution_output.documentation_answers,
-                )
-                return support_result_to_transport_result(support_result, request).to_json()
+                return response_json
 
     def _prepare_support_home(self) -> bool:
         if not (self.codex_home and self.ysupport_mcp_url and self.mcp_server_api_key):
@@ -353,6 +376,18 @@ class CodexSupportTicketExecutionJsonEndpoint:
         )
 
     def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:
+        stdout_path = run_dir / "stdout.txt"
+        if stdout_path.exists() and self.session_manager is not None:
+            try:
+                stdout_text = stdout_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+            else:
+                session_id = self.session_manager.extract_session_id_from_jsonl(
+                    stdout_text
+                )
+                if session_id is not None:
+                    return session_id
         stderr_path = run_dir / "stderr.txt"
         if not stderr_path.exists():
             return None
@@ -535,7 +570,7 @@ def _build_codex_support_command(
             reasoning_effort=reasoning_effort,
             image_paths=image_paths,
         )
-        command.append("-")
+        command.extend(["--output-schema", str(response_schema_path), "-"])
         return command
 
     command = [
@@ -593,10 +628,12 @@ def _codex_support_prompt(
     support_request_path: Path,
     response_schema_path: Path,
 ) -> str:
+    support_request_path = support_request_path.resolve()
+    response_schema_path = response_schema_path.resolve()
     return (
         "You are ySupport.\n\n"
-        f"Read the support turn request from {support_request_path.name}.\n"
-        f"Return only JSON matching {response_schema_path.name}.\n"
+        f"Read the support turn request from {support_request_path}.\n"
+        f"Return only JSON matching {response_schema_path}.\n"
         "Use `current_turn_source` to determine who authored `current_user_message`.\n"
         "If `current_turn_source` is `internal_team`, treat `current_user_message` as an internal team update, not as the user speaking.\n"
         "If `current_turn_instruction` is present, follow it as the required output contract for this turn.\n"
