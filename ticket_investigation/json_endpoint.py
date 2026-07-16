@@ -222,7 +222,7 @@ class ConditionalTicketExecutionJsonEndpoint:
 
 
 def build_ticket_execution_json_endpoint(
-    delegate: TicketInvestigationExecutor,
+    delegate: TicketInvestigationExecutor | None = None,
 ) -> TicketExecutionJsonEndpoint:
     config.validate_ticket_execution_runtime_config()
     primary: TicketExecutionJsonEndpoint = _build_single_ticket_execution_json_endpoint(
@@ -275,9 +275,13 @@ def build_ticket_execution_json_endpoint(
 
 def _build_single_ticket_execution_json_endpoint(
     mode: str,
-    delegate: TicketInvestigationExecutor,
+    delegate: TicketInvestigationExecutor | None,
 ) -> TicketExecutionJsonEndpoint:
     if mode == "local":
+        if delegate is None:
+            raise ValueError(
+                "The local ticket execution endpoint requires an explicit local executor."
+            )
         return ExecutorBackedTicketExecutionJsonEndpoint(delegate)
     if mode == "subprocess":
         command = list(_subprocess_command())

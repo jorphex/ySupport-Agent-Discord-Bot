@@ -20,6 +20,12 @@ The repo also contains:
 - transcript-fetch tooling for ticket review
 - an offline knowledge-gap worker for private internal reporting from support tickets
 
+Runtime boundaries:
+- production support turns use `codex_support_exec`
+- `support_boundary.py` is the live outer classifier shared with explicit replay
+- `support_agents.py` and `ticket_investigation/runtime.py` are the legacy local backend retained for explicit local/subprocess replay and LLM evaluation
+- `knowledge_gap_worker.py` and `knowledge_gap_reporting.py` are manual offline analysis tools and are not imported by live support turns
+
 Host-native service mode
 
 The bot can be run outside Docker under `systemd` while keeping the MCP server in Docker.

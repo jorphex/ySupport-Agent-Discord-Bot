@@ -1,6 +1,9 @@
+"""State-transition wrapper for the explicit legacy local runtime."""
+
 from dataclasses import dataclass
 
-from ticket_investigation.runtime import TicketAgentFlowOutcome, TicketInvestigationRuntime, TicketTurnRequest
+from ticket_investigation.contracts import TicketAgentFlowOutcome, TicketTurnRequest
+from ticket_investigation.runtime import TicketInvestigationRuntime
 
 
 @dataclass

@@ -1,28 +1,34 @@
+"""Legacy local multi-agent runtime used by explicit local replay and LLM evals."""
+
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import List
 
 from agents import RunConfig, RunResult, TResponseInputItem
 
 import config
 from router import select_starting_agent
 from state import BotRunContext, TicketInvestigationJob
+from support_boundary import evaluate_support_boundary
 from support_agents import (
     TicketTriageDecision,
-    evaluate_support_boundary,
     ticket_triage_router_agent,
     triage_agent,
     yearn_bug_triage_agent,
     yearn_data_agent,
     yearn_docs_qa_agent,
 )
+from ticket_investigation.context import (
+    build_contextual_hints,
+    contains_tx_hash,
+    merge_explicit_evidence,
+)
+from ticket_investigation.contracts import TicketAgentFlowOutcome, TicketTurnRequest
 
 
 TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
 ADDRESS_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
 ACTIVE_DEPOSITS_HEADER_RE = re.compile(r"\*\*(?P<chain>[A-Za-z0-9 _/-]+) Active Deposits:\*\*")
-CHAIN_NAMES = ("ethereum", "base", "arbitrum", "optimism", "polygon", "sonic", "katana")
 YEARN_APP_URL_RE = re.compile(r"https?://(?:www\.)?(?:yearn\.fi|legacy\.yearn\.fi)/", re.IGNORECASE)
 EXPLICIT_HUMAN_REQUEST_TOKENS = (
     "need a human",
@@ -58,29 +64,6 @@ ROUTE_ACTION_TO_AGENT_KEY = {
     "route_docs": "docs",
     "route_bug": "bug",
 }
-
-
-@dataclass
-class TicketAgentFlowOutcome:
-    raw_final_reply: str
-    conversation_history: List[TResponseInputItem]
-    completed_agent_key: Optional[str]
-    requires_human_handoff: bool
-
-
-@dataclass
-class TicketTurnRequest:
-    aggregated_text: str
-    input_list: List[TResponseInputItem]
-    current_history: List[TResponseInputItem]
-    run_context: BotRunContext
-    investigation_job: TicketInvestigationJob
-    workflow_name: str
-    precomputed_boundary: dict[str, Any] | None = None
-    send_bug_review_status: Optional[Callable[[], Awaitable[None]]] = None
-    attachments: List[dict[str, Any]] = field(default_factory=list)
-    turn_source: str = "user"
-    turn_instruction: str | None = None
 
 
 def _resolve_agent(agent_key: str):
@@ -339,7 +322,7 @@ def _merge_explicit_evidence_into_job(
     investigation_job: TicketInvestigationJob,
     text: str,
 ) -> None:
-    TicketInvestigationRuntime.merge_explicit_evidence(investigation_job, text)
+    merge_explicit_evidence(investigation_job, text)
 
 
 def _build_specialist_turn_input(request: TicketTurnRequest) -> List[TResponseInputItem]:
@@ -376,90 +359,23 @@ class TicketInvestigationRuntime:
 
     @staticmethod
     def contains_tx_hash(text: str) -> bool:
-        return bool(TX_HASH_RE.search(text))
+        return contains_tx_hash(text)
 
     @staticmethod
     def merge_explicit_evidence(investigation_job: TicketInvestigationJob, text: str) -> None:
-        if not text:
-            return
-
-        tx_hashes = TX_HASH_RE.findall(text)
-        for tx_hash in tx_hashes:
-            investigation_job.remember_tx_hash(tx_hash)
-
-        lowered = text.lower()
-        for chain_name in CHAIN_NAMES:
-            if chain_name in lowered:
-                investigation_job.remember_chain(chain_name)
-                break
+        merge_explicit_evidence(investigation_job, text)
 
     @staticmethod
     def build_contextual_hints(
         investigation_job: TicketInvestigationJob,
         aggregated_text: str,
-        current_history: Optional[List[TResponseInputItem]] = None,
+        current_history: List[TResponseInputItem] | None = None,
     ) -> List[str]:
-        hints: List[str] = []
-        lowered_text = aggregated_text.lower()
-        known_wallet = investigation_job.evidence.wallet
-        known_chain = investigation_job.evidence.chain
-        known_tx_hashes = investigation_job.evidence.tx_hashes
-        combined_chain_and_tx_hint_added = False
-        if (
-            known_chain
-            and known_tx_hashes
-        ):
-            recent_hashes = ", ".join(known_tx_hashes[-2:])
-            hints.append(
-                f"For onchain investigation on this ticket, use chain '{known_chain}' and transaction hash(es) {recent_hashes}. "
-                "Do not substitute a different chain or transaction unless the user explicitly corrects you."
-            )
-            combined_chain_and_tx_hint_added = True
-        elif known_chain and known_chain not in lowered_text:
-            hints.append(
-                f"Known chain for this ticket is {known_chain}. "
-                "Use that chain for continued investigation unless the user explicitly corrects it."
-            )
-        if (
-            known_tx_hashes
-            and not combined_chain_and_tx_hint_added
-            and not any(tx_hash in aggregated_text for tx_hash in known_tx_hashes)
-        ):
-            recent_hashes = ", ".join(known_tx_hashes[-2:])
-            hints.append(
-                f"Known transaction hashes for this ticket: {recent_hashes}. "
-                "Reuse them for continued onchain investigation unless the user provides a different transaction."
-            )
-        if known_tx_hashes and not any(tx_hash in aggregated_text for tx_hash in known_tx_hashes):
-            hints.append(
-                "This is a follow-up to an existing transaction investigation. "
-                "Continue the onchain investigation yourself and do not ask the user to choose between receipt decoding, log inspection, or contract calls."
-            )
-        wallet_hint_added = False
-        if known_wallet and known_wallet not in aggregated_text:
-            hints.append(
-                f"Known wallet for this ticket is {known_wallet}. "
-                "Use it if needed; do not ask again unless the user corrects it."
-            )
-            wallet_hint_added = True
-        deposit_chain = investigation_job.evidence.withdrawal_target_chain
-        deposit_vault = investigation_job.evidence.withdrawal_target_vault
-        if deposit_chain and deposit_vault and _is_withdrawal_followup(aggregated_text):
-            if known_wallet:
-                if wallet_hint_added:
-                    hints.pop()
-                hints.append(
-                    f"This withdrawal follow-up already has the needed details from earlier in the ticket: wallet {known_wallet}, "
-                    f"vault {deposit_vault}, and chain {deposit_chain}. Use those exact values for withdrawal instructions unless the user explicitly corrects them. "
-                    "Do not re-check deposits, do not ask which vault they mean, and do not default to ethereum."
-                )
-            else:
-                hints.append(
-                    f"The current ticket already has a single withdrawal target: {deposit_vault} on {deposit_chain}. "
-                    "For this withdrawal follow-up, use that vault and chain unless the user explicitly corrects them. "
-                    "Do not re-check deposits or default to ethereum if the ticket already identified the target vault."
-                )
-        return hints
+        return build_contextual_hints(
+            investigation_job,
+            aggregated_text,
+            current_history,
+        )
 
     async def run_turn(self, request: TicketTurnRequest) -> TicketAgentFlowOutcome:
         # Backend safety fallback: replay/direct runtime entry should still apply

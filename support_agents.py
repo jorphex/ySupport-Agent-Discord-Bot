@@ -1,93 +1,50 @@
-import logging
-import re
-from typing import Any, List, Optional, Union, Literal
+"""Legacy local support-agent graph used by explicit local replay and LLM evals.
 
+The live Discord backend is Codex. Production boundary classification lives in
+``support_boundary`` so importing the live shell does not construct this graph.
+"""
+
+from typing import Literal
+
+from agents import (
+    Agent,
+    GuardrailFunctionOutput,
+    ModelSettings,
+    RunContextWrapper,
+    TResponseInputItem,
+    handoff,
+    input_guardrail,
+)
+from agents.model_settings import Reasoning
 from pydantic import BaseModel, Field
 
 import config
-from agents import (
-    Agent, Runner, RunContextWrapper,
-    ModelSettings, handoff,
-    input_guardrail, GuardrailFunctionOutput,
-    RunConfig,
-    TResponseInputItem,
-)
-from agents.model_settings import Reasoning
-
 from agent_prompts import (
+    TICKET_TRIAGE_ROUTER_INSTRUCTIONS,
+    TRIAGE_AGENT_INSTRUCTIONS,
+    YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
     YEARn_DATA_AGENT_INSTRUCTIONS,
     YEARn_DOCS_QA_AGENT_INSTRUCTIONS,
-    YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS,
-    SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS,
-    TRIAGE_AGENT_INSTRUCTIONS,
-    TICKET_TRIAGE_ROUTER_INSTRUCTIONS,
-)
-from bot_behavior import (
-    OUT_OF_SCOPE_SUPPORT_MESSAGE,
-    LISTING_DENIAL_MESSAGE,
-    STANDARD_REDIRECT_MESSAGE,
-    SECURITY_VENDOR_BOUNDARY_MESSAGE,
-    JOB_INQUIRY_REDIRECT_MESSAGE,
 )
 from state import BotRunContext
+from support_boundary import (
+    SupportBoundaryCheckOutput,
+    evaluate_support_boundary,
+    is_security_process_exception_request,
+    support_boundary_guardrail_agent,
+)
 from support_tools import (
-    search_vaults_tool,
-    check_all_deposits_tool,
-    get_withdrawal_instructions_tool,
-    inspect_onchain_tool,
     answer_from_docs_tool,
-    pretriage_repo_claim_tool,
-    search_repo_context_tool,
+    check_all_deposits_tool,
     fetch_repo_artifacts_tool,
     fetch_report_artifact_tool,
+    get_withdrawal_instructions_tool,
+    inspect_onchain_tool,
+    pretriage_repo_claim_tool,
     repo_context_status_tool,
+    search_repo_context_tool,
+    search_vaults_tool,
 )
-
-
-_SUPPORT_SCOPE_TX_HASH_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{64}")
-_SUPPORT_SCOPE_ADDRESS_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{40}")
-_SECURITY_PROCESS_URL = "https://docs.yearn.fi/developers/security"
-_SECURITY_PROCESS_EXCEPTION_REQUIRED_TOKENS = (
-    "immunefi",
-    "zkpassport",
-    "kyc",
-    "jurisdiction",
-)
-_SECURITY_PROCESS_EXCEPTION_BLOCKERS = (
-    "blocked",
-    "block",
-    "cannot use",
-    "can't use",
-    "cant use",
-    "unable to use",
-    "cannot submit",
-    "can't submit",
-    "cant submit",
-    "unable to submit",
-    "not working",
-    "isn't working",
-    "isnt working",
-    "unavailable",
-    "restriction",
-    "restricted",
-)
-
-
-class SupportBoundaryCheckOutput(BaseModel):
-    classification: Literal[
-        "yearn_support",
-        "business_boundary",
-        "security_process_boundary",
-        "non_support_assistant",
-        "uncertain",
-    ] = Field(..., description="Top-level outer boundary classification for the user message.")
-    business_subtype: Optional[
-        Literal["listing", "general_bd", "vendor_security", "job_inquiry"]
-    ] = Field(
-        default=None,
-        description="Subtype only when classification is business_boundary.",
-    )
-    reasoning: str = Field(..., description="Brief explanation for the classification.")
 
 
 class TicketTriageDecision(BaseModel):
@@ -99,64 +56,11 @@ class TicketTriageDecision(BaseModel):
         "respond_directly",
         "human_escalation",
     ] = Field(..., description="The next runtime action for this ticket turn.")
-    message: Optional[str] = Field(
+    message: str | None = Field(
         default=None,
         description="User-facing message for ask_clarifying, respond_directly, or human_escalation. Leave empty for route_* actions.",
     )
     reasoning: str = Field(..., description="Brief explanation for the routing decision.")
-
-
-def _looks_like_support_scope_primitive(text: str) -> bool:
-    stripped = (text or "").strip()
-    if not stripped:
-        return False
-    return bool(
-        _SUPPORT_SCOPE_TX_HASH_RE.fullmatch(stripped)
-        or _SUPPORT_SCOPE_ADDRESS_RE.fullmatch(stripped)
-    )
-
-
-def _security_process_boundary_message() -> str:
-    return (
-        "If you are reporting a Yearn security issue and want bounty or disclosure handling, "
-        f"use Yearn's official security process at {_SECURITY_PROCESS_URL}. "
-        "Human help is required beyond that path."
-    )
-
-
-def is_security_process_exception_request(text: str) -> bool:
-    lowered = (text or "").lower()
-    if not lowered:
-        return False
-    if not any(token in lowered for token in _SECURITY_PROCESS_EXCEPTION_REQUIRED_TOKENS):
-        return False
-    return any(token in lowered for token in _SECURITY_PROCESS_EXCEPTION_BLOCKERS)
-
-
-def _security_process_exception_message() -> str:
-    return config.SECURITY_ALTERNATE_CONTACT_MESSAGE
-
-
-def _message_for_support_boundary(
-    text_input: str,
-    classification: str,
-    business_subtype: str | None,
-) -> str | None:
-    if classification == "business_boundary":
-        if business_subtype == "listing":
-            return LISTING_DENIAL_MESSAGE
-        if business_subtype == "vendor_security":
-            return SECURITY_VENDOR_BOUNDARY_MESSAGE
-        if business_subtype == "job_inquiry":
-            return JOB_INQUIRY_REDIRECT_MESSAGE
-        return STANDARD_REDIRECT_MESSAGE
-    if classification == "security_process_boundary":
-        if is_security_process_exception_request(text_input):
-            return _security_process_exception_message()
-        return _security_process_boundary_message()
-    if classification == "non_support_assistant":
-        return OUT_OF_SCOPE_SUPPORT_MESSAGE
-    return None
 
 
 def _gpt5_model_settings(
@@ -175,6 +79,7 @@ def _with_runtime_context(base_instructions: str):
         ctx: RunContextWrapper[BotRunContext],
         agent: Agent[BotRunContext],
     ) -> str:
+        del agent
         run_context = ctx.context
         runtime_context = (
             "# Runtime Context\n"
@@ -187,112 +92,33 @@ def _with_runtime_context(base_instructions: str):
     return _instructions
 
 
-support_boundary_guardrail_agent = Agent[BotRunContext](
-    name="Support Boundary Guardrail Check",
-    instructions=SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS,
-    output_type=SupportBoundaryCheckOutput,
-    model=config.LLM_GUARDRAIL_MODEL,
-    model_settings=_gpt5_model_settings(
-        effort=config.LLM_GUARDRAIL_REASONING_EFFORT,
-        verbosity=config.LLM_GUARDRAIL_VERBOSITY,
-    ),
-)
-
-
 @input_guardrail(name="Support Boundary Guardrail")
 async def support_boundary_guardrail(
     ctx: RunContextWrapper[BotRunContext],
     agent: Agent,
-    input_data: Union[str, List[TResponseInputItem]]
+    input_data: str | list[TResponseInputItem],
 ) -> GuardrailFunctionOutput:
-    """
-    Evaluates the unified outer support boundary for the current user input.
-    Returns a tripwire only when the runtime should stop normal support flow
-    and send a boundary message instead.
-    """
+    del ctx, agent
     if isinstance(input_data, str):
         text_input = input_data
-    elif isinstance(input_data, list):
-        text_input = ""
-        for item in reversed(input_data):
-             if isinstance(item, dict) and item.get("role") == "user" and isinstance(item.get("content"), str):
-                 text_input = item["content"]
-                 break
     else:
         text_input = ""
+        for item in reversed(input_data):
+            if (
+                isinstance(item, dict)
+                and item.get("role") == "user"
+                and isinstance(item.get("content"), str)
+            ):
+                text_input = item["content"]
+                break
     if not text_input:
         return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
 
     output_info = await evaluate_support_boundary(text_input)
-    if not output_info:
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
     return GuardrailFunctionOutput(
         output_info=output_info,
         tripwire_triggered=bool(output_info.get("tripwire_triggered")),
     )
-
-
-async def evaluate_support_boundary(text_input: str) -> dict[str, Any]:
-    if not text_input.strip():
-        return {
-            "classification": "yearn_support",
-            "business_subtype": None,
-            "tripwire_triggered": False,
-        }
-    if _looks_like_support_scope_primitive(text_input):
-        return {
-            "classification": "yearn_support",
-            "business_subtype": None,
-            "reasoning": "Explicit support primitive such as a bare address or tx hash.",
-            "tripwire_triggered": False,
-        }
-    logging.info(f"[Guardrail:Boundary] Analyzing input: '{text_input[:100]}...'")
-
-    try:
-        guardrail_runner = Runner()
-        run_config_guardrail = RunConfig(
-            workflow_name="Yearn Support Boundary Guardrail Check",
-            tracing_disabled=True,
-        )
-        result = await guardrail_runner.run(
-            starting_agent=support_boundary_guardrail_agent,
-            input=text_input,
-            run_config=run_config_guardrail,
-        )
-        check_output = result.final_output_as(SupportBoundaryCheckOutput)
-        business_subtype = (
-            check_output.business_subtype
-            if check_output.classification == "business_boundary"
-            else None
-        )
-        message_to_send = _message_for_support_boundary(
-            text_input,
-            check_output.classification,
-            business_subtype,
-        )
-        logging.info(
-            "[Guardrail:Boundary] Check result: classification=%s subtype=%s reasoning=%s",
-            check_output.classification,
-            business_subtype,
-            check_output.reasoning,
-        )
-        output_info: dict[str, Any] = {
-            "classification": check_output.classification,
-            "business_subtype": business_subtype,
-            "reasoning": check_output.reasoning,
-            "tripwire_triggered": bool(message_to_send),
-        }
-        if message_to_send:
-            output_info["message"] = message_to_send
-        return output_info
-    except Exception as e:
-        logging.error(f"[Guardrail:Boundary] Error during check: {e}", exc_info=True)
-        return {
-            "classification": "yearn_support",
-            "business_subtype": None,
-            "error": str(e),
-            "tripwire_triggered": False,
-        }
 
 
 yearn_data_agent = Agent[BotRunContext](
@@ -351,9 +177,21 @@ triage_agent = Agent[BotRunContext](
     name="Support Triage Agent",
     instructions=_with_runtime_context(TRIAGE_AGENT_INSTRUCTIONS),
     handoffs=[
-        handoff(yearn_data_agent, tool_name_override="transfer_to_yearn_data_specialist", tool_description_override="Handoff for specific YEARN data (vaults, deposits, APR, TVL, balances, withdrawal instructions)."),
-        handoff(yearn_docs_qa_agent, tool_name_override="transfer_to_yearn_docs_qa_specialist", tool_description_override="Handoff for general questions about YEARN concepts, documentation, risks."),
-        handoff(yearn_bug_triage_agent, tool_name_override="transfer_to_yearn_bug_triage_specialist", tool_description_override="Handoff for YEARN bug reports, UI issues, migration issues, and protocol behavior claims that should be checked against docs and repo context before human escalation."),
+        handoff(
+            yearn_data_agent,
+            tool_name_override="transfer_to_yearn_data_specialist",
+            tool_description_override="Handoff for specific YEARN data (vaults, deposits, APR, TVL, balances, withdrawal instructions).",
+        ),
+        handoff(
+            yearn_docs_qa_agent,
+            tool_name_override="transfer_to_yearn_docs_qa_specialist",
+            tool_description_override="Handoff for general questions about YEARN concepts, documentation, risks.",
+        ),
+        handoff(
+            yearn_bug_triage_agent,
+            tool_name_override="transfer_to_yearn_bug_triage_specialist",
+            tool_description_override="Handoff for YEARN bug reports, UI issues, migration issues, and protocol behavior claims that should be checked against docs and repo context before human escalation.",
+        ),
     ],
     input_guardrails=[support_boundary_guardrail],
     model=config.LLM_TRIAGE_AGENT_MODEL,
@@ -374,3 +212,18 @@ ticket_triage_router_agent = Agent[BotRunContext](
         verbosity=config.LLM_TRIAGE_AGENT_VERBOSITY,
     ),
 )
+
+
+__all__ = [
+    "SupportBoundaryCheckOutput",
+    "TicketTriageDecision",
+    "evaluate_support_boundary",
+    "is_security_process_exception_request",
+    "support_boundary_guardrail",
+    "support_boundary_guardrail_agent",
+    "ticket_triage_router_agent",
+    "triage_agent",
+    "yearn_bug_triage_agent",
+    "yearn_data_agent",
+    "yearn_docs_qa_agent",
+]

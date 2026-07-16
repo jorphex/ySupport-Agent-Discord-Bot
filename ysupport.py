@@ -10,7 +10,7 @@ import discord
 from dotenv import load_dotenv
 
 from agents import (
-    Runner, TResponseInputItem,
+    TResponseInputItem,
     InputGuardrailTripwireTriggered, MaxTurnsExceeded, AgentsException,
     set_default_openai_key,
 )
@@ -35,7 +35,7 @@ from handoff import (
     summarize_handoff_summary,
 )
 from router import is_bug_report_query
-from support_agents import evaluate_support_boundary
+from support_boundary import evaluate_support_boundary
 from state import (
     BotRunContext,
     PublicConversation,
@@ -80,16 +80,15 @@ from ticket_investigation.json_endpoint import (
     build_ticket_execution_json_endpoint,
     JsonEndpointTicketExecutionTransport,
 )
+from ticket_investigation.context import (
+    build_contextual_hints,
+    merge_explicit_evidence,
+)
+from ticket_investigation.contracts import TicketTurnRequest
 from ticket_investigation.executor import (
-    LocalTicketInvestigationExecutor,
     TicketExecutionHooks,
     TransportTicketInvestigationExecutor,
 )
-from ticket_investigation.runtime import (
-    TicketInvestigationRuntime,
-    TicketTurnRequest,
-)
-from ticket_investigation.worker import TicketInvestigationWorker
 from views import InitialInquiryView, StopBotView
 from utils import send_long_message
 
@@ -739,16 +738,22 @@ def _outer_moderator_access_reply(text: str) -> str | None:
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
-        self.runner = Runner
         self._telegram_updates_task: asyncio.Task[None] | None = None
         self._telegram_update_offset: int | None = load_telegram_update_offset()
-        self.investigation_runtime = TicketInvestigationRuntime(self.runner)
-        self.investigation_worker = TicketInvestigationWorker(self.investigation_runtime)
-        self.local_investigation_executor = LocalTicketInvestigationExecutor(
-            self.investigation_worker
-        )
+        local_executor = None
+        if "local" in {
+            config.TICKET_EXECUTION_ENDPOINT,
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT,
+            config.TICKET_EXECUTION_CANARY_ENDPOINT,
+            config.TICKET_EXECUTION_SHADOW_ENDPOINT,
+        }:
+            from ticket_execution.runtime_factory import (
+                build_local_ticket_investigation_executor,
+            )
+
+            local_executor = build_local_ticket_investigation_executor()
         self.investigation_json_endpoint = build_ticket_execution_json_endpoint(
-            self.local_investigation_executor
+            local_executor
         )
         self.investigation_transport = JsonEndpointTicketExecutionTransport(
             self.investigation_json_endpoint
@@ -1444,7 +1449,7 @@ class TicketBot(discord.Client):
                 {"role": "system", "content": " ".join(preparation.system_hints)}
             ] + [input_list[-1]]
 
-        contextual_hints = self.investigation_runtime.build_contextual_hints(
+        contextual_hints = build_contextual_hints(
             investigation_job,
             aggregated_text,
             current_history=current_history,
@@ -1625,7 +1630,7 @@ class TicketBot(discord.Client):
             )
             if not aggregated_text:
                 return
-            self.investigation_runtime.merge_explicit_evidence(investigation_job, aggregated_text)
+            merge_explicit_evidence(investigation_job, aggregated_text)
 
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):

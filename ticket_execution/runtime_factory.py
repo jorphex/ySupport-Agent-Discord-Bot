@@ -1,3 +1,5 @@
+"""Builders for the explicit legacy local replay/evaluation backend."""
+
 from __future__ import annotations
 
 from ticket_investigation.executor import LocalTicketInvestigationExecutor

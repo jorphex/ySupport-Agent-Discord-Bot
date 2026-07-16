@@ -1,3 +1,5 @@
+"""Manual offline ticket-quality analysis; never imported by live support turns."""
+
 import re
 from dataclasses import dataclass
 from functools import lru_cache

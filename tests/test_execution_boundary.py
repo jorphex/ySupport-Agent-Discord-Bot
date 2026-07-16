@@ -472,7 +472,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_SUBPROCESS_COMMAND = []
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = []
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+            endpoint = build_ticket_execution_json_endpoint()
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
@@ -537,7 +537,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
             config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            endpoint = build_ticket_execution_json_endpoint(_FakeExecutor())
+            endpoint = build_ticket_execution_json_endpoint()
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
@@ -549,6 +549,18 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
         self.assertIsInstance(endpoint, CodexSupportTicketExecutionJsonEndpoint)
         self.assertEqual(endpoint.codex_command[:2], ["codex", "exec"])
         self.assertEqual(endpoint.model, "gpt-5.4")
+
+    def test_build_local_endpoint_requires_explicit_executor(self) -> None:
+        original_mode = config.TICKET_EXECUTION_ENDPOINT
+        original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+        try:
+            config.TICKET_EXECUTION_ENDPOINT = "local"
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
+            with self.assertRaisesRegex(ValueError, "requires an explicit local executor"):
+                build_ticket_execution_json_endpoint()
+        finally:
+            config.TICKET_EXECUTION_ENDPOINT = original_mode
+            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
 
     def test_build_endpoint_wraps_primary_with_fallback_when_configured(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT

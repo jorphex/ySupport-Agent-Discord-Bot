@@ -12,7 +12,7 @@ from ticket_investigation.transport import (
 )
 
 if TYPE_CHECKING:
-    from ticket_investigation.runtime import TicketTurnRequest
+    from ticket_investigation.contracts import TicketTurnRequest
     from ticket_investigation.worker import TicketInvestigationWorker
 
 
