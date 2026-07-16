@@ -45,6 +45,11 @@ DEFAULT_CODEX_EXEC_COMMAND = [
     "--color",
     "never",
 ]
+_ALLOWED_DISCORD_ATTACHMENT_HOSTS = {
+    "cdn.discordapp.com",
+    "media.discordapp.net",
+}
+_MAX_ATTACHMENT_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 @dataclass
@@ -471,9 +476,11 @@ async def _prepare_support_request_attachments(
                 attachments_dir=attachments_dir,
                 index=index,
             )
-        except Exception:
-            prepared.append(item)
-            continue
+        except Exception as exc:
+            filename = str(item.get("filename") or f"attachment {index}")
+            raise ValueError(
+                f"Could not prepare image attachment {filename}: {exc}"
+            ) from exc
         item["is_image"] = True
         item["local_path"] = str(local_path)
         prepared.append(item)
@@ -504,15 +511,44 @@ def _attachment_is_image(attachment: dict[str, object]) -> bool:
     return filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
 
 
+def _validate_attachment_image_source(attachment: dict[str, object]) -> str:
+    url = str(attachment.get("url") or "").strip()
+    if not url:
+        raise ValueError("Attachment URL is required.")
+    parsed = urlparse(url)
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() not in _ALLOWED_DISCORD_ATTACHMENT_HOSTS
+    ):
+        raise ValueError("Attachment URL must use the Discord CDN.")
+    declared_size = attachment.get("size")
+    if isinstance(declared_size, int) and declared_size > _MAX_ATTACHMENT_IMAGE_BYTES:
+        raise ValueError("Attachment image exceeds the 20 MiB safety limit.")
+    return url
+
+
+async def _read_attachment_image_body(response: aiohttp.ClientResponse) -> bytes:
+    content_length = response.content_length
+    if (
+        content_length is not None
+        and content_length > _MAX_ATTACHMENT_IMAGE_BYTES
+    ):
+        raise ValueError("Attachment image exceeds the 20 MiB safety limit.")
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        body.extend(chunk)
+        if len(body) > _MAX_ATTACHMENT_IMAGE_BYTES:
+            raise ValueError("Attachment image exceeds the 20 MiB safety limit.")
+    return bytes(body)
+
+
 async def _download_attachment_image(
     *,
     attachment: dict[str, object],
     attachments_dir: Path,
     index: int,
 ) -> Path:
-    url = str(attachment.get("url") or "").strip()
-    if not url:
-        raise ValueError("Attachment URL is required.")
+    url = _validate_attachment_image_source(attachment)
     source_name = str(attachment.get("filename") or "").strip()
     suffix = Path(source_name).suffix or Path(urlparse(url).path).suffix or ".img"
     safe_suffix = suffix if suffix.startswith(".") else f".{suffix}"
@@ -521,18 +557,14 @@ async def _download_attachment_image(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url) as response:
             response.raise_for_status()
-            body = await response.read()
+            response_host = (response.url.host or "").lower()
+            if response_host not in _ALLOWED_DISCORD_ATTACHMENT_HOSTS:
+                raise ValueError("Attachment redirect left the Discord CDN.")
+            body = await _read_attachment_image_body(response)
             content_type = (response.headers.get("Content-Type") or "").strip().lower()
     if not body:
         raise ValueError("Attachment download returned empty body.")
-    if not content_type.startswith("image/") and target_path.suffix.lower() not in {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-        ".bmp",
-    }:
+    if not content_type.startswith("image/"):
         raise ValueError("Attachment is not an image.")
     target_path.write_bytes(body)
     return target_path

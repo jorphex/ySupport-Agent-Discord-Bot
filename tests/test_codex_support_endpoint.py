@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -23,8 +24,11 @@ from codex_support_sessions import CodexSupportSessionManager
 from ticket_investigation.codex_support_endpoint import (
     CodexSupportExecutionOutput,
     CodexSupportTicketExecutionJsonEndpoint,
+    _download_attachment_image,
     _maybe_prefer_documentation_answer,
     _parse_codex_support_execution_output,
+    _prepare_support_request_attachments,
+    _read_attachment_image_body,
     _codex_support_prompt,
 )
 from ticket_investigation.executor import TicketExecutionHooks
@@ -44,6 +48,89 @@ EXAMPLE_YSUPPORT_MCP_URL = "http://ysupport-mcp.example.test/mcp"
 
 
 class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_image_attachment_stream_enforces_size_without_content_length(
+        self,
+    ) -> None:
+        class _FakeContent:
+            async def iter_chunked(self, _chunk_size: int):
+                yield b"123"
+                yield b"45"
+
+        response = SimpleNamespace(content_length=None, content=_FakeContent())
+        with mock.patch(
+            "ticket_investigation.codex_support_endpoint._MAX_ATTACHMENT_IMAGE_BYTES",
+            4,
+        ):
+            with self.assertRaisesRegex(ValueError, "20 MiB"):
+                await _read_attachment_image_body(response)
+
+    async def test_image_attachment_download_rejects_non_discord_and_oversized_sources(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            attachments_dir = Path(temp_dir) / "attachments"
+            attachments_dir.mkdir()
+            with self.assertRaisesRegex(ValueError, "Discord CDN"):
+                await _download_attachment_image(
+                    attachment={
+                        "filename": "image.png",
+                        "url": "https://example.com/image.png",
+                        "content_type": "image/png",
+                    },
+                    attachments_dir=attachments_dir,
+                    index=1,
+                )
+            with self.assertRaisesRegex(ValueError, "20 MiB"):
+                await _download_attachment_image(
+                    attachment={
+                        "filename": "image.png",
+                        "url": "https://cdn.discordapp.com/attachments/1/2/image.png",
+                        "content_type": "image/png",
+                        "size": 20 * 1024 * 1024 + 1,
+                    },
+                    attachments_dir=attachments_dir,
+                    index=1,
+                )
+
+    async def test_image_attachment_preparation_fails_closed_on_download_error(
+        self,
+    ) -> None:
+        support_request = SupportTurnRequest(
+            current_user_message="What does this screenshot show?",
+            recent_transcript=[],
+            attachments=[
+                {
+                    "filename": "evidence.png",
+                    "url": "https://cdn.discordapp.com/attachments/1/2/evidence.png",
+                    "content_type": "image/png",
+                    "is_image": True,
+                }
+            ],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.image_failure",
+            initial_button_intent="investigate_issue",
+            requested_intent="investigate_issue",
+            evidence={},
+            support_state={},
+            constraints={},
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch(
+                "ticket_investigation.codex_support_endpoint._download_attachment_image",
+                side_effect=RuntimeError("expired URL"),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Could not prepare image attachment evidence.png: expired URL",
+                ):
+                    await _prepare_support_request_attachments(
+                        support_request,
+                        run_dir=temp_dir,
+                    )
+
     def test_prepare_codex_support_home_writes_config_and_copies_auth(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_source = Path(temp_dir) / "source-auth.json"

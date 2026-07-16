@@ -57,6 +57,7 @@ from views import InitialInquiryView, StopBotView
 from ysupport import (
     TicketBot,
     _build_discord_intents,
+    _refresh_discord_attachment_urls,
     _reload_runtime_env_and_config,
     _run_ticket_bot_with_fatal_startup_backoff,
     _notify_handoff,
@@ -147,6 +148,47 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             type(call.args[0]) for call in mock_add_view.call_args_list
         }
         self.assertEqual(registered_view_types, {InitialInquiryView, StopBotView})
+
+    async def test_parked_attachment_urls_refresh_from_source_message(self) -> None:
+        current_attachment = SimpleNamespace(
+            id=456,
+            filename="evidence.png",
+            url="https://cdn.discordapp.com/attachments/1/2/refreshed.png",
+            content_type="image/png",
+            size=321,
+        )
+        source_message = SimpleNamespace(attachments=[current_attachment])
+
+        class _RefreshChannel:
+            id = 123
+
+            async def fetch_message(self, message_id: int):
+                self.fetched_message_id = message_id
+                return source_message
+
+        channel = _RefreshChannel()
+        attachments = await _refresh_discord_attachment_urls(
+            channel,
+            [
+                {
+                    "attachment_id": 456,
+                    "source_message_id": 789,
+                    "filename": "evidence.png",
+                    "url": "https://cdn.discordapp.com/attachments/1/2/expired.png",
+                    "content_type": "image/png",
+                    "size": 123,
+                    "is_image": True,
+                }
+            ],
+        )
+
+        self.assertEqual(channel.fetched_message_id, 789)
+        self.assertEqual(
+            attachments[0]["url"],
+            "https://cdn.discordapp.com/attachments/1/2/refreshed.png",
+        )
+        self.assertEqual(attachments[0]["attachment_id"], 456)
+        self.assertEqual(attachments[0]["source_message_id"], 789)
 
     async def test_persistent_ticket_views_allow_only_known_owner(self) -> None:
         channel_id = 194
@@ -797,6 +839,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         fake_channel.guild = SimpleNamespace(id=2)
         owner = SimpleNamespace(id=777, bot=False, name="owner")
         message = SimpleNamespace(
+            id=654,
             author=owner,
             content="here are more details",
             channel=fake_channel,
@@ -804,6 +847,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             created_at=datetime.now(timezone.utc),
             attachments=[
                 SimpleNamespace(
+                    id=321,
                     filename="details.png",
                     url="https://cdn.example/details.png",
                     content_type="image/png",
@@ -848,6 +892,8 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                         "content_type": "image/png",
                         "size": 123,
                         "is_image": True,
+                        "attachment_id": 321,
+                        "source_message_id": 654,
                     }
                 ],
             )
@@ -1101,6 +1147,52 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             clear_team_handoff_notice(channel_id)
             clear_ticket_investigation_job(channel_id)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+    async def test_failed_team_reply_synthesis_stays_pending_without_raw_delivery(
+        self,
+    ) -> None:
+        channel_id = 197
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            target="support_manual",
+            reason="manual follow-up needed",
+            reply_consumed=True,
+            status="pending_delivery",
+            pending_reply_text="internal shorthand only",
+            pending_reply_message_id=999,
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+
+        async def fail_synthesis(**_kwargs) -> str:
+            raise RuntimeError("attachment unavailable")
+
+        try:
+            with (
+                patch("ysupport.edit_handoff_notice", return_value=True),
+                patch(
+                    "ysupport._run_internal_instruction_turn",
+                    new=fail_synthesis,
+                ),
+                patch("ysupport.send_long_message") as send_message,
+            ):
+                delivered = await bot._deliver_telegram_handoff_reply(
+                    channel_id=channel_id,
+                    notice=notice,
+                    team_reply_text="internal shorthand only",
+                )
+
+            self.assertFalse(delivered)
+            send_message.assert_not_called()
+            self.assertEqual(notice.status, "pending_delivery")
+            self.assertEqual(notice.pending_reply_text, "internal shorthand only")
+            self.assertIn(channel_id, team_handoff_notice_by_channel)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
 
     async def test_deleted_ticket_archives_open_telegram_handoff_notice(self) -> None:
         channel_id = 188

@@ -188,24 +188,69 @@ def _normalize_discord_attachment(
     attachment: discord.Attachment,
 ) -> dict[str, Any]:
     content_type = (attachment.content_type or "").strip() or None
-    return {
+    payload = {
         "filename": attachment.filename,
         "url": attachment.url,
         "content_type": content_type,
         "size": attachment.size,
         "is_image": bool(content_type and content_type.startswith("image/")),
     }
+    attachment_id = getattr(attachment, "id", None)
+    if attachment_id is not None:
+        payload["attachment_id"] = attachment_id
+    return payload
 
 
 def _attachment_payloads_from_message(
     message: discord.Message,
 ) -> list[dict[str, Any]]:
     attachments = getattr(message, "attachments", None) or []
-    return [
+    payloads = [
         _normalize_discord_attachment(attachment)
         for attachment in attachments
         if attachment.url
     ]
+    message_id = getattr(message, "id", None)
+    if message_id is not None:
+        for payload in payloads:
+            payload["source_message_id"] = message_id
+    return payloads
+
+
+async def _refresh_discord_attachment_urls(
+    channel: discord.TextChannel,
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    refreshed = [dict(attachment) for attachment in attachments]
+    indexes_by_message: dict[int, list[int]] = {}
+    for index, attachment in enumerate(refreshed):
+        source_message_id = attachment.get("source_message_id")
+        if not isinstance(source_message_id, int) or attachment.get("attachment_id") is None:
+            continue
+        indexes_by_message.setdefault(source_message_id, []).append(index)
+
+    for source_message_id, indexes in indexes_by_message.items():
+        try:
+            source_message = await channel.fetch_message(source_message_id)
+        except Exception:
+            logging.warning(
+                "Could not refresh Discord attachment URLs from message %s in channel %s.",
+                source_message_id,
+                channel.id,
+                exc_info=True,
+            )
+            continue
+        current_by_id = {
+            str(attachment.id): attachment for attachment in source_message.attachments
+        }
+        for index in indexes:
+            current = current_by_id.get(str(refreshed[index].get("attachment_id")))
+            if current is None:
+                continue
+            current_payload = _normalize_discord_attachment(current)
+            current_payload["source_message_id"] = source_message_id
+            refreshed[index] = current_payload
+    return refreshed
 
 
 def _dedupe_attachment_payloads(
@@ -962,6 +1007,10 @@ class TicketBot(discord.Client):
         try:
             async with channel.typing():
                 try:
+                    attachments = await _refresh_discord_attachment_urls(
+                        channel,
+                        list(notice.followup_attachments),
+                    )
                     final_reply = await _run_internal_instruction_turn(
                         executor=self.investigation_executor,
                         channel=channel,
@@ -970,7 +1019,7 @@ class TicketBot(discord.Client):
                         prompt_text=team_reply_text,
                         instruction_text=instruction_text,
                         workflow_suffix="team handoff reply",
-                        attachments=list(notice.followup_attachments),
+                        attachments=attachments,
                     )
                 except Exception as exc:
                     logging.error(
@@ -979,7 +1028,7 @@ class TicketBot(discord.Client):
                         exc,
                         exc_info=True,
                     )
-                    final_reply = team_reply_text
+                    return False
                 await send_long_message(channel, final_reply)
         except Exception as exc:
             logging.error(
