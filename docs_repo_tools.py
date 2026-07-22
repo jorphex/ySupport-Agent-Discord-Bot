@@ -99,6 +99,17 @@ def _should_include_flex_docs(query_lower: str) -> bool:
     return False
 
 
+def _docs_query_specs(
+    available_namespaces: list[str], *, include_yips: bool
+) -> list[tuple[str, str]]:
+    specs: list[tuple[str, str]] = []
+    for namespace in available_namespaces:
+        specs.append((namespace, "documentation"))
+        if namespace == "yearn-docs" and include_yips:
+            specs.append((namespace, "yip"))
+    return specs
+
+
 def _extract_repo_artifact_refs(text: str) -> list[str]:
     refs = re.findall(r"(?:segment|fact):\d+", text or "")
     seen: set[str] = set()
@@ -257,8 +268,6 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
     yip_terms = ["yip", "proposal", "governance vote", "snapshot vote"]
     include_yips = any(t in query_lower for t in yip_terms)
     namespaces_to_query = ["yearn-docs"]
-    if include_yips:
-        namespaces_to_query.append("yearn-yips")
     if _should_include_flex_docs(query_lower):
         namespaces_to_query.append("flex-docs")
 
@@ -303,76 +312,27 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
         except Exception:
             available_namespaces = ["yearn-docs"]
 
-        meta_like = any(
-            k in query_lower
-            for k in ["veyfi", "styfi", "dyfi", "yip", "governance", "delegat", "migration"]
-        )
-        if meta_like:
-            meta_k, docs_k = 6, 9
-        else:
-            meta_k, docs_k = 4, 10
-        meta_k = max(1, meta_k)
-        docs_k = max(1, docs_k)
-
         query_tasks: List[tuple[str, Any]] = []
-        for ns in available_namespaces:
-            if ns in {"yearn-docs", "flex-docs"}:
-                if ns == "yearn-docs":
-                    query_tasks.append((
-                        ns,
-                        asyncio.to_thread(
-                            index.query,
-                            namespace=ns,
-                            vector=query_embedding,
-                            top_k=meta_k,
-                            include_metadata=True,
-                            filter={"source_type": {"$eq": "meta_context"}}
-                        ),
-                    ))
-                query_tasks.append((
-                    ns,
-                    asyncio.to_thread(
-                        index.query,
-                        namespace=ns,
-                        vector=query_embedding,
-                        top_k=docs_k,
-                        include_metadata=True,
-                        filter={"source_type": {"$eq": "documentation"}}
-                    ),
-                ))
-            else:
-                query_tasks.append((
-                    ns,
-                    asyncio.to_thread(
-                        index.query,
-                        namespace=ns,
-                        vector=query_embedding,
-                        top_k=docs_k,
-                        include_metadata=True,
-                        filter={"source_type": {"$eq": "yip"}}
-                    ),
-                ))
+        for namespace, source_type in _docs_query_specs(
+            available_namespaces, include_yips=include_yips
+        ):
+            query_tasks.append((
+                namespace,
+                asyncio.to_thread(
+                    index.query,
+                    namespace=namespace,
+                    vector=query_embedding,
+                    top_k=initial_retrieval_k,
+                    include_metadata=True,
+                    filter={"source_type": {"$eq": source_type}},
+                ),
+            ))
 
         results_list = await asyncio.gather(*(task for _, task in query_tasks))
         for (namespace, _), res in zip(query_tasks, results_list):
             for match in res.get("matches", []):
                 all_matches.append(_normalize_match(match, namespace))
 
-        if not all_matches:
-            fallback_tasks = [
-                asyncio.to_thread(
-                    index.query,
-                    namespace=ns,
-                    vector=query_embedding,
-                    top_k=initial_retrieval_k,
-                    include_metadata=True
-                ) for ns in available_namespaces
-            ]
-            fallback_results = await asyncio.gather(*fallback_tasks)
-            for idx, res in enumerate(fallback_results):
-                namespace = available_namespaces[idx] if available_namespaces else "yearn-docs"
-                for match in res.get("matches", []):
-                    all_matches.append(_normalize_match(match, namespace))
     except Exception as e:
         logging.error(f"Pinecone error: {e}")
         raise RuntimeError("Error searching docs.") from e
@@ -443,7 +403,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
             source_bits.append(f"[{source_type}]")
         if doc_last_modified:
             source_bits.append(f"last_modified={doc_last_modified}")
-        if yip_number:
+        if yip_number is not None:
             yip_bits = [f"YIP-{yip_number}"]
             if yip_status:
                 yip_bits.append(f"status={yip_status}")

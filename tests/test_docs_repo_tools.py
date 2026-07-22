@@ -2,7 +2,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 import docs_repo_tools
-from docs_repo_tools import _get_pinecone_index, _should_include_flex_docs
+from docs_repo_tools import (
+    _docs_query_specs,
+    _get_pinecone_index,
+    _should_include_flex_docs,
+)
 
 
 class DocsRepoToolsTests(unittest.TestCase):
@@ -34,3 +38,21 @@ class DocsRepoToolsTests(unittest.TestCase):
 
     def test_should_not_include_flex_docs_for_generic_redemption_wording(self) -> None:
         self.assertFalse(_should_include_flex_docs("what does redeem mean in yearn?"))
+
+    def test_docs_query_specs_use_only_current_namespaces(self) -> None:
+        self.assertEqual(
+            _docs_query_specs(["yearn-docs"], include_yips=False),
+            [("yearn-docs", "documentation")],
+        )
+
+    def test_docs_query_specs_include_yips_from_yearn_docs(self) -> None:
+        self.assertEqual(
+            _docs_query_specs(
+                ["yearn-docs", "flex-docs"], include_yips=True
+            ),
+            [
+                ("yearn-docs", "documentation"),
+                ("yearn-docs", "yip"),
+                ("flex-docs", "documentation"),
+            ],
+        )

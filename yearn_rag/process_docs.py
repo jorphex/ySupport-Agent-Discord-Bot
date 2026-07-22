@@ -4,7 +4,7 @@ import json
 import tiktoken
 import frontmatter
 import hashlib
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 DOC_SOURCES = {
     "yearn": {
@@ -22,12 +22,6 @@ DOC_SOURCES = {
         "route_base_path": "/",
         "source_type": "documentation"
     },
-    "yips": {
-        "source_dir": "YIPS",
-        "output_json": "cleaned_yips.json",
-        "excluded_folders": [],
-        "source_type": "yip"
-    },
     "flex": {
         "source_dir": "flex-docs",
         "output_json": "cleaned_flex_docs.json",
@@ -40,55 +34,87 @@ DOC_SOURCES = {
     }
 }
 
-META_CONTEXT_FILE = "llm_meta_context.md"  # internal context for the bot
 LINK_MAP_OUTPUT = "doc_link_map.json"
+YIP_SOURCE_PATH_RE = re.compile(
+    r"^contributing/governance/yips/yip-(\d+)\.(?:md|mdx)$",
+    re.IGNORECASE,
+)
+
+
+class YipMetadataError(ValueError):
+    pass
+
 
 CHUNK_MAX_TOKENS = 750
 CHUNK_OVERLAP_TOKENS = 150
 TOKEN_ENCODING_MODEL = "cl100k_base"
 
-def normalize_metadata(metadata, default_title=None):
-    """
-    Takes a raw metadata dictionary from frontmatter and returns a standardized,
-    JSON-serializable dictionary.
-    """
-    created_date_obj = metadata.get("created_date") or metadata.get("created")
+def _markdown_table_value(content, field_name):
+    match = re.search(
+        rf"^\|\s*{re.escape(field_name)}\s*\|\s*(.*?)\s*\|$",
+        content,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    return match.group(1).strip() if match else None
 
-    created_date_str = None
-    if isinstance(created_date_obj, date):
-        created_date_str = created_date_obj.strftime("%Y-%m-%d")
-    elif isinstance(created_date_obj, str):
-        created_date_str = created_date_obj
 
-    normalized = {
-        "yip_number": metadata.get("yip_number") or metadata.get("yip"),
-        "title": metadata.get("title") or default_title,
-        "status": metadata.get("status"),
-        "author": metadata.get("author"),
-        "created_date": created_date_str,
-        "discussion_link": metadata.get("discussion_link") or metadata.get("discussions-to")
-    }
+def _strip_markdown_emphasis(value):
+    return value.strip().strip("*_ ") if value else value
 
-    return {k: v for k, v in normalized.items() if v is not None}
 
-def extract_yip_metadata(metadata):
+def _markdown_link_url(value):
+    if not value:
+        return None
+    match = re.search(r"\[[^\]]+\]\(([^)]+)\)", value)
+    return match.group(1) if match else None
+
+
+def extract_yip_metadata(source_path, content):
     """
-    Returns YIP metadata only when a YIP number is present, to avoid attaching
-    YIP fields to normal docs.
+    Returns structured metadata for a canonical Yearn YIP document.
     """
-    yip_number = metadata.get("yip_number")
-    if not yip_number:
+    path_match = YIP_SOURCE_PATH_RE.fullmatch(source_path or "")
+    if not path_match:
         return None
 
-    yip_metadata = {
+    yip_number = int(path_match.group(1))
+    table_number = _markdown_table_value(content or "", "YIP")
+    status = _strip_markdown_emphasis(
+        _markdown_table_value(content or "", "Outcome")
+    )
+    created_date = _strip_markdown_emphasis(
+        _markdown_table_value(content or "", "Created")
+    )
+    discussion_link = _markdown_link_url(
+        _markdown_table_value(content or "", "Forum discussion")
+    )
+    if table_number is None or not table_number.isdigit():
+        raise YipMetadataError(f"Missing YIP number metadata in {source_path}")
+    if int(table_number) != yip_number:
+        raise YipMetadataError(
+            f"YIP metadata mismatch in {source_path}: table says {table_number}"
+        )
+    missing_fields = [
+        field
+        for field, value in (
+            ("Outcome", status),
+            ("Created", created_date),
+            ("Forum discussion", discussion_link),
+        )
+        if not value
+    ]
+    if missing_fields:
+        raise YipMetadataError(
+            f"Missing YIP metadata in {source_path}: {', '.join(missing_fields)}"
+        )
+
+    return {
         "yip_number": yip_number,
-        "status": metadata.get("status"),
-        "created_date": metadata.get("created_date"),
-        "discussion_link": metadata.get("discussion_link")
+        "status": status,
+        "created_date": created_date,
+        "discussion_link": discussion_link,
     }
 
-    filtered = {k: v for k, v in yip_metadata.items() if v is not None}
-    return filtered or None
 
 def sanitize_for_id(text: str) -> str:
     """
@@ -393,13 +419,13 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
                     raw_metadata = post.metadata
 
                     default_title_from_filename = os.path.splitext(file)[0].replace('-', ' ').title()
-                    normalized_metadata = normalize_metadata(raw_metadata, default_title=None)
-                    yip_metadata = extract_yip_metadata(normalized_metadata)
+                    yip_metadata = extract_yip_metadata(relative_filepath, content)
+                    document_source_type = "yip" if yip_metadata else source_type
                     source_url = build_source_url(relative_filepath, raw_metadata, base_url, route_base_path)
                     if not source_url:
                         source_url = raw_metadata.get("discussion_link") or raw_metadata.get("discussions-to")
 
-                    doc_title = normalized_metadata.get("title") or raw_metadata.get("sidebar_label")
+                    doc_title = raw_metadata.get("title") or raw_metadata.get("sidebar_label")
                     if not doc_title:
                         h1_match = re.search(r"^\s*#\s+(.+)", content, re.MULTILINE)
                         if h1_match:
@@ -428,7 +454,7 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
                             "",
                             file_chunk_counter,
                             yip_metadata=yip_metadata,
-                            source_type=source_type,
+                            source_type=document_source_type,
                             source_url=source_url,
                             doc_last_modified=doc_last_modified
                         )
@@ -463,11 +489,13 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
                             parent_h3,
                             file_chunk_counter,
                             yip_metadata=yip_metadata,
-                            source_type=source_type,
+                            source_type=document_source_type,
                             source_url=source_url,
                             doc_last_modified=doc_last_modified
                         )
 
+                except YipMetadataError:
+                    raise
                 except Exception as e:
                     print(f"❌ Error processing file {filepath}: {e}. Skipping.")
                     continue
@@ -552,32 +580,6 @@ def main():
     """
     print("--- Starting All Documentation Processing ---")
 
-    meta_docs = []
-    if os.path.exists(META_CONTEXT_FILE):
-        print(f"Processing special meta context file: {META_CONTEXT_FILE}")
-        with open(META_CONTEXT_FILE, "r", encoding="utf-8") as f:
-            content = f.read()
-        chunks = chunk_text_by_lines(content.strip(), max_tokens=CHUNK_MAX_TOKENS, overlap_tokens=CHUNK_OVERLAP_TOKENS)
-        meta_last_modified = iso_utc_from_mtime(os.path.getmtime(META_CONTEXT_FILE))
-        meta_doc_id = stable_doc_id(META_CONTEXT_FILE)
-        for i, chunk in enumerate(chunks):
-            meta_docs.append({
-                "filename": "internal_context.md",
-                "doc_title": "Internal Yearn AI Context",
-                "section_heading": "System Knowledge",
-                "source_path": META_CONTEXT_FILE,
-                "chunk_id": i,
-                "chunk_index": i,
-                "doc_id": meta_doc_id,
-                "doc_last_modified": meta_last_modified,
-                "text": chunk,
-                "source_type": "meta_context",
-                "source_url": None
-            })
-        print(f"✅ Added {len(chunks)} chunks from the meta context file.")
-    else:
-        print(f"⚠️ Meta context file '{META_CONTEXT_FILE}' not found. Skipping.")
-
     link_map = {}
 
     for source_name, config in DOC_SOURCES.items():
@@ -592,10 +594,7 @@ def main():
             route_base_path=route_base_path
         )
 
-        if source_name == "yearn":
-            final_docs = meta_docs + processed_docs
-        else:
-            final_docs = processed_docs
+        final_docs = processed_docs
 
         with open(config["output_json"], "w", encoding="utf-8") as f:
             json.dump(final_docs, f, indent=2, ensure_ascii=False)

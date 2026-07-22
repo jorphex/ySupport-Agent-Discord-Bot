@@ -22,19 +22,16 @@ CLEAR_NAMESPACE = os.getenv("CLEAR_NAMESPACE", "0") == "1"
 EMBEDDING_RETRIES = 3
 
 EMBEDDING_SOURCES = {
-    "docs_and_internal": {
+    "yearn_docs": {
         "input_json": "cleaned_yearn_docs.json",
-        "namespace": "yearn-docs" # The "Current Truth" namespace
-    },
-    "yips": {
-        "input_json": "cleaned_yips.json",
-        "namespace": "yearn-yips" # The "Historical Context" namespace
+        "namespace": "yearn-docs"
     },
     "flex_docs": {
         "input_json": "cleaned_flex_docs.json",
         "namespace": "flex-docs"
     }
 }
+RETIRED_NAMESPACES = ("yearn-yips",)
 
 # Initialize OpenAI & Pinecone
 try:
@@ -213,6 +210,10 @@ def process_and_embed_source(config):
 # --- Main Execution Block ---
 if __name__ == "__main__":
     grand_total_upserted = 0
+
+    if CLEAR_NAMESPACE:
+        for namespace in RETIRED_NAMESPACES:
+            clear_namespace(namespace)
     
     # Loop through the configured sources and process each one
     for source_name, config in EMBEDDING_SOURCES.items():
