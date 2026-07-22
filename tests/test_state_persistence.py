@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
@@ -29,6 +29,7 @@ from state import (
     pending_wallet_confirmation_by_channel,
     persist_public_conversation,
     persist_ticket_state,
+    prune_expired_public_conversations,
     public_conversations,
     recover_ticket_channel_from_runtime_stop,
     remember_team_handoff_notice,
@@ -370,6 +371,39 @@ class TicketStatePersistenceTests(unittest.TestCase):
 
 
 class PublicStatePersistenceTests(unittest.TestCase):
+    def test_prune_expired_public_conversations_removes_disk_and_memory_state(self) -> None:
+        now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+        expired_author_id = 501
+        fresh_author_id = 502
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+                patch("state.reset_public_codex_session") as mock_reset,
+            ):
+                public_conversations[expired_author_id] = PublicConversation(
+                    history=[{"role": "user", "content": "expired"}],
+                    last_interaction_time=now - timedelta(hours=1),
+                )
+                persist_public_conversation(expired_author_id)
+                public_conversations.pop(expired_author_id)
+                public_conversations[fresh_author_id] = PublicConversation(
+                    history=[{"role": "user", "content": "fresh"}],
+                    last_interaction_time=now - timedelta(minutes=5),
+                )
+                persist_public_conversation(fresh_author_id)
+
+                removed = prune_expired_public_conversations(now=now)
+
+                self.assertEqual(removed, 1)
+                self.assertFalse((public_dir / f"{expired_author_id}.json").exists())
+                self.assertTrue((public_dir / f"{fresh_author_id}.json").exists())
+                self.assertIn(fresh_author_id, public_conversations)
+                mock_reset.assert_called_once_with(expired_author_id)
+                public_conversations.pop(fresh_author_id, None)
+
     def test_public_state_round_trip_persists_history_and_investigation_job(self) -> None:
         author_id = 501
         with tempfile.TemporaryDirectory() as temp_dir:

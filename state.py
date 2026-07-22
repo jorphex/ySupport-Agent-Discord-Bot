@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
@@ -553,6 +553,41 @@ def clear_public_conversation(author_id: int) -> None:
     public_conversations.pop(author_id, None)
     _safe_unlink(_PUBLIC_STATE_DIR / f"{author_id}.json")
     reset_public_codex_session(author_id)
+
+
+def prune_expired_public_conversations(*, now: datetime | None = None) -> int:
+    current_time = now or datetime.now(timezone.utc)
+    max_age = timedelta(minutes=config.PUBLIC_TRIGGER_TIMEOUT_MINUTES)
+    author_ids = set(public_conversations)
+    if _PUBLIC_STATE_DIR.exists():
+        for path in _PUBLIC_STATE_DIR.glob("*.json"):
+            try:
+                author_ids.add(int(path.stem))
+            except ValueError:
+                continue
+
+    expired_author_ids: list[int] = []
+    for author_id in author_ids:
+        conversation = public_conversations.get(author_id)
+        last_interaction_time = (
+            conversation.last_interaction_time if conversation is not None else None
+        )
+        if last_interaction_time is None:
+            payload = _read_json(_PUBLIC_STATE_DIR / f"{author_id}.json")
+            last_interaction_time = (
+                _parse_datetime(payload.get("last_interaction_time"))
+                if isinstance(payload, dict)
+                else None
+            )
+        if (
+            last_interaction_time is None
+            or current_time - last_interaction_time > max_age
+        ):
+            expired_author_ids.append(author_id)
+
+    for author_id in expired_author_ids:
+        clear_public_conversation(author_id)
+    return len(expired_author_ids)
 
 
 def reset_ticket_codex_session(channel_id: int) -> None:

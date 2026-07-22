@@ -66,6 +66,7 @@ from state import (
     persist_telegram_update_offset,
     persist_public_conversation,
     persist_ticket_state,
+    prune_expired_public_conversations,
     public_conversations,
     recover_ticket_channel_from_runtime_stop,
     remember_team_handoff_notice,
@@ -812,6 +813,7 @@ class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
         self._telegram_updates_task: asyncio.Task[None] | None = None
+        self._state_cleanup_task: asyncio.Task[None] | None = None
         self._telegram_update_offset: int | None = load_telegram_update_offset()
         local_executor = None
         if "local" in {
@@ -863,13 +865,34 @@ class TicketBot(discord.Client):
             self._telegram_updates_task = asyncio.create_task(
                 self._telegram_handoff_reply_loop()
             )
+        if self._state_cleanup_task is None or self._state_cleanup_task.done():
+            self._state_cleanup_task = asyncio.create_task(
+                self._state_cleanup_loop()
+            )
         logging.info("Telegram handoff reply loop initialized: %s", bool(self._telegram_updates_task))
 
     async def close(self) -> None:
         if self._telegram_updates_task is not None:
             self._telegram_updates_task.cancel()
             self._telegram_updates_task = None
+        if self._state_cleanup_task is not None:
+            self._state_cleanup_task.cancel()
+            self._state_cleanup_task = None
         await super().close()
+
+    async def _state_cleanup_loop(self) -> None:
+        cleanup_interval_seconds = max(
+            60,
+            config.PUBLIC_TRIGGER_TIMEOUT_MINUTES * 60,
+        )
+        while not self.is_closed():
+            removed = prune_expired_public_conversations()
+            if removed:
+                logging.info(
+                    "Removed %s expired public conversation state file(s).",
+                    removed,
+                )
+            await asyncio.sleep(cleanup_interval_seconds)
 
     async def _telegram_handoff_reply_loop(self) -> None:
         while not self.is_closed():

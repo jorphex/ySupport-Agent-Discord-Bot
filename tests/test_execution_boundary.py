@@ -34,7 +34,7 @@ import tools_lib
 
 
 class ConfigSummaryTests(unittest.TestCase):
-    def test_ticket_execution_state_defaults_point_to_bot_state_root(self) -> None:
+    def test_ticket_execution_state_defaults_keep_runs_ephemeral(self) -> None:
         self.assertEqual(
             config.TICKET_EXECUTION_STATE_ROOT,
             Path("/var/lib/ysupport-codex"),
@@ -45,15 +45,11 @@ class ConfigSummaryTests(unittest.TestCase):
         )
         self.assertEqual(
             config.TICKET_EXECUTION_ARTIFACT_DIR,
-            "/var/lib/ysupport-codex/runs",
-        )
-        self.assertEqual(
-            config.TICKET_EXECUTION_RUN_DIR_ROOT,
-            "/var/lib/ysupport-codex/runs",
+            "",
         )
         self.assertEqual(
             config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR,
-            "/var/lib/ysupport-codex/shadow",
+            "",
         )
         self.assertEqual(
             config.TICKET_EXECUTION_CODEX_SESSION_DIR,
@@ -163,23 +159,19 @@ class ConfigSummaryTests(unittest.TestCase):
             warnings,
         )
 
-    def test_ticket_execution_runtime_validation_requires_workspace_for_codex(self) -> None:
+    def test_ticket_execution_runtime_validation_allows_ephemeral_codex_runs(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
         try:
             config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
             config.TICKET_EXECUTION_ARTIFACT_DIR = ""
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
-            with self.assertRaises(ValueError):
-                config.validate_ticket_execution_runtime_config()
+            config.validate_ticket_execution_runtime_config()
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
 
     def test_runtime_environment_validation_requires_core_bot_settings(self) -> None:
         original_openai = config.OPENAI_API_KEY
@@ -293,6 +285,11 @@ class TicketExecutionStatusTests(unittest.TestCase):
             "temporary_per_turn",
         )
         self.assertEqual(
+            status["ticket_execution"]["sandbox_policy"]["export_mode"],
+            "ephemeral_only",
+        )
+        self.assertIsNone(status["ticket_execution"]["artifact_dir"])
+        self.assertEqual(
             status["ticket_execution"]["codex_session_summary"],
             {"root_dir": "/tmp/sessions", "active_sessions": 2},
         )
@@ -317,16 +314,14 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertTrue(smoke_probe["ok"])
         self.assertEqual(smoke_probe["raw_final_reply"], "ticket_execution_smoke_ok:local")
 
-    def test_ticket_execution_status_main_returns_nonzero_for_invalid_codex_policy(self) -> None:
+    def test_ticket_execution_status_main_returns_nonzero_without_codex_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
+        original_home = config.TICKET_EXECUTION_CODEX_HOME
         try:
             config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_ARTIFACT_DIR = ""
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
+            config.TICKET_EXECUTION_CODEX_HOME = None
             captured = io.StringIO()
             with patch(
                 "ticket_execution.status.get_repo_context_status",
@@ -337,15 +332,14 @@ class TicketExecutionStatusTests(unittest.TestCase):
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
+            config.TICKET_EXECUTION_CODEX_HOME = original_home
 
         self.assertEqual(exit_code, 1)
         payload = json.loads(captured.getvalue())
         self.assertFalse(payload["ticket_execution"]["validation_ok"])
         self.assertFalse(payload["ticket_execution"]["endpoint_build_ok"])
         self.assertIn(
-            "requires TICKET_EXECUTION_ARTIFACT_DIR",
+            "requires TICKET_EXECUTION_CODEX_HOME",
             payload["ticket_execution"]["validation_error"],
         )
 

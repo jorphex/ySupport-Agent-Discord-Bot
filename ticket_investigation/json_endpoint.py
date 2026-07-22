@@ -291,7 +291,6 @@ def _build_single_ticket_execution_json_endpoint(
             cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
             env=_subprocess_env(),
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
-            run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
     if mode == "codex_support_exec":
         command = list(_codex_command())
@@ -317,7 +316,6 @@ def _build_single_ticket_execution_json_endpoint(
             cwd=config.TICKET_EXECUTION_SUBPROCESS_CWD,
             env=_codex_env(),
             artifact_dir=config.TICKET_EXECUTION_ARTIFACT_DIR or None,
-            run_dir_root=config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
         )
     raise ValueError(f"Unsupported TICKET_EXECUTION_ENDPOINT value: {mode}")
 

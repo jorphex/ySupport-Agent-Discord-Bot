@@ -28,7 +28,6 @@ class SubprocessTicketExecutionJsonEndpoint:
         env: dict[str, str] | None = None,
         inherit_parent_env: bool = False,
         artifact_dir: str | None = None,
-        run_dir_root: str | None = None,
         timeout_seconds: float = 300.0,
         max_output_chars: int = 200000,
         max_error_chars: int = 4000,
@@ -50,7 +49,6 @@ class SubprocessTicketExecutionJsonEndpoint:
         self.env = dict(env) if env is not None else None
         self.inherit_parent_env = inherit_parent_env
         self.artifact_dir = artifact_dir
-        self.run_dir_root = run_dir_root
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
@@ -67,7 +65,6 @@ class SubprocessTicketExecutionJsonEndpoint:
 
         workspace = TicketExecutionWorkspace(
             artifact_dir=self.artifact_dir or None,
-            run_dir_root=self.run_dir_root or None,
             prefix="ticket-subprocess-run-",
         )
         with workspace as run_dir:

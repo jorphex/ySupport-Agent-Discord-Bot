@@ -944,14 +944,12 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
         original_home = config.TICKET_EXECUTION_CODEX_HOME
         original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        original_run_dir_root = config.TICKET_EXECUTION_RUN_DIR_ROOT
         original_api_key = config.MCP_SERVER_API_KEY
         try:
             config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_CODEX_HOME = None
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = ""
             config.MCP_SERVER_API_KEY = "secret-key"
             with self.assertRaises(ValueError):
                 config.validate_ticket_execution_runtime_config()
@@ -960,7 +958,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
             config.TICKET_EXECUTION_CODEX_HOME = original_home
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-            config.TICKET_EXECUTION_RUN_DIR_ROOT = original_run_dir_root
             config.MCP_SERVER_API_KEY = original_api_key
 
     def test_endpoint_factory_builds_codex_support_endpoint(self) -> None:

@@ -43,7 +43,6 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
             "fallback_endpoint": config.TICKET_EXECUTION_FALLBACK_ENDPOINT or None,
             "uses_codex": uses_codex,
             "artifact_dir": config.TICKET_EXECUTION_ARTIFACT_DIR or None,
-            "run_dir_root": config.TICKET_EXECUTION_RUN_DIR_ROOT or None,
             "codex_session_dir": config.TICKET_EXECUTION_CODEX_SESSION_DIR or None,
             "codex_session_max_age_hours": config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
             "codex_session_summary": _build_codex_session_summary(),
@@ -52,7 +51,6 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
                 "export_mode": (
                     "read_only_copy"
                     if config.TICKET_EXECUTION_ARTIFACT_DIR
-                    or config.TICKET_EXECUTION_RUN_DIR_ROOT
                     else "ephemeral_only"
                 ),
                 "scratch_env_var": "TICKET_EXECUTION_RUN_DIR",

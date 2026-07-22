@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from unittest.mock import patch
 
 from ticket_execution.subprocess_utils import run_bounded_subprocess
+from ticket_execution.workspace import TicketExecutionWorkspace
 from ticket_investigation.json_endpoint import (
     ExecutorBackedTicketExecutionJsonEndpoint,
     FailoverTicketExecutionJsonEndpoint,
@@ -52,6 +53,15 @@ class _FakeWorker:
 
 
 class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
+    def test_ticket_execution_workspace_is_ephemeral_without_artifact_dir(self) -> None:
+        workspace = TicketExecutionWorkspace(prefix="test-ephemeral-ticket-run-")
+
+        with workspace as run_dir:
+            (run_dir / "sensitive.txt").write_text("temporary", encoding="utf-8")
+            self.assertIsNone(workspace.export_copy())
+
+        self.assertFalse(run_dir.exists())
+
     async def test_executor_backed_json_endpoint_short_circuits_smoke_request(self) -> None:
         class _ExplodingExecutor:
             async def execute_turn(self, request, hooks=None):
@@ -750,8 +760,8 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).to_execution_parts()
         self.assertEqual(flow_outcome.raw_final_reply, "artifact-ok")
 
-    async def test_subprocess_json_endpoint_exports_run_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as run_root:
+    async def test_subprocess_json_endpoint_exports_explicit_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as artifact_dir:
             endpoint = SubprocessTicketExecutionJsonEndpoint(
                 [
                     sys.executable,
@@ -778,7 +788,7 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                         "sys.stdout.write(json.dumps(response))"
                     ),
                 ],
-                run_dir_root=run_root,
+                artifact_dir=artifact_dir,
             )
 
             response_json = await endpoint.execute_json_turn(
@@ -806,11 +816,11 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             ).to_execution_parts()
             self.assertIsNotNone(flow_outcome.raw_final_reply)
             assert flow_outcome.raw_final_reply is not None
-            self.assertFalse(flow_outcome.raw_final_reply.startswith(run_root))
+            self.assertFalse(flow_outcome.raw_final_reply.startswith(artifact_dir))
             self.assertFalse(os.path.exists(flow_outcome.raw_final_reply))
-            artifact_entries = os.listdir(run_root)
+            artifact_entries = os.listdir(artifact_dir)
             self.assertEqual(len(artifact_entries), 1)
-            exported_dir = os.path.join(run_root, artifact_entries[0])
+            exported_dir = os.path.join(artifact_dir, artifact_entries[0])
             self.assertTrue(os.path.isdir(exported_dir))
             self.assertTrue(os.path.exists(os.path.join(exported_dir, "marker.txt")))
             self.assertFalse(os.stat(exported_dir).st_mode & stat.S_IWUSR)
@@ -990,7 +1000,7 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     "sys.stdout.write(json.dumps(response))"
                 ),
             ],
-            run_dir_root="/tmp/unused-run-root",
+            artifact_dir="/tmp/unused-artifact-dir",
         )
         request = TicketExecutionTransportRequest(
             aggregated_text="help",

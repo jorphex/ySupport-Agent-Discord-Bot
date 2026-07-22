@@ -227,11 +227,6 @@ TICKET_EXECUTION_STATE_ROOT = Path(
     or "/var/lib/ysupport-codex"
 )
 _DEFAULT_TICKET_EXECUTION_CODEX_HOME = str(TICKET_EXECUTION_STATE_ROOT / "home")
-_DEFAULT_TICKET_EXECUTION_ARTIFACT_DIR = str(TICKET_EXECUTION_STATE_ROOT / "runs")
-_DEFAULT_TICKET_EXECUTION_RUN_DIR_ROOT = str(TICKET_EXECUTION_STATE_ROOT / "runs")
-_DEFAULT_TICKET_EXECUTION_SHADOW_ARTIFACT_DIR = str(
-    TICKET_EXECUTION_STATE_ROOT / "shadow"
-)
 _DEFAULT_TICKET_EXECUTION_CODEX_SESSION_DIR = str(
     TICKET_EXECUTION_STATE_ROOT / "sessions"
 )
@@ -301,15 +296,11 @@ TICKET_EXECUTION_SUBPROCESS_ENV_PREFIXES = _env_csv(
 )
 TICKET_EXECUTION_ARTIFACT_DIR = os.getenv(
     "TICKET_EXECUTION_ARTIFACT_DIR",
-    _DEFAULT_TICKET_EXECUTION_ARTIFACT_DIR,
-).strip()
-TICKET_EXECUTION_RUN_DIR_ROOT = os.getenv(
-    "TICKET_EXECUTION_RUN_DIR_ROOT",
-    _DEFAULT_TICKET_EXECUTION_RUN_DIR_ROOT,
+    "",
 ).strip()
 TICKET_EXECUTION_SHADOW_ARTIFACT_DIR = os.getenv(
     "TICKET_EXECUTION_SHADOW_ARTIFACT_DIR",
-    _DEFAULT_TICKET_EXECUTION_SHADOW_ARTIFACT_DIR,
+    "",
 ).strip()
 TICKET_EXECUTION_CANARY_CHANNEL_IDS = {
     value.strip()
@@ -357,8 +348,6 @@ def ticket_execution_runtime_summary() -> str:
         parts.append(f"codex_session_dir={TICKET_EXECUTION_CODEX_SESSION_DIR}")
     if TICKET_EXECUTION_ARTIFACT_DIR:
         parts.append(f"artifact_dir={TICKET_EXECUTION_ARTIFACT_DIR}")
-    elif TICKET_EXECUTION_RUN_DIR_ROOT:
-        parts.append(f"run_dir_root={TICKET_EXECUTION_RUN_DIR_ROOT}")
     return ", ".join(parts)
 
 
@@ -378,22 +367,10 @@ def ticket_execution_runtime_warnings() -> list[str]:
 
 
 def validate_ticket_execution_runtime_config() -> None:
-    uses_codex = (
-        TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
-    )
     uses_codex_support = (
         TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
         or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
     )
-    has_persistent_workspace = bool(
-        TICKET_EXECUTION_ARTIFACT_DIR or TICKET_EXECUTION_RUN_DIR_ROOT
-    )
-    if uses_codex and not has_persistent_workspace:
-        raise ValueError(
-            "codex_support_exec requires TICKET_EXECUTION_ARTIFACT_DIR or "
-            "TICKET_EXECUTION_RUN_DIR_ROOT so each run has persistent workspace state."
-        )
     if uses_codex_support and not TICKET_EXECUTION_CODEX_HOME:
         raise ValueError(
             "codex_support_exec requires TICKET_EXECUTION_CODEX_HOME so the bot uses "

@@ -37,7 +37,7 @@ Discord provides the messaging platform. When human assistance is required, a li
 
 ## Storage and retention
 
-ySupport stores some conversation state, identifiers, attachment data, and execution records outside Discord for continuity and troubleshooting. Some records may remain until they are no longer needed or are manually deleted by an operator. Closing or deleting a Discord ticket does not necessarily delete every operational record immediately.
+ySupport stores limited conversation state, identifiers, and attachment metadata outside Discord while needed for support continuity. Ticket state is deleted when its Discord ticket channel is deleted, and temporary public-conversation state expires after 30 minutes of inactivity and is periodically removed. Per-turn AI workspaces, including downloaded attachment copies, are temporary and are deleted after processing. Persistent diagnostic run exports are disabled by default; if an operator explicitly enables them for troubleshooting, the operator is responsible for limiting and deleting those records.
 
 Access to stored support data is limited to authorized operators and contributors who need it to provide or maintain the service.
 
