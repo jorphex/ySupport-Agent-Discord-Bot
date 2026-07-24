@@ -1,3 +1,5 @@
+from tests import TEST_STATE_ROOT
+
 import io
 import json
 import os
@@ -7,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
+
 
 import config
 from state import BotRunContext, TicketInvestigationJob
@@ -34,14 +37,14 @@ import tools_lib
 
 
 class ConfigSummaryTests(unittest.TestCase):
-    def test_ticket_execution_state_defaults_keep_runs_ephemeral(self) -> None:
+    def test_ticket_execution_test_state_keeps_runs_ephemeral(self) -> None:
         self.assertEqual(
             config.TICKET_EXECUTION_STATE_ROOT,
-            Path("/var/lib/ysupport-codex"),
+            Path(TEST_STATE_ROOT),
         )
         self.assertEqual(
             config.TICKET_EXECUTION_CODEX_HOME,
-            "/var/lib/ysupport-codex/home",
+            f"{TEST_STATE_ROOT}/home",
         )
         self.assertEqual(
             config.TICKET_EXECUTION_ARTIFACT_DIR,
@@ -53,7 +56,7 @@ class ConfigSummaryTests(unittest.TestCase):
         )
         self.assertEqual(
             config.TICKET_EXECUTION_CODEX_SESSION_DIR,
-            "/var/lib/ysupport-codex/sessions",
+            f"{TEST_STATE_ROOT}/sessions",
         )
 
     def test_build_rpc_urls_prefers_explicit_per_chain_env(self) -> None:
@@ -139,8 +142,8 @@ class ConfigSummaryTests(unittest.TestCase):
         self.assertIn("fallback=local", summary)
         self.assertIn("codex_model=gpt-5.4", summary)
         self.assertIn("codex_reasoning=medium", summary)
-        self.assertIn("state_root=/var/lib/ysupport-codex", summary)
-        self.assertIn("codex_session_dir=/var/lib/ysupport-codex/sessions", summary)
+        self.assertIn(f"state_root={TEST_STATE_ROOT}", summary)
+        self.assertIn(f"codex_session_dir={TEST_STATE_ROOT}/sessions", summary)
         self.assertIn("artifact_dir=/tmp/ticket-artifacts", summary)
 
     def test_ticket_execution_runtime_warnings_flag_primary_codex_without_fallback(self) -> None:

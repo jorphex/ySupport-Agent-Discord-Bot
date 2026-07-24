@@ -1,3 +1,5 @@
+import tests as _test_environment  # noqa: F401
+
 import unittest
 
 from ticket_execution.replay_capture import (

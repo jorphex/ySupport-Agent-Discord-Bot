@@ -1,3 +1,5 @@
+import tests as _test_environment  # noqa: F401
+
 import asyncio
 import json
 import os
@@ -8,6 +10,7 @@ import time
 import unittest
 from dataclasses import dataclass
 from unittest.mock import patch
+
 
 from ticket_execution.subprocess_utils import run_bounded_subprocess
 from ticket_execution.workspace import TicketExecutionWorkspace

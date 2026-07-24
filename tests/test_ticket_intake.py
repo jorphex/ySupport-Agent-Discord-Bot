@@ -1,5 +1,8 @@
+import tests as _test_environment  # noqa: F401
+
 import unittest
 from unittest.mock import patch
+
 
 import discord
 

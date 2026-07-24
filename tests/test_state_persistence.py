@@ -1,10 +1,12 @@
 from __future__ import annotations
+import tests as _test_environment  # noqa: F401
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+
 
 import state
 from state import (

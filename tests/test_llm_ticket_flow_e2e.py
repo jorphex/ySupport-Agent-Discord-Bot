@@ -1,6 +1,9 @@
+import tests as _test_environment  # noqa: F401
+
 import json
 import unittest
 from unittest.mock import patch
+
 
 import config
 from state import BotRunContext

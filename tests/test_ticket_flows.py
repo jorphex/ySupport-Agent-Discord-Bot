@@ -1,9 +1,12 @@
+import tests as _test_environment  # noqa: F401
+
 import asyncio
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+
 
 from agents import MaxTurnsExceeded, RunContextWrapper
 import discord
