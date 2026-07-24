@@ -10,6 +10,7 @@ import discord
 
 from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE
 import config
+import handoff
 from state import (
     BotRunContext,
     TicketInvestigationJob,
@@ -36,6 +37,7 @@ from handoff import (
     build_closed_handoff_notice,
     build_handoff_notice,
     build_pending_delivery_handoff_notice,
+    TelegramApiError,
     TelegramSentMessage,
 )
 from ticket_investigation.worker import TicketInvestigationWorker
@@ -1338,6 +1340,79 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(persisted_offsets, [])
             self.assertIsNone(bot._telegram_update_offset)
             self.assertEqual(sleep_calls, [5])
+        finally:
+            await bot.close()
+
+    async def test_telegram_api_transport_failure_raises_typed_error(self) -> None:
+        with (
+            patch.object(config, "TELEGRAM_BOT_TOKEN", "test-token"),
+            patch(
+                "handoff.request.urlopen",
+                side_effect=TimeoutError("read timed out"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                TelegramApiError,
+                "Telegram API call getUpdates failed: read timed out",
+            ):
+                await handoff._telegram_api_call("getUpdates", {"timeout": 25})
+
+    async def test_telegram_send_failures_keep_delivery_contracts(self) -> None:
+        failure = TelegramApiError("Telegram API call failed")
+        with (
+            patch.dict(
+                "os.environ",
+                {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"},
+            ),
+            patch.object(config, "TELEGRAM_BOT_TOKEN", "test-token"),
+            patch("handoff._telegram_api_call", side_effect=failure),
+            patch("handoff.logging.error") as mock_error,
+        ):
+            sent = await handoff.send_telegram_message(
+                chat_id="123",
+                message_text="handoff",
+            )
+            edited = await handoff.edit_handoff_notice(
+                chat_id="123",
+                message_id=456,
+                message_text="updated",
+            )
+
+        self.assertIsNone(sent)
+        self.assertFalse(edited)
+        self.assertEqual(mock_error.call_count, 2)
+
+    async def test_telegram_polling_failure_warns_and_backs_off(self) -> None:
+        bot = TicketBot(intents=discord.Intents.none())
+        sleep_calls: list[float] = []
+
+        async def fake_fetch_telegram_updates(_offset):
+            raise TelegramApiError("Telegram API call getUpdates failed: read timed out")
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+            raise asyncio.CancelledError
+
+        try:
+            with (
+                patch(
+                    "ysupport.fetch_telegram_updates",
+                    new=fake_fetch_telegram_updates,
+                ),
+                patch("ysupport.asyncio.sleep", new=fake_sleep),
+                patch("ysupport.logging.warning") as mock_warning,
+                patch("ysupport.logging.error") as mock_error,
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await bot._telegram_handoff_reply_loop()
+
+            self.assertEqual(sleep_calls, [5])
+            mock_warning.assert_called_once()
+            self.assertIn(
+                "Telegram polling temporarily unavailable",
+                mock_warning.call_args.args[0],
+            )
+            mock_error.assert_not_called()
         finally:
             await bot.close()
 

@@ -20,6 +20,7 @@ from handoff import (
     build_archived_handoff_notice,
     build_closed_handoff_notice,
     build_pending_delivery_handoff_notice,
+    TelegramApiError,
     TelegramSentMessage,
     HandoffRoute,
     build_handoff_notice,
@@ -907,6 +908,12 @@ class TicketBot(discord.Client):
                         persist_telegram_update_offset(self._telegram_update_offset)
             except asyncio.CancelledError:
                 raise
+            except TelegramApiError as exc:
+                logging.warning(
+                    "Telegram polling temporarily unavailable; retrying in 5 seconds: %s",
+                    exc,
+                )
+                await asyncio.sleep(5)
             except Exception as exc:
                 logging.error("Telegram handoff reply loop failed: %s", exc, exc_info=True)
                 await asyncio.sleep(5)

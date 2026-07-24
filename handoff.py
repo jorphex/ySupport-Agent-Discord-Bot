@@ -24,6 +24,10 @@ HandoffTarget = Literal[
 ]
 
 
+class TelegramApiError(RuntimeError):
+    """Raised when Telegram does not return a successful API response."""
+
+
 @dataclass(frozen=True)
 class HandoffRoute:
     target: HandoffTarget
@@ -329,7 +333,11 @@ async def send_telegram_message(
     }
     if reply_to_message_id is not None:
         payload["reply_to_message_id"] = reply_to_message_id
-    response_payload = await _telegram_api_call("sendMessage", payload)
+    try:
+        response_payload = await _telegram_api_call("sendMessage", payload)
+    except TelegramApiError as exc:
+        logging.error("%s", exc, exc_info=True)
+        return None
     if not response_payload:
         return None
     result = response_payload.get("result") or {}
@@ -360,7 +368,11 @@ async def edit_handoff_notice(
         "disable_web_page_preview": True,
         "parse_mode": "HTML",
     }
-    response_payload = await _telegram_api_call("editMessageText", payload)
+    try:
+        response_payload = await _telegram_api_call("editMessageText", payload)
+    except TelegramApiError as exc:
+        logging.error("%s", exc, exc_info=True)
+        return False
     return bool(response_payload)
 
 
@@ -407,13 +419,11 @@ async def _telegram_api_call(
 
     try:
         result = await asyncio.to_thread(_send)
-        if not result or result.get("ok") is not True:
-            logging.error("Telegram API call %s failed: %s", method, result)
-            return None
-        return result
     except Exception as exc:
-        logging.error("Telegram API call %s failed: %s", method, exc, exc_info=True)
-        return None
+        raise TelegramApiError(f"Telegram API call {method} failed: {exc}") from exc
+    if not result or result.get("ok") is not True:
+        raise TelegramApiError(f"Telegram API call {method} failed: {result}")
+    return result
 
 
 def _get_handoff_summary_async_client() -> AsyncOpenAI:
