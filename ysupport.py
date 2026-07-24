@@ -83,6 +83,7 @@ from ticket_intake import prepare_ticket_turn_input
 from ticket_investigation.json_endpoint import (
     build_ticket_execution_json_endpoint,
     JsonEndpointTicketExecutionTransport,
+    prune_codex_support_sessions,
 )
 from ticket_investigation.context import (
     build_contextual_hints,
@@ -893,6 +894,18 @@ class TicketBot(discord.Client):
                     "Removed %s expired public conversation state file(s).",
                     removed,
                 )
+            try:
+                removed_codex_sessions = await prune_codex_support_sessions(
+                    self.investigation_json_endpoint
+                )
+            except Exception:
+                logging.exception("Failed to prune expired Codex support sessions.")
+            else:
+                if removed_codex_sessions:
+                    logging.info(
+                        "Removed %s expired Codex support session(s).",
+                        removed_codex_sessions,
+                    )
             await asyncio.sleep(cleanup_interval_seconds)
 
     async def _telegram_handoff_reply_loop(self) -> None:

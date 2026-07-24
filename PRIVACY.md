@@ -1,6 +1,6 @@
 # ySupport Privacy Policy
 
-Last updated: July 22, 2026
+Last updated: July 24, 2026
 
 ySupport is an AI-assisted support bot for the official Yearn Discord community. This policy explains how it handles information when people use it.
 
@@ -37,7 +37,7 @@ Discord provides the messaging platform. When human assistance is required, a li
 
 ## Storage and retention
 
-ySupport stores limited conversation state, identifiers, and attachment metadata outside Discord while needed for support continuity. Ticket state is deleted when its Discord ticket channel is deleted, and temporary public-conversation state expires after 30 minutes of inactivity and is periodically removed. Per-turn AI workspaces, including downloaded attachment copies, are temporary and are deleted after processing. Persistent diagnostic run exports are disabled by default; if an operator explicitly enables them for troubleshooting, the operator is responsible for limiting and deleting those records.
+ySupport stores limited conversation state, identifiers, and attachment metadata outside Discord while needed for support continuity. Ticket state is deleted when its Discord ticket channel is deleted, temporary public-conversation state expires after 30 minutes of inactivity, and resumable AI support sessions expire after seven days. These expired records are periodically removed. Per-turn AI workspaces, including downloaded attachment copies, are temporary and are deleted after processing. Persistent diagnostic run exports are disabled by default; if an operator explicitly enables them for troubleshooting, the operator is responsible for limiting and deleting those records.
 
 Access to stored support data is limited to authorized operators and contributors who need it to provide or maintain the service.
 

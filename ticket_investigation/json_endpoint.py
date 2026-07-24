@@ -221,6 +221,29 @@ class ConditionalTicketExecutionJsonEndpoint:
         return False
 
 
+async def prune_codex_support_sessions(
+    endpoint: TicketExecutionJsonEndpoint,
+) -> int:
+    seen: set[int] = set()
+
+    async def _prune(current: TicketExecutionJsonEndpoint) -> int:
+        identity = id(current)
+        if identity in seen:
+            return 0
+        seen.add(identity)
+        if isinstance(current, CodexSupportTicketExecutionJsonEndpoint):
+            return await current.prune_expired_sessions()
+        if isinstance(current, FailoverTicketExecutionJsonEndpoint):
+            return await _prune(current.primary) + await _prune(current.fallback)
+        if isinstance(current, ShadowTicketExecutionJsonEndpoint):
+            return await _prune(current.primary) + await _prune(current.shadow)
+        if isinstance(current, ConditionalTicketExecutionJsonEndpoint):
+            return await _prune(current.default) + await _prune(current.canary)
+        return 0
+
+    return await _prune(endpoint)
+
+
 def build_ticket_execution_json_endpoint(
     delegate: TicketInvestigationExecutor | None = None,
 ) -> TicketExecutionJsonEndpoint:

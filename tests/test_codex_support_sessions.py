@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from codex_support_sessions import CodexSupportSessionManager
 from ticket_investigation.codex_support_endpoint import (
     DEFAULT_CODEX_EXEC_COMMAND,
+    CodexSupportTicketExecutionJsonEndpoint,
     _build_codex_support_command,
+    _build_codex_delete_command,
+    _expired_unreferenced_rollout_ids,
 )
 from ticket_investigation.transport import TicketExecutionTransportRequest
 
@@ -231,6 +237,88 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
 
 
 class CodexSupportCommandBuilderTests(unittest.TestCase):
+    def test_delete_command_uses_supported_force_delete(self) -> None:
+        command = _build_codex_delete_command(
+            codex_command=DEFAULT_CODEX_EXEC_COMMAND,
+            session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "codex",
+                "delete",
+                "--force",
+                "019dade1-5acf-70e2-9c61-f5ba37862a78",
+            ],
+        )
+
+    def test_expired_rollout_scan_preserves_active_and_recent_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sessions_dir = Path(temp_dir) / "sessions" / "2026" / "07" / "01"
+            sessions_dir.mkdir(parents=True)
+            expired_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+            active_id = "019dade1-5acf-70e2-9c61-f5ba37862a79"
+            recent_id = "019dade1-5acf-70e2-9c61-f5ba37862a80"
+            old_timestamp = (
+                datetime.now(timezone.utc) - timedelta(days=8)
+            ).timestamp()
+            for session_id in (expired_id, active_id):
+                path = sessions_dir / f"rollout-2026-07-01T00-00-00-{session_id}.jsonl"
+                path.write_text("{}\n", encoding="utf-8")
+                os.utime(path, (old_timestamp, old_timestamp))
+            recent_path = (
+                sessions_dir
+                / f"rollout-2026-07-01T00-00-00-{recent_id}.jsonl"
+            )
+            recent_path.write_text("{}\n", encoding="utf-8")
+
+            session_ids = _expired_unreferenced_rollout_ids(
+                Path(temp_dir),
+                active_session_ids={active_id},
+                cutoff=datetime.now(timezone.utc) - timedelta(days=7),
+            )
+
+        self.assertEqual(session_ids, [expired_id])
+
+
+class CodexSupportSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_deletes_only_expired_unreferenced_rollouts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_home = Path(temp_dir) / "home"
+            session_dir = Path(temp_dir) / "active"
+            rollout_dir = codex_home / "sessions" / "2026" / "07" / "01"
+            rollout_dir.mkdir(parents=True)
+            active_id = "019dade1-5acf-70e2-9c61-f5ba37862a79"
+            expired_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+            old_timestamp = (
+                datetime.now(timezone.utc) - timedelta(days=8)
+            ).timestamp()
+            for session_id in (active_id, expired_id):
+                path = rollout_dir / f"rollout-2026-07-01T00-00-00-{session_id}.jsonl"
+                path.write_text("{}\n", encoding="utf-8")
+                os.utime(path, (old_timestamp, old_timestamp))
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=DEFAULT_CODEX_EXEC_COMMAND,
+                codex_home=codex_home,
+                session_dir=session_dir,
+                session_max_age_hours=168,
+            )
+            endpoint.session_manager.record_success(
+                conversation_key="ticket:123",
+                session_id=active_id,
+            )
+
+            with patch.object(
+                endpoint,
+                "_delete_codex_session",
+                AsyncMock(return_value=True),
+            ) as delete_session:
+                removed = await endpoint.prune_expired_sessions()
+
+        self.assertEqual(removed, 1)
+        delete_session.assert_awaited_once_with(expired_id)
+
     def test_fresh_command_drops_ephemeral_and_keeps_schema(self) -> None:
         command = _build_codex_support_command(
             codex_command=DEFAULT_CODEX_EXEC_COMMAND,

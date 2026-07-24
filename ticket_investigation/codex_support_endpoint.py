@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -27,6 +29,7 @@ from codex_support_contract import (
 from codex_support_sessions import CodexSupportSessionManager
 from ticket_execution.subprocess_utils import (
     build_effective_execution_env,
+    run_bounded_subprocess,
     safe_export_workspace_copy,
     validate_allowed_command_prefix,
     write_execution_artifacts,
@@ -50,6 +53,11 @@ _ALLOWED_DISCORD_ATTACHMENT_HOSTS = {
     "media.discordapp.net",
 }
 _MAX_ATTACHMENT_IMAGE_BYTES = 20 * 1024 * 1024
+_SESSION_UUID_RE = re.compile(r"[0-9a-fA-F-]{36}")
+_ROLLOUT_SESSION_ID_RE = re.compile(
+    r"(?P<session_id>[0-9a-fA-F-]{36})\.jsonl$"
+)
+_CODEX_SESSION_DELETE_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass
@@ -162,6 +170,70 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.execution_locks = _ConversationExecutionLocks()
         self.codex_runtime_lock = asyncio.Lock()
         self._prepare_support_home()
+
+    async def prune_expired_sessions(self) -> int:
+        if (
+            self.session_manager is None
+            or self.session_manager.max_age is None
+            or self.codex_home is None
+        ):
+            return 0
+        async with self.codex_runtime_lock:
+            active_session_ids = {
+                record.session_id for record in self.session_manager.list_records()
+            }
+            cutoff = datetime.now(timezone.utc) - self.session_manager.max_age
+            session_ids = _expired_unreferenced_rollout_ids(
+                self.codex_home,
+                active_session_ids=active_session_ids,
+                cutoff=cutoff,
+            )
+            removed = 0
+            for session_id in session_ids:
+                if await self._delete_codex_session(session_id):
+                    removed += 1
+            return removed
+
+    async def _delete_codex_session(self, session_id: str) -> bool:
+        command = _build_codex_delete_command(
+            codex_command=self.codex_command,
+            session_id=session_id,
+        )
+        effective_env = build_effective_execution_env(
+            env=self.env,
+            inherit_parent_env=self.inherit_parent_env,
+            run_dir=self.codex_home or Path.cwd(),
+        )
+        try:
+            await run_bounded_subprocess(
+                command=command,
+                stdin_text="",
+                cwd=self.cwd,
+                env=effective_env,
+                timeout_seconds=_CODEX_SESSION_DELETE_TIMEOUT_SECONDS,
+                max_output_chars=1000,
+                max_error_chars=500,
+                timeout_message=(
+                    f"Timed out deleting expired Codex session {session_id}."
+                ),
+                empty_stdout_message=(
+                    f"Codex did not confirm deletion of session {session_id}."
+                ),
+                oversized_stdout_message=(
+                    f"Codex returned oversized deletion output for session {session_id}."
+                ),
+                metadata={"operation": "delete_expired_codex_session"},
+                artifact_run_dir=None,
+            )
+        except RuntimeError as exc:
+            logging.warning(
+                "Failed to delete expired Codex session %s: %s",
+                session_id,
+                str(exc)[:500],
+            )
+            return False
+        else:
+            return True
 
     async def execute_json_turn(
         self,
@@ -650,6 +722,49 @@ def _build_codex_resume_command(
         command.extend(["-i", str(image_path)])
     command.append("--json")
     return command
+
+
+def _build_codex_delete_command(
+    *,
+    codex_command: Sequence[str],
+    session_id: str,
+) -> list[str]:
+    if not _SESSION_UUID_RE.fullmatch(session_id):
+        raise ValueError("Codex session deletion requires a UUID session ID.")
+    exec_index = next(
+        (index for index, token in enumerate(codex_command) if token == "exec"),
+        None,
+    )
+    if exec_index is None:
+        raise ValueError("Codex support command must include an exec subcommand.")
+    return list(codex_command[:exec_index]) + [
+        "delete",
+        "--force",
+        session_id,
+    ]
+
+
+def _expired_unreferenced_rollout_ids(
+    codex_home: Path,
+    *,
+    active_session_ids: set[str],
+    cutoff: datetime,
+) -> list[str]:
+    sessions_dir = codex_home / "sessions"
+    if not sessions_dir.exists():
+        return []
+    session_ids: set[str] = set()
+    for path in sessions_dir.rglob("*.jsonl"):
+        match = _ROLLOUT_SESSION_ID_RE.search(path.name)
+        if match is None:
+            continue
+        session_id = match.group("session_id")
+        if (
+            session_id not in active_session_ids
+            and datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < cutoff
+        ):
+            session_ids.add(session_id)
+    return sorted(session_ids)
 
 
 def _codex_support_prompt(
