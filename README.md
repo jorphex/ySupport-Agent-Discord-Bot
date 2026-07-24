@@ -33,13 +33,15 @@ The bot can be run outside Docker under `systemd` while keeping the MCP server i
 Recommended shape:
 - keep `mcp_server.py` in Docker
 - run `ysupport.py` on the host
+- run the bot as a dedicated, unprivileged `ysupport` service user
 - keep a dedicated bot `CODEX_HOME` for generated Codex config
-- link the bot auth to the machine's live Codex login instead of copying auth files
+- keep bot auth in service-owned state rather than exposing an operator's home directory
 
 Important:
 - do not point `TICKET_EXECUTION_CODEX_HOME` at your normal `~/.codex`
 - the bot writes `config.toml` and instructions into its `CODEX_HOME`
-- use `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to point at the live auth file instead
+- use `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to point at a `0600` auth file owned by the service user
+- keep the checkout and Codex installation read-only; only the dedicated state directory and private temporary directory need writes
 
 Minimal host-native setup:
 - create a host venv and `pip install -r requirements.txt`
@@ -47,6 +49,7 @@ Minimal host-native setup:
 - leave `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path
 - clear `TICKET_EXECUTION_CODEX_AUTH_SOURCE`
 - clear `TICKET_EXECUTION_CODEX_AUTH_SYNC_SOURCE`
-- set `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to the live host auth file, for example `${HOME}/.codex/auth.json`
+- set `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to the service-owned auth file
 - use `scripts/run_ysupport_host.sh` as the service entrypoint
-- use `systemd/ysupport.service` as a sanitized template and replace the sample `User=` and `/opt/ysupport` paths with the real host values before installing it
+- use `systemd/ysupport.service` as the hardened deployment unit
+- if the checkout or Codex version path changes, update `WorkingDirectory`, `EnvironmentFile`, `ExecStart`, and the two `BindReadOnlyPaths` entries together
