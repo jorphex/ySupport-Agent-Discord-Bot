@@ -1766,8 +1766,9 @@ class TicketBot(discord.Client):
             existing_task.cancel()
             try:
                 await message.channel.send(
-                    "Got it — I’ve added this to your request. "
-                    "No need to resend anything; I’ll reply when the updated review is ready.",
+                    "Got it. I’ve added your follow-up to your previous request for context, "
+                    "and I’m continuing to work on it now. Please wait for my response. "
+                    "There’s no need to resend anything.",
                     suppress_embeds=True,
                 )
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)

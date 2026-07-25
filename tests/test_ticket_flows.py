@@ -999,8 +999,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 fake_channel.sent_messages[0],
-                "Got it — I’ve added this to your request. "
-                "No need to resend anything; I’ll reply when the updated review is ready.",
+                "Got it. I’ve added your follow-up to your previous request for context, "
+                "and I’m continuing to work on it now. Please wait for my response. "
+                "There’s no need to resend anything.",
             )
             self.assertNotIn(channel_id, pending_messages)
             self.assertNotIn(channel_id, pending_attachments_by_channel)
@@ -1087,8 +1088,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 fake_channel.sent_messages[0],
-                "Got it — I’ve added this to your request. "
-                "No need to resend anything; I’ll reply when the updated review is ready.",
+                "Got it. I’ve added your follow-up to your previous request for context, "
+                "and I’m continuing to work on it now. Please wait for my response. "
+                "There’s no need to resend anything.",
             )
             self.assertNotIn(channel_id, pending_messages)
             self.assertNotIn(channel_id, active_ticket_payloads)
