@@ -79,6 +79,17 @@ def _truncate_rerank_document(text: str, max_chars: int = 3000) -> str:
     return normalized[:max_chars].rstrip()
 
 
+def _top_matches_by_score(
+    matches: List[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    return sorted(
+        matches,
+        key=lambda match: float(match.get("score", 0.0) or 0.0),
+        reverse=True,
+    )[:limit]
+
+
 def _should_include_flex_docs(query_lower: str) -> bool:
     if re.search(r"\bflex\b", query_lower):
         return True
@@ -370,8 +381,10 @@ async def _build_docs_context(
             reranked_matches = [unique_matches_list[result.index] for result in rerank_response.data]
         except Exception as e:
             logging.error(f"Rerank error: {e}")
-            all_matches.sort(key=lambda x: x.score, reverse=True)
-            reranked_matches = all_matches[:rerank_top_n]
+            reranked_matches = _top_matches_by_score(
+                all_matches,
+                rerank_top_n,
+            )
     else:
         logging.info("[CoreTool:docs_context] No matches found; proceeding with empty context.")
 

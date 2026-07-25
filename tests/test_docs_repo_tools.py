@@ -8,6 +8,7 @@ from docs_repo_tools import (
     _docs_query_specs,
     _get_pinecone_index,
     _should_include_flex_docs,
+    _top_matches_by_score,
 )
 
 
@@ -57,6 +58,20 @@ class DocsRepoToolsTests(unittest.TestCase):
                 ("yearn-docs", "yip"),
                 ("flex-docs", "documentation"),
             ],
+        )
+
+    def test_rerank_fallback_uses_normalized_dictionary_scores(self) -> None:
+        matches = [
+            {"id": "low", "score": 0.2, "metadata": {}},
+            {"id": "high", "score": 0.9, "metadata": {}},
+            {"id": "missing", "metadata": {}},
+        ]
+
+        ranked = _top_matches_by_score(matches, 2)
+
+        self.assertEqual(
+            [match["id"] for match in ranked],
+            ["high", "low"],
         )
 
 

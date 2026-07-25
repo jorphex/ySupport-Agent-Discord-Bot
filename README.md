@@ -37,6 +37,24 @@ Recommended shape:
 - keep a dedicated bot `CODEX_HOME` for generated Codex config
 - keep bot auth in service-owned state rather than exposing an operator's home directory
 
+The MCP listener is host-local and bearer-authenticated. Keep the existing
+`MCP_SERVER_API_KEY` in `.env`, and publish its port only on loopback:
+
+```sh
+docker run -d --restart always --name ysupport-mcp \
+  --env-file .env \
+  -e MCP_PORT=8001 \
+  -e MCP_HOST=0.0.0.0 \
+  -e MCP_TRANSPORT=streamable-http \
+  -p 127.0.0.1:8001:8001 \
+  -v "$(pwd):/app" \
+  ysupport python mcp_server.py
+```
+
+Do not publish MCP as `-p 8001:8001`; that exposes the listener on every host
+interface. HTTP requests without the configured bearer token are rejected
+before tool execution.
+
 Important:
 - do not point `TICKET_EXECUTION_CODEX_HOME` at your normal `~/.codex`
 - the bot writes `config.toml` and instructions into its `CODEX_HOME`
