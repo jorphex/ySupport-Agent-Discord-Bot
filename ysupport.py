@@ -753,9 +753,10 @@ def _maybe_recover_runtime_stopped_ticket_for_message(
 ) -> bool:
     if channel_id not in stopped_channels:
         return False
-    if _is_contributor_member(author):
-        return False
-    if ticket_owner_user_id is not None and author.id != ticket_owner_user_id:
+    if ticket_owner_user_id is not None:
+        if author.id != ticket_owner_user_id:
+            return False
+    elif _is_contributor_member(author):
         return False
     recovered = recover_ticket_channel_from_runtime_stop(channel_id)
     if recovered:

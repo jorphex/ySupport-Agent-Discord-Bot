@@ -210,6 +210,54 @@ class RoutingTests(unittest.TestCase):
             stop_reasons_by_channel.pop(channel_id, None)
 
     @patch("ysupport._is_contributor_member")
+    def test_runtime_stopped_ticket_recovers_for_known_owner_with_contributor_role(
+        self,
+        mock_is_contributor_member,
+    ) -> None:
+        mock_is_contributor_member.return_value = True
+        channel_id = 177
+        owner = SimpleNamespace(id=1, name="owner")
+        stopped_channels.add(channel_id)
+        stop_reasons_by_channel[channel_id] = "runtime_error"
+        try:
+            self.assertTrue(
+                _maybe_recover_runtime_stopped_ticket_for_message(
+                    channel_id=channel_id,
+                    author=owner,
+                    ticket_owner_user_id=1,
+                )
+            )
+            self.assertNotIn(channel_id, stopped_channels)
+            self.assertNotIn(channel_id, stop_reasons_by_channel)
+        finally:
+            stopped_channels.discard(channel_id)
+            stop_reasons_by_channel.pop(channel_id, None)
+
+    @patch("ysupport._is_contributor_member")
+    def test_runtime_stopped_ticket_does_not_recover_for_non_owner_contributor(
+        self,
+        mock_is_contributor_member,
+    ) -> None:
+        mock_is_contributor_member.return_value = True
+        channel_id = 277
+        contributor = SimpleNamespace(id=2, name="contributor")
+        stopped_channels.add(channel_id)
+        stop_reasons_by_channel[channel_id] = "runtime_error"
+        try:
+            self.assertFalse(
+                _maybe_recover_runtime_stopped_ticket_for_message(
+                    channel_id=channel_id,
+                    author=contributor,
+                    ticket_owner_user_id=1,
+                )
+            )
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(stop_reasons_by_channel[channel_id], "runtime_error")
+        finally:
+            stopped_channels.discard(channel_id)
+            stop_reasons_by_channel.pop(channel_id, None)
+
+    @patch("ysupport._is_contributor_member")
     def test_boundary_stopped_ticket_does_not_recover_for_owner_message(
         self,
         mock_is_contributor_member,
