@@ -31,6 +31,7 @@ from ticket_investigation.codex_support_endpoint import (
     _prepare_support_request_attachments,
     _read_attachment_image_body,
     _codex_support_prompt,
+    _run_codex_support_json_subprocess,
 )
 from ticket_investigation.executor import TicketExecutionHooks
 from ticket_investigation.json_endpoint import build_ticket_execution_json_endpoint
@@ -49,6 +50,61 @@ EXAMPLE_YSUPPORT_MCP_URL = "http://ysupport-mcp.example.test/mcp"
 
 
 class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_codex_execution_kills_spawned_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            child_pid_path = Path(temp_dir) / "child_pid.txt"
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib, subprocess, sys, time; "
+                    "child = subprocess.Popen("
+                    "[sys.executable, '-c', 'import time; time.sleep(60)']); "
+                    f"pathlib.Path({str(child_pid_path)!r}).write_text("
+                    "str(child.pid), encoding='utf-8'); "
+                    "time.sleep(60)"
+                ),
+            ]
+            task = asyncio.create_task(
+                _run_codex_support_json_subprocess(
+                    command=command,
+                    stdin_text="",
+                    cwd=None,
+                    env=dict(os.environ),
+                    timeout_seconds=60,
+                    max_output_chars=1000,
+                    max_error_chars=1000,
+                    timeout_message="timed out",
+                    empty_stdout_message="empty",
+                    oversized_stdout_message="oversized",
+                    metadata={},
+                    artifact_run_dir=None,
+                    progress_callback=None,
+                )
+            )
+
+            deadline = asyncio.get_running_loop().time() + 5
+            while (
+                not child_pid_path.exists()
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.05)
+            self.assertTrue(child_pid_path.exists())
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                self.fail("Cancelled Codex execution left a child process running.")
+
     async def test_image_attachment_stream_enforces_size_without_content_length(
         self,
     ) -> None:

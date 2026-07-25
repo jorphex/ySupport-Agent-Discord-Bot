@@ -38,6 +38,7 @@ from handoff import (
 from router import is_bug_report_query
 from support_boundary import evaluate_support_boundary
 from state import (
+    active_ticket_payloads,
     BotRunContext,
     PublicConversation,
     TicketInvestigationJob,
@@ -268,6 +269,36 @@ def _dedupe_attachment_payloads(
         seen_urls.add(url)
         deduped.append(dict(attachment))
     return deduped
+
+
+def _merge_pending_ticket_payload(
+    channel_id: int,
+    text: str,
+    attachments: list[dict[str, Any]],
+) -> None:
+    existing_text = pending_messages.get(channel_id)
+    pending_messages[channel_id] = (
+        f"{existing_text}\n{text}" if existing_text else text
+    )
+    pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
+        pending_attachments_by_channel.get(channel_id, []) + attachments
+    )
+
+
+def _restore_active_ticket_payload(channel_id: int) -> None:
+    active_payload = active_ticket_payloads.pop(channel_id, None)
+    if active_payload is None:
+        return
+    _task, text, attachments = active_payload
+    queued_text = pending_messages.pop(channel_id, None)
+    queued_attachments = pending_attachments_by_channel.pop(channel_id, [])
+    _merge_pending_ticket_payload(channel_id, text, attachments)
+    if queued_text:
+        _merge_pending_ticket_payload(
+            channel_id,
+            queued_text,
+            queued_attachments,
+        )
 
 
 def _record_waiting_for_team_followup(
@@ -1463,10 +1494,16 @@ class TicketBot(discord.Client):
         except asyncio.CancelledError:
             logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
             return None, []
-        return (
-            pending_messages.pop(channel_id, None),
-            pending_attachments_by_channel.pop(channel_id, []),
-        )
+        aggregated_text = pending_messages.pop(channel_id, None)
+        attachments = pending_attachments_by_channel.pop(channel_id, [])
+        current_task = asyncio.current_task()
+        if aggregated_text and current_task is not None:
+            active_ticket_payloads[channel_id] = (
+                current_task,
+                aggregated_text,
+                attachments,
+            )
+        return aggregated_text, attachments
 
     async def _handle_stopped_ticket_contributor_override(
         self,
@@ -1725,10 +1762,12 @@ class TicketBot(discord.Client):
 
         existing_task = pending_tasks.get(channel_id)
         if existing_task and not existing_task.done():
+            _restore_active_ticket_payload(channel_id)
             existing_task.cancel()
             try:
                 await message.channel.send(
-                    "I’m re-checking this with your latest message.",
+                    "Got it — I’ve added this to your request. "
+                    "No need to resend anything; I’ll reply when the updated review is ready.",
                     suppress_embeds=True,
                 )
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
@@ -1736,23 +1775,11 @@ class TicketBot(discord.Client):
                 pass
 
         normalized_message_text = _message_text_for_turn(message)
-        last_reply_ts = last_bot_reply_ts_by_channel.get(channel_id)
-        if last_reply_ts and message.created_at <= last_reply_ts:
-            pending_messages[channel_id] = normalized_message_text
-            pending_attachments_by_channel[channel_id] = _attachment_payloads_from_message(
-                message
-            )
-        elif channel_id not in pending_messages:
-            pending_messages[channel_id] = normalized_message_text
-            pending_attachments_by_channel[channel_id] = _attachment_payloads_from_message(
-                message
-            )
-        else:
-            pending_messages[channel_id] += "\n" + normalized_message_text
-            pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
-                pending_attachments_by_channel.get(channel_id, [])
-                + _attachment_payloads_from_message(message)
-            )
+        _merge_pending_ticket_payload(
+            channel_id,
+            normalized_message_text,
+            _attachment_payloads_from_message(message),
+        )
 
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
         debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
@@ -1942,6 +1969,9 @@ class TicketBot(discord.Client):
             logging.info(f"Processing task for channel {channel_id} cancelled mid-run.")
             return
         finally:
+            active_payload = active_ticket_payloads.get(channel_id)
+            if active_payload is not None and active_payload[0] is current_task:
+                active_ticket_payloads.pop(channel_id, None)
             if pending_tasks.get(channel_id) is current_task:
                 pending_tasks.pop(channel_id, None)
 

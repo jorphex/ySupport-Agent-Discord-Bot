@@ -15,6 +15,7 @@ from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE
 import config
 import handoff
 from state import (
+    active_ticket_payloads,
     BotRunContext,
     TicketInvestigationJob,
     TeamHandoffNotice,
@@ -27,7 +28,9 @@ from state import (
     get_or_create_ticket_investigation_job,
     is_ticket_waiting_for_team,
     last_bot_reply_ts_by_channel,
+    pending_attachments_by_channel,
     pending_messages,
+    pending_tasks,
     public_conversations,
     PublicConversation,
     team_handoff_notice_by_channel,
@@ -903,6 +906,197 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
         finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_debounce_followup_is_added_without_losing_original_payload(
+        self,
+    ) -> None:
+        channel_id = 294
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+        owner = SimpleNamespace(id=777, bot=False, name="owner")
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _Executor:
+            async def execute_turn(self, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply="Combined answer.",
+                        conversation_history=[],
+                        completed_agent_key="docs",
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        def ticket_message(
+            message_id: int,
+            content: str,
+            attachment: SimpleNamespace,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                author=owner,
+                content=content,
+                channel=fake_channel,
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                attachments=[attachment],
+            )
+
+        first = ticket_message(
+            1001,
+            "The withdrawal is stuck.",
+            SimpleNamespace(
+                id=501,
+                filename="first.png",
+                url="https://cdn.discordapp.com/attachments/1/2/first.png",
+                content_type="image/png",
+                size=100,
+            ),
+        )
+        followup = ticket_message(
+            1002,
+            "It is on Base.",
+            SimpleNamespace(
+                id=502,
+                filename="second.png",
+                url="https://cdn.discordapp.com/attachments/1/2/second.png",
+                content_type="image/png",
+                size=200,
+            ),
+        )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _Executor()
+        ticket_owner_user_id_by_channel[channel_id] = owner.id
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch.object(config, "COOLDOWN_SECONDS", 0.01),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch("ysupport.send_long_message", new=fake_send_long_message),
+            ):
+                await bot.on_message(first)
+                await bot.on_message(followup)
+                await asyncio.wait_for(pending_tasks[channel_id], timeout=1)
+
+            self.assertEqual(len(captured_requests), 1)
+            self.assertEqual(
+                captured_requests[0].aggregated_text,
+                "The withdrawal is stuck.\nIt is on Base.",
+            )
+            self.assertEqual(
+                [item["filename"] for item in captured_requests[0].attachments],
+                ["first.png", "second.png"],
+            )
+            self.assertEqual(
+                fake_channel.sent_messages[0],
+                "Got it — I’ve added this to your request. "
+                "No need to resend anything; I’ll reply when the updated review is ready.",
+            )
+            self.assertNotIn(channel_id, pending_messages)
+            self.assertNotIn(channel_id, pending_attachments_by_channel)
+            self.assertNotIn(channel_id, active_ticket_payloads)
+            self.assertNotIn(channel_id, pending_tasks)
+        finally:
+            task = pending_tasks.pop(channel_id, None)
+            if task is not None:
+                task.cancel()
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_active_followup_restarts_with_complete_payload(
+        self,
+    ) -> None:
+        channel_id = 394
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+        owner = SimpleNamespace(id=777, bot=False, name="owner")
+        first_started = asyncio.Event()
+        first_cancelled = asyncio.Event()
+        second_completed = asyncio.Event()
+        captured_requests: list[TicketTurnRequest] = []
+
+        class _Executor:
+            async def execute_turn(self, request: TicketTurnRequest, hooks=None):
+                captured_requests.append(request)
+                if len(captured_requests) == 1:
+                    first_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        first_cancelled.set()
+                        raise
+                second_completed.set()
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply="Updated answer.",
+                        conversation_history=[],
+                        completed_agent_key="docs",
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        def ticket_message(message_id: int, content: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                author=owner,
+                content=content,
+                channel=fake_channel,
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                attachments=[],
+            )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _Executor()
+        ticket_owner_user_id_by_channel[channel_id] = owner.id
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch.object(config, "COOLDOWN_SECONDS", 0),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch("ysupport.send_long_message", new=fake_send_long_message),
+            ):
+                await bot.on_message(ticket_message(2001, "Initial vault issue."))
+                await asyncio.wait_for(first_started.wait(), timeout=1)
+                await bot.on_message(ticket_message(2002, "The tx hash is 0xabc."))
+                await asyncio.wait_for(first_cancelled.wait(), timeout=1)
+                await asyncio.wait_for(second_completed.wait(), timeout=1)
+                while channel_id in pending_tasks:
+                    await asyncio.sleep(0)
+
+            self.assertEqual(len(captured_requests), 2)
+            self.assertEqual(
+                captured_requests[1].aggregated_text,
+                "Initial vault issue.\nThe tx hash is 0xabc.",
+            )
+            self.assertEqual(
+                fake_channel.sent_messages[0],
+                "Got it — I’ve added this to your request. "
+                "No need to resend anything; I’ll reply when the updated review is ready.",
+            )
+            self.assertNotIn(channel_id, pending_messages)
+            self.assertNotIn(channel_id, active_ticket_payloads)
+            self.assertNotIn(channel_id, pending_tasks)
+        finally:
+            task = pending_tasks.pop(channel_id, None)
+            if task is not None:
+                task.cancel()
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
     async def test_telegram_handoff_reply_consumes_notice_and_posts_update(self) -> None:

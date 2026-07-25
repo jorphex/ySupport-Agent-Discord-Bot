@@ -880,13 +880,15 @@ async def _run_codex_support_json_subprocess(
                 break
             stderr_chunks.append(chunk.decode("utf-8", errors="replace"))
 
+    io_tasks = [
+        asyncio.create_task(_feed_stdin()),
+        asyncio.create_task(_read_stdout()),
+        asyncio.create_task(_read_stderr()),
+    ]
+    io_future = asyncio.gather(*io_tasks)
     try:
         await asyncio.wait_for(
-            asyncio.gather(
-                _feed_stdin(),
-                _read_stdout(),
-                _read_stderr(),
-            ),
+            io_future,
             timeout=timeout_seconds,
         )
         await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
@@ -899,6 +901,22 @@ async def _run_codex_support_json_subprocess(
             metadata={**metadata, "timed_out": True},
         )
         raise RuntimeError(timeout_message) from exc
+    except asyncio.CancelledError:
+        await _terminate_streamed_subprocess(process)
+        raise
+    except Exception:
+        await _terminate_streamed_subprocess(process)
+        raise
+    finally:
+        for task in io_tasks:
+            if not task.done():
+                task.cancel()
+        if not io_future.done():
+            io_future.cancel()
+        try:
+            await io_future
+        except (Exception, asyncio.CancelledError):
+            pass
 
     stdout_text = "\n".join(stdout_lines).strip()
     stderr_text = "".join(stderr_chunks).strip()
