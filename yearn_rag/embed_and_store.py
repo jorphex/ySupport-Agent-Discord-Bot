@@ -1,223 +1,378 @@
-import json
-import time
-import re
-import os
+from __future__ import annotations
+
 import hashlib
+import json
+import os
 from pathlib import Path
+import re
+import time
+from typing import Any
 
-import openai
 from dotenv import load_dotenv
+from openai import OpenAI
 from pinecone import Pinecone
-from pinecone.exceptions import PineconeApiException 
 
-# API Keys (loaded from .env one level up)
-ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+ENV_PATH = BASE_DIR / ".env"
+DEFAULT_STATE_PATH = BASE_DIR / ".cache" / "docs_ingestion" / "embedding_state.json"
+
 load_dotenv(ENV_PATH)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "docs")
 PINECONE_HOST = os.getenv("PINECONE_HOST")
-CLEAR_NAMESPACE = os.getenv("CLEAR_NAMESPACE", "0") == "1"
+STATE_PATH = Path(os.getenv("DOCS_INGESTION_STATE_PATH", str(DEFAULT_STATE_PATH)))
+FORCE_REFRESH = os.getenv("DOCS_INGESTION_FORCE_REFRESH", "0") == "1"
+
+EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_RETRIES = 3
+EMBEDDING_BATCH_SIZE = 100
+DELETE_BATCH_SIZE = 1000
+STATE_SCHEMA_VERSION = 1
+PIPELINE_VERSION = 1
+VERIFY_ATTEMPTS = 6
+VERIFY_DELAY_SECONDS = 2.0
 
 EMBEDDING_SOURCES = {
     "yearn_docs": {
         "input_json": "cleaned_yearn_docs.json",
-        "namespace": "yearn-docs"
+        "namespace": "yearn-docs",
     },
     "flex_docs": {
         "input_json": "cleaned_flex_docs.json",
-        "namespace": "flex-docs"
-    }
+        "namespace": "flex-docs",
+    },
 }
 RETIRED_NAMESPACES = ("yearn-yips",)
 
-# Initialize OpenAI & Pinecone
-try:
-    openai.api_key = OPENAI_API_KEY
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    index = pc.Index(PINECONE_INDEX_NAME, host=PINECONE_HOST)
-    index.describe_index_stats() 
-    print("✅ Successfully connected to Pinecone index.")
-except Exception as e:
-    print(f"❌ Failed to initialize clients or connect to Pinecone index: {e}")
-    exit(1)
-
-def clear_namespace(namespace):
-    """
-    Safely deletes all vectors from a specific namespace.
-    RAISES an exception if deletion cannot be confirmed.
-    """
-    try:
-        print("--- Clearing Namespace ---")
-        stats = index.describe_index_stats()
-        # Add a print statement to see exactly what the API returns
-        print(f"Initial stats response: {stats}") 
-        
-        namespace_stats = stats.get("namespaces", {}).get(namespace)
-        
-        if namespace_stats and namespace_stats.get("vector_count", 0) > 0:
-            vector_count = namespace_stats["vector_count"]
-            print(f"Found {vector_count} vectors in namespace '{namespace}'. Deleting old data...")
-            index.delete(delete_all=True, namespace=namespace) 
-            
-            print("Waiting for deletion to propagate (15 seconds)...") # Increased wait time
-            time.sleep(15) 
-            
-            print("Verifying deletion...")
-            # Loop a few times to give the API time to update
-            for attempt in range(3):
-                stats_after = index.describe_index_stats()
-                count_after = stats_after.get("namespaces", {}).get(namespace, {}).get("vector_count", 0)
-                if count_after == 0:
-                    print(f"✅ Namespace '{namespace}' cleared successfully.")
-                    return # Success, exit the function
-                print(f"Verification attempt {attempt + 1}: Found {count_after} vectors remaining. Waiting 5 more seconds...")
-                time.sleep(5)
-            
-            # If the loop finishes and count is still not 0, it's a failure.
-            raise Exception(f"Failed to clear namespace '{namespace}'. {count_after} vectors remain after deletion attempt.")
-        else:
-            print(f"ℹ️ No vectors found in namespace '{namespace}'. Skipping deletion.")
-            
-    except Exception as e:
-        print(f"❌ An unrecoverable error occurred while clearing namespace '{namespace}': {e}")
-        # Re-raise the exception to HALT the script
-        raise e
 
 def sanitize_for_id(text: str) -> str:
-    text = text.replace('/', '-').replace('\\', '-').replace(' ', '-')
-    text = text.encode('ascii', 'ignore').decode('ascii')
-    text = re.sub(r'[^\w\-\.]', '', text)
+    text = text.replace("/", "-").replace("\\", "-").replace(" ", "-")
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^\w\-.]", "", text)
     return text.lower()
 
-def generate_embedding(texts):
-    """Generates OpenAI embeddings for a list of texts (batched)."""
-    if not texts:
-        return []
-    print(f"🔹 Generating embeddings for a batch of {len(texts)} texts...")
-    for attempt in range(EMBEDDING_RETRIES):
-        try:
-            response = openai.embeddings.create(
-                model="text-embedding-3-large",
-                input=texts,
-                encoding_format="float"
-            )
-            return [item.embedding for item in response.data]
-        except Exception as e:
-            wait_s = 2 ** attempt
-            print(f"❌ Error during embedding generation (attempt {attempt + 1}/{EMBEDDING_RETRIES}): {e}")
-            if attempt < EMBEDDING_RETRIES - 1:
-                time.sleep(wait_s)
-    return None
 
 def content_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
-def process_and_embed_source(config):
-    """
-    Loads, embeds, and upserts documents for a single configured source.
-    """
+
+def vector_id_for_doc(doc: dict[str, Any]) -> str:
+    id_base = doc.get("doc_id") or doc.get("source_path", "unknown")
+    chunk_index = doc.get("chunk_index", doc.get("chunk_id", -1))
+    return f"{sanitize_for_id(str(id_base))}-{sanitize_for_id(str(chunk_index))}"
+
+
+def metadata_for_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    metadata = {
+        "text": doc.get("text", ""),
+        "filename": doc.get("filename", "unknown"),
+        "doc_title": doc.get("doc_title", "Unknown Title"),
+        "section_heading": doc.get("section_heading", "Unknown Section"),
+        "source_path": doc.get("source_path", "unknown"),
+        "chunk_id": doc.get("chunk_id", -1),
+        "chunk_index": doc.get("chunk_index", doc.get("chunk_id", -1)),
+        "doc_id": doc.get("doc_id"),
+        "doc_last_modified": doc.get("doc_last_modified"),
+        "source_type": doc.get("source_type"),
+        "source_url": doc.get("source_url"),
+        "content_hash": content_hash(doc.get("text", "")),
+        "yip_status": doc.get("yip_status"),
+        "yip_number": doc.get("yip_number"),
+        "yip_created": doc.get("yip_created"),
+        "yip_discussion_link": doc.get("yip_discussion_link"),
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def source_fingerprint(docs: list[dict[str, Any]]) -> str:
+    payload = {
+        "embedding_model": EMBEDDING_MODEL,
+        "pipeline_version": PIPELINE_VERSION,
+        "documents": docs,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def load_state(path: Path = STATE_PATH) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"schema_version": STATE_SCHEMA_VERSION, "sources": {}}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != STATE_SCHEMA_VERSION
+        or not isinstance(payload.get("sources"), dict)
+    ):
+        return {"schema_version": STATE_SCHEMA_VERSION, "sources": {}}
+    return payload
+
+
+def save_state(state: dict[str, Any], path: Path = STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(
+        json.dumps(state, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
+
+
+def _namespace_vector_count(stats: Any, namespace: str) -> int:
+    namespaces = stats.get("namespaces", {}) if hasattr(stats, "get") else {}
+    namespace_stats = namespaces.get(namespace, {})
+    if hasattr(namespace_stats, "get"):
+        return int(namespace_stats.get("vector_count", 0))
+    return int(getattr(namespace_stats, "vector_count", 0))
+
+
+def list_namespace_ids(index: Any, namespace: str) -> set[str]:
+    ids: set[str] = set()
+    for page in index.list(namespace=namespace):
+        ids.update(str(vector_id) for vector_id in page)
+    return ids
+
+
+def _load_docs(input_json: str) -> list[dict[str, Any]]:
+    path = Path(input_json)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Input file not found: {input_json}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Input file is invalid JSON: {input_json}") from exc
+    if not isinstance(payload, list) or not payload:
+        raise RuntimeError(f"Input file has no document chunks: {input_json}")
+    if not all(isinstance(doc, dict) and isinstance(doc.get("text"), str) for doc in payload):
+        raise RuntimeError(f"Input file contains invalid document chunks: {input_json}")
+    return payload
+
+
+def _generate_embeddings(client: Any, texts: list[str]) -> list[list[float]]:
+    print(f"Generating embeddings for a batch of {len(texts)} texts...")
+    last_error: Exception | None = None
+    for attempt in range(EMBEDDING_RETRIES):
+        try:
+            response = client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=texts,
+                encoding_format="float",
+            )
+            embeddings = [item.embedding for item in response.data]
+            if len(embeddings) != len(texts):
+                raise RuntimeError(
+                    f"Embedding response returned {len(embeddings)} vectors for {len(texts)} texts"
+                )
+            return embeddings
+        except Exception as exc:
+            last_error = exc
+            print(
+                "Embedding generation failed "
+                f"(attempt {attempt + 1}/{EMBEDDING_RETRIES}): {exc}"
+            )
+            if attempt < EMBEDDING_RETRIES - 1:
+                time.sleep(2**attempt)
+    raise RuntimeError("Embedding generation failed after all retries") from last_error
+
+
+def _upserted_count(response: Any) -> int:
+    if hasattr(response, "get"):
+        return int(response.get("upserted_count", 0))
+    return int(getattr(response, "upserted_count", 0))
+
+
+def _build_vectors(
+    docs: list[dict[str, Any]],
+    embeddings: list[list[float]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": vector_id_for_doc(doc),
+            "values": embedding,
+            "metadata": metadata_for_doc(doc),
+        }
+        for doc, embedding in zip(docs, embeddings)
+    ]
+
+
+def _verify_namespace_ids(
+    index: Any,
+    namespace: str,
+    expected_ids: set[str],
+) -> None:
+    actual_ids: set[str] = set()
+    for attempt in range(VERIFY_ATTEMPTS):
+        actual_ids = list_namespace_ids(index, namespace)
+        if actual_ids == expected_ids:
+            return
+        if attempt < VERIFY_ATTEMPTS - 1:
+            time.sleep(VERIFY_DELAY_SECONDS)
+    missing = len(expected_ids - actual_ids)
+    stale = len(actual_ids - expected_ids)
+    raise RuntimeError(
+        f"Namespace verification failed for {namespace}: "
+        f"expected={len(expected_ids)} actual={len(actual_ids)} "
+        f"missing={missing} stale={stale}"
+    )
+
+
+def process_and_embed_source(
+    config: dict[str, str],
+    *,
+    index: Any,
+    embedding_client: Any,
+    state: dict[str, Any],
+    state_path: Path = STATE_PATH,
+    force_refresh: bool = FORCE_REFRESH,
+) -> dict[str, Any]:
     input_json = config["input_json"]
     namespace = config["namespace"]
-    
     print(f"\n--- Processing Source: {input_json} -> Namespace: {namespace} ---")
 
-    # 1. Load docs for this source
-    try:
-        with open(input_json, "r", encoding="utf-8") as f:
-            docs_to_process = json.load(f)
-        if not docs_to_process:
-            print("⚠️ Input file is empty. Nothing to process for this source.")
-            return 0 # Return 0 vectors processed
-        print(f"✅ Loaded {len(docs_to_process)} document chunks from {input_json}.")
-    except FileNotFoundError:
-        print(f"❌ Error: Input file not found at '{input_json}'. Skipping this source.")
-        return 0
-    except json.JSONDecodeError:
-        print(f"❌ Error: Could not decode JSON from '{input_json}'. Skipping this source.")
-        return 0
+    docs = _load_docs(input_json)
+    desired_ids = [vector_id_for_doc(doc) for doc in docs]
+    desired_id_set = set(desired_ids)
+    if len(desired_id_set) != len(desired_ids):
+        raise RuntimeError(f"Duplicate vector IDs generated for namespace {namespace}")
 
-    # 2. Clear the target namespace if requested
-    if CLEAR_NAMESPACE:
-        clear_namespace(namespace)
+    fingerprint = source_fingerprint(docs)
+    stats_count = _namespace_vector_count(index.describe_index_stats(), namespace)
+    live_ids = list_namespace_ids(index, namespace)
+    prior = state["sources"].get(namespace, {})
+
+    state_matches = (
+        prior.get("fingerprint") == fingerprint
+        and prior.get("vector_count") == len(docs)
+        and prior.get("embedding_model") == EMBEDDING_MODEL
+        and prior.get("pipeline_version") == PIPELINE_VERSION
+    )
+    live_matches = stats_count == len(docs) and live_ids == desired_id_set
+    if not force_refresh and state_matches and live_matches:
+        print(
+            f"Unchanged: {namespace} already has the expected {len(docs)} vectors; "
+            "skipping embeddings and writes."
+        )
+        return {
+            "namespace": namespace,
+            "status": "skipped",
+            "vector_count": len(docs),
+            "upserted_count": 0,
+            "deleted_count": 0,
+        }
+
+    if force_refresh:
+        reason = "forced refresh"
+    elif not state_matches:
+        reason = "source fingerprint/state changed or missing"
     else:
-        print("ℹ️ CLEAR_NAMESPACE not set; skipping namespace wipe.")
+        reason = "live namespace drift"
+    print(f"Refreshing {namespace}: {reason}.")
 
-    # 3. Batch process and upsert
-    total_vectors_upserted = 0
-    batch_size = 100
-    for i in range(0, len(docs_to_process), batch_size):
-        batch_docs = docs_to_process[i:i + batch_size]
-        texts = [doc["text"] for doc in batch_docs]
-        
-        embeddings = generate_embedding(texts)
-        if embeddings is None:
-            print(f"   Skipping batch {i//batch_size + 1} due to embedding failure.")
-            continue
+    total_upserted = 0
+    for offset in range(0, len(docs), EMBEDDING_BATCH_SIZE):
+        batch_docs = docs[offset : offset + EMBEDDING_BATCH_SIZE]
+        embeddings = _generate_embeddings(
+            embedding_client,
+            [doc["text"] for doc in batch_docs],
+        )
+        vectors = _build_vectors(batch_docs, embeddings)
+        response = index.upsert(vectors=vectors, namespace=namespace)
+        upserted_count = _upserted_count(response)
+        if upserted_count != len(vectors):
+            raise RuntimeError(
+                f"Pinecone upsert stored {upserted_count}/{len(vectors)} vectors "
+                f"for {namespace} batch {offset // EMBEDDING_BATCH_SIZE + 1}"
+            )
+        total_upserted += upserted_count
+        print(
+            f"Upserted batch {offset // EMBEDDING_BATCH_SIZE + 1}: "
+            f"stored {upserted_count} vectors in {namespace}."
+        )
 
-        vectors = []
-        for doc, embedding in zip(batch_docs, embeddings):
-            # --- UPDATED METADATA CREATION ---
-            metadata = {
-                "text": doc.get("text", ""),
-                "filename": doc.get("filename", "unknown"),
-                "doc_title": doc.get("doc_title", "Unknown Title"),
-                "section_heading": doc.get("section_heading", "Unknown Section"),
-                "source_path": doc.get("source_path", "unknown"),
-                "chunk_id": doc.get("chunk_id", -1),
-                "chunk_index": doc.get("chunk_index", doc.get("chunk_id", -1)),
-                "doc_id": doc.get("doc_id"),
-                "doc_last_modified": doc.get("doc_last_modified"),
-                "source_type": doc.get("source_type"),
-                "source_url": doc.get("source_url"),
-                "content_hash": content_hash(doc.get("text", "")),
-                # Add YIP fields using .get() - they will be None if not present
-                "yip_status": doc.get("yip_status"),
-                "yip_number": doc.get("yip_number"),
-                "yip_created": doc.get("yip_created"),
-                "yip_discussion_link": doc.get("yip_discussion_link")
-            }
-            # --- NEW: Filter out keys with None values ---
-            # Pinecone doesn't accept None, so we remove these keys entirely.
-            final_metadata = {k: v for k, v in metadata.items() if v is not None}
-            
-            id_base = final_metadata.get("doc_id") or final_metadata.get("source_path", "unknown")
-            sanitized_path = sanitize_for_id(str(id_base))
-            sanitized_chunk_id = sanitize_for_id(str(final_metadata.get("chunk_index", final_metadata.get("chunk_id", -1))))
-            
-            vectors.append({
-                "id": f"{sanitized_path}-{sanitized_chunk_id}", 
-                "values": embedding,
-                "metadata": final_metadata # Use the filtered metadata
-            })
-        
-        try:
-            upsert_response = index.upsert(vectors=vectors, namespace=namespace)
-            upserted_count = upsert_response.get('upserted_count', 0)
-            total_vectors_upserted += upserted_count
-            print(f"✅ Upserted batch {i//batch_size + 1}: Stored {upserted_count} vectors into namespace '{namespace}'.")
-        except PineconeApiException as e:
-            print(f"❌ Pinecone API Error during upsert in batch {i//batch_size + 1}: {e}")
-        except Exception as e:
-            print(f"❌ An unexpected error during upsert in batch {i//batch_size + 1}: {e}")
-        
-        time.sleep(0.2)
-    
-    return total_vectors_upserted
+    stale_ids = sorted(live_ids - desired_id_set)
+    for offset in range(0, len(stale_ids), DELETE_BATCH_SIZE):
+        batch_ids = stale_ids[offset : offset + DELETE_BATCH_SIZE]
+        index.delete(ids=batch_ids, namespace=namespace)
 
-# --- Main Execution Block ---
+    _verify_namespace_ids(index, namespace, desired_id_set)
+    state["sources"][namespace] = {
+        "embedding_model": EMBEDDING_MODEL,
+        "fingerprint": fingerprint,
+        "pipeline_version": PIPELINE_VERSION,
+        "vector_count": len(docs),
+    }
+    save_state(state, state_path)
+    print(
+        f"Verified {namespace}: vectors={len(docs)} "
+        f"upserted={total_upserted} deleted={len(stale_ids)}."
+    )
+    return {
+        "namespace": namespace,
+        "status": "refreshed",
+        "vector_count": len(docs),
+        "upserted_count": total_upserted,
+        "deleted_count": len(stale_ids),
+    }
+
+
+def _build_clients() -> tuple[Any, Any]:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is required")
+    if not PINECONE_API_KEY:
+        raise RuntimeError("PINECONE_API_KEY is required")
+    if not PINECONE_INDEX_NAME:
+        raise RuntimeError("PINECONE_INDEX_NAME is required")
+
+    embedding_client = OpenAI(api_key=OPENAI_API_KEY)
+    pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
+    if PINECONE_HOST:
+        index = pinecone_client.Index(PINECONE_INDEX_NAME, host=PINECONE_HOST)
+    else:
+        index = pinecone_client.Index(PINECONE_INDEX_NAME)
+    index.describe_index_stats()
+    return embedding_client, index
+
+
+def _retire_namespaces(index: Any) -> None:
+    stats = index.describe_index_stats()
+    for namespace in RETIRED_NAMESPACES:
+        if _namespace_vector_count(stats, namespace) > 0:
+            print(f"Deleting retired namespace {namespace}.")
+            index.delete(delete_all=True, namespace=namespace)
+
+
+def main() -> None:
+    embedding_client, index = _build_clients()
+    state = load_state()
+    _retire_namespaces(index)
+
+    results = [
+        process_and_embed_source(
+            config,
+            index=index,
+            embedding_client=embedding_client,
+            state=state,
+        )
+        for config in EMBEDDING_SOURCES.values()
+    ]
+    refreshed = sum(result["status"] == "refreshed" for result in results)
+    skipped = sum(result["status"] == "skipped" for result in results)
+    upserted = sum(result["upserted_count"] for result in results)
+    deleted = sum(result["deleted_count"] for result in results)
+    print(
+        "\nEmbedding sync complete: "
+        f"refreshed_sources={refreshed} skipped_sources={skipped} "
+        f"upserted={upserted} deleted={deleted}."
+    )
+
+
 if __name__ == "__main__":
-    grand_total_upserted = 0
-
-    if CLEAR_NAMESPACE:
-        for namespace in RETIRED_NAMESPACES:
-            clear_namespace(namespace)
-    
-    # Loop through the configured sources and process each one
-    for source_name, config in EMBEDDING_SOURCES.items():
-        grand_total_upserted += process_and_embed_source(config)
-
-    print("\n--- Summary ---")
-    print(f"✅ Process complete. Successfully stored a grand total of {grand_total_upserted} document chunks across all sources.")
+    main()

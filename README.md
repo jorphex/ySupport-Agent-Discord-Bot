@@ -20,6 +20,15 @@ The repo also contains:
 - transcript-fetch tooling for ticket review
 - an offline knowledge-gap worker for private internal reporting from support tickets
 
+Documentation ingestion:
+- `yearn_rag/update_docs.sh` is the tracked daily refresh entrypoint
+- successful source fingerprints are stored under `.cache/docs_ingestion/`
+- unchanged sources skip OpenAI embeddings and Pinecone writes only after the
+  live namespace count and exact vector IDs are verified
+- set `DOCS_INGESTION_FORCE_REFRESH=1` for an explicit full repair
+- refreshes upsert current vectors before removing stale IDs, so a provider
+  failure does not empty the live namespace
+
 Runtime boundaries:
 - production support turns use `codex_support_exec`
 - `support_boundary.py` is the live outer classifier shared with explicit replay

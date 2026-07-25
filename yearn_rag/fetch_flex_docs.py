@@ -184,9 +184,15 @@ def render_markdown_document(*, title: str, source_url: str, body: str) -> str:
     )
 
 
-def write_markdown_file(path: Path, content: str) -> None:
+def write_markdown_file(path: Path, content: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.read_text(encoding="utf-8") == content:
+            return False
+    except FileNotFoundError:
+        pass
     path.write_text(content, encoding="utf-8")
+    return True
 
 
 def slug_from_url(url: str) -> str:
@@ -248,8 +254,9 @@ def fetch_all_targets(targets: Iterable[dict[str, str]]) -> None:
             content = convert_llms_index(url)
         else:
             content = convert_html_page(url)
-        write_markdown_file(output_path, content)
-        print(f"✅ Saved {url} -> {output_path.name}")
+        changed = write_markdown_file(output_path, content)
+        action = "Saved" if changed else "Unchanged"
+        print(f"✅ {action} {url} -> {output_path.name}")
 
 
 def _extract_simple_panel_markdown(html_text: str) -> str:

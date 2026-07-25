@@ -5,6 +5,7 @@ import tiktoken
 import frontmatter
 import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
 
 DOC_SOURCES = {
     "yearn": {
@@ -399,7 +400,9 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
     documents = []
     print(f"\n--- Processing documentation source: {source_dir} ---")
 
-    for root, _, files in os.walk(source_dir):
+    for root, dirs, files in os.walk(source_dir):
+        dirs.sort()
+        files.sort()
         for file in files:
             if file.endswith((".md", ".mdx")):
                 filepath = os.path.join(root, file)
@@ -596,9 +599,19 @@ def main():
 
         final_docs = processed_docs
 
-        with open(config["output_json"], "w", encoding="utf-8") as f:
-            json.dump(final_docs, f, indent=2, ensure_ascii=False)
-        print(f"✅ Saved {len(final_docs)} total chunks for '{source_name}' to {config['output_json']}.")
+        output_text = json.dumps(final_docs, indent=2, ensure_ascii=False) + "\n"
+        output_path = Path(config["output_json"])
+        try:
+            output_changed = output_path.read_text(encoding="utf-8") != output_text
+        except FileNotFoundError:
+            output_changed = True
+        if output_changed:
+            output_path.write_text(output_text, encoding="utf-8")
+        action = "Saved" if output_changed else "Unchanged"
+        print(
+            f"✅ {action} {len(final_docs)} total chunks for "
+            f"'{source_name}' in {config['output_json']}."
+        )
 
         for doc in final_docs:
             doc_id = doc.get("doc_id")
@@ -620,9 +633,25 @@ def main():
                     existing["source_url"] = candidate["source_url"]
 
     if link_map:
-        with open(LINK_MAP_OUTPUT, "w", encoding="utf-8") as f:
-            json.dump(sorted(link_map.values(), key=lambda d: d.get("doc_id", "")), f, indent=2, ensure_ascii=False)
-        print(f"✅ Saved doc link map to {LINK_MAP_OUTPUT}.")
+        link_map_text = (
+            json.dumps(
+                sorted(link_map.values(), key=lambda d: d.get("doc_id", "")),
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        link_map_path = Path(LINK_MAP_OUTPUT)
+        try:
+            link_map_changed = (
+                link_map_path.read_text(encoding="utf-8") != link_map_text
+            )
+        except FileNotFoundError:
+            link_map_changed = True
+        if link_map_changed:
+            link_map_path.write_text(link_map_text, encoding="utf-8")
+        action = "Saved" if link_map_changed else "Unchanged"
+        print(f"✅ {action} doc link map in {LINK_MAP_OUTPUT}.")
 
 if __name__ == "__main__":
     main()
