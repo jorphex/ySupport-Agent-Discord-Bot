@@ -1,0 +1,31 @@
+FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=8001 \
+    MCP_TRANSPORT=streamable-http \
+    ENABLE_REPO_CONTEXT=true \
+    REPO_CONTEXT_DB_PATH=/data/repo_context.sqlite3 \
+    REPO_CONTEXT_MANIFEST_PATH=/app/yearn_rag/repo_sources.json
+
+WORKDIR /app
+
+COPY requirements-mcp.lock .
+RUN pip install --no-cache-dir -r requirements-mcp.lock \
+    && groupadd --gid 10001 ysupport-mcp \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin ysupport-mcp
+
+COPY mcp_server.py tools_lib.py docs_repo_tools.py support_dashboard_tools.py ./
+COPY repo_context.py repo_context_build.py chain_access.py yearn_targets.py config.py ./
+COPY v1_vaults.json ./
+COPY yearn_rag/repo_sources.json ./yearn_rag/repo_sources.json
+
+USER 10001:10001
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import sys, urllib.error, urllib.request\ntry:\n urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8001/mcp', method='POST'), timeout=3)\nexcept urllib.error.HTTPError as exc:\n sys.exit(0 if exc.code == 401 else 1)\nexcept OSError:\n sys.exit(1)\nsys.exit(1)"]
+
+CMD ["python", "mcp_server.py"]

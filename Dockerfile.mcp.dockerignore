@@ -1,0 +1,16 @@
+**
+!Dockerfile.mcp
+!requirements-mcp.lock
+!mcp_server.py
+!tools_lib.py
+!docs_repo_tools.py
+!support_dashboard_tools.py
+!repo_context.py
+!repo_context_build.py
+!chain_access.py
+!yearn_targets.py
+!config.py
+!v1_vaults.json
+!yearn_rag/
+yearn_rag/**
+!yearn_rag/repo_sources.json

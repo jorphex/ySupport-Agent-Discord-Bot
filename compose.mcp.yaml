@@ -1,0 +1,41 @@
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    image: ysupport-mcp:locked
+    container_name: ysupport-mcp
+    restart: always
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./.cache/repo_context/repo_context.sqlite3:/data/repo_context.sqlite3:ro
+    environment:
+      MCP_SERVER_API_KEY: "${MCP_SERVER_API_KEY:?MCP_SERVER_API_KEY is required}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:?OPENAI_API_KEY is required}"
+      PINECONE_API_KEY: "${PINECONE_API_KEY:?PINECONE_API_KEY is required}"
+      PINECONE_INDEX_NAME: "${PINECONE_INDEX_NAME:?PINECONE_INDEX_NAME is required}"
+      ALCHEMY_KEY: "${ALCHEMY_KEY:-}"
+      ETHEREUM_RPC_URL: "${ETHEREUM_RPC_URL:-}"
+      BASE_RPC_URL: "${BASE_RPC_URL:-}"
+      POLYGON_RPC_URL: "${POLYGON_RPC_URL:-}"
+      ARBITRUM_RPC_URL: "${ARBITRUM_RPC_URL:-}"
+      OPTIMISM_RPC_URL: "${OPTIMISM_RPC_URL:-}"
+      SONIC_RPC_URL: "${SONIC_RPC_URL:-}"
+      KATANA_RPC_URL: "${KATANA_RPC_URL:-}"
+      SUPPORT_DASHBOARD_BASE_URL: "${SUPPORT_DASHBOARD_BASE_URL:-}"
+      SUPPORT_DASHBOARD_VERIFY_SSL: "${SUPPORT_DASHBOARD_VERIFY_SSL:-false}"
+      SUPPORT_DASHBOARD_TIMEOUT_SECONDS: "${SUPPORT_DASHBOARD_TIMEOUT_SECONDS:-20}"
+      REPO_CONTEXT_TOP_K: "${REPO_CONTEXT_TOP_K:-6}"
+      REPO_CONTEXT_MAX_SNIPPET_CHARS: "${REPO_CONTEXT_MAX_SNIPPET_CHARS:-1800}"
+      REPO_CONTEXT_INCLUDE_UI: "${REPO_CONTEXT_INCLUDE_UI:-false}"
+      REPO_CONTEXT_MAX_AGE_HOURS: "${REPO_CONTEXT_MAX_AGE_HOURS:-168}"
+      REPO_CONTEXT_REQUIRE_FRESH: "${REPO_CONTEXT_REQUIRE_FRESH:-true}"

@@ -37,23 +37,22 @@ Recommended shape:
 - keep a dedicated bot `CODEX_HOME` for generated Codex config
 - keep bot auth in service-owned state rather than exposing an operator's home directory
 
-The MCP listener is host-local and bearer-authenticated. Keep the existing
-`MCP_SERVER_API_KEY` in `.env`, and publish its port only on loopback:
+The MCP listener is host-local and bearer-authenticated. Its dedicated image
+pins the base image and complete Python dependency graph, contains only the MCP
+runtime, runs read-only as a non-root user, and receives only its explicitly
+listed provider settings. Keep the existing `MCP_SERVER_API_KEY` in `.env`.
 
 ```sh
-docker run -d --restart always --name ysupport-mcp \
-  --env-file .env \
-  -e MCP_PORT=8001 \
-  -e MCP_HOST=0.0.0.0 \
-  -e MCP_TRANSPORT=streamable-http \
-  -p 127.0.0.1:8001:8001 \
-  -v "$(pwd):/app" \
-  ysupport python mcp_server.py
+docker compose -f compose.mcp.yaml build
+docker compose -f compose.mcp.yaml up -d
+docker compose -f compose.mcp.yaml ps
 ```
 
-Do not publish MCP as `-p 8001:8001`; that exposes the listener on every host
-interface. HTTP requests without the configured bearer token are rejected
-before tool execution.
+`compose.mcp.yaml` publishes only `127.0.0.1:8001`, mounts only the generated
+repo-context SQLite database read-only, and does not pass Discord or Telegram
+credentials into MCP. HTTP requests without the configured bearer token are
+rejected before tool execution. Rebuild after dependency or MCP source changes;
+Compose retains the prior image locally for rollback.
 
 Important:
 - do not point `TICKET_EXECUTION_CODEX_HOME` at your normal `~/.codex`
