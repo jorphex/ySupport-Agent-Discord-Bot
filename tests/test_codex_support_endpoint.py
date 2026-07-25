@@ -1068,7 +1068,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "request['channel_type'],"
             "request['constraints']['no_file_writes'],"
             "'-m' in sys.argv,"
-            "'gpt-5.4' in sys.argv,"
+            "'gpt-5.6-sol' in sys.argv,"
             "'model_reasoning_effort=\"medium\"' in ' '.join(sys.argv),"
             "'--json' in sys.argv,"
             "'--output-schema' in sys.argv,"
@@ -1111,7 +1111,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     endpoint = CodexSupportTicketExecutionJsonEndpoint(
                         codex_command=[sys.executable, "-c", fake_codex],
-                        model="gpt-5.4",
+                        model="gpt-5.6-sol",
                         reasoning_effort="medium",
                         repo_root=Path(__file__).resolve().parents[1],
                         codex_home=bot_home,

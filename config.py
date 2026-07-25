@@ -216,7 +216,8 @@ TICKET_EXECUTION_CODEX_COMMAND = shlex.split(
     os.getenv("TICKET_EXECUTION_CODEX_COMMAND", "")
 )
 TICKET_EXECUTION_CODEX_MODEL = (
-    os.getenv("TICKET_EXECUTION_CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+    os.getenv("TICKET_EXECUTION_CODEX_MODEL", "gpt-5.6-sol").strip()
+    or "gpt-5.6-sol"
 )
 TICKET_EXECUTION_CODEX_REASONING_EFFORT = os.getenv(
     "TICKET_EXECUTION_CODEX_REASONING_EFFORT",

@@ -126,7 +126,7 @@ class ConfigSummaryTests(unittest.TestCase):
         try:
             config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
+            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.6-sol"
             config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = "medium"
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
 
@@ -140,7 +140,7 @@ class ConfigSummaryTests(unittest.TestCase):
 
         self.assertIn("primary=codex_support_exec", summary)
         self.assertIn("fallback=local", summary)
-        self.assertIn("codex_model=gpt-5.4", summary)
+        self.assertIn("codex_model=gpt-5.6-sol", summary)
         self.assertIn("codex_reasoning=medium", summary)
         self.assertIn(f"state_root={TEST_STATE_ROOT}", summary)
         self.assertIn(f"codex_session_dir={TEST_STATE_ROOT}/sessions", summary)
@@ -531,7 +531,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
             config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
             config.TICKET_EXECUTION_CODEX_COMMAND = ["codex", "exec", "--json"]
-            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.4"
+            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.6-sol"
             config.TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = [["codex", "exec"]]
             config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
             endpoint = build_ticket_execution_json_endpoint()
@@ -545,7 +545,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
 
         self.assertIsInstance(endpoint, CodexSupportTicketExecutionJsonEndpoint)
         self.assertEqual(endpoint.codex_command[:2], ["codex", "exec"])
-        self.assertEqual(endpoint.model, "gpt-5.4")
+        self.assertEqual(endpoint.model, "gpt-5.6-sol")
 
     def test_build_local_endpoint_requires_explicit_executor(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
