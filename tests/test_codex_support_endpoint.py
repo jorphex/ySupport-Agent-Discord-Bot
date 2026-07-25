@@ -27,7 +27,6 @@ from ticket_investigation.codex_support_endpoint import (
     CodexSupportExecutionOutput,
     CodexSupportTicketExecutionJsonEndpoint,
     _download_attachment_image,
-    _maybe_prefer_documentation_answer,
     _parse_codex_support_execution_output,
     _prepare_support_request_attachments,
     _read_attachment_image_body,
@@ -940,6 +939,18 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not mention handoff if public evidence already answers the main question.", prompt_text)
         self.assertIn("Use `current_turn_source`", prompt_text)
         self.assertIn("If `current_turn_source` is `internal_team`", prompt_text)
+        self.assertIn(
+            "synthesize a concise direct answer from the Yearn documentation excerpts",
+            prompt_text,
+        )
+        self.assertIn(
+            "Do not expose retrieval metadata",
+            prompt_text,
+        )
+        self.assertNotIn(
+            "documentation tool already returns a complete answer",
+            prompt_text,
+        )
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
@@ -1688,7 +1699,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "support-ok",
         )
 
-    def test_parse_codex_support_execution_output_captures_documentation_answer(self) -> None:
+    def test_parse_codex_support_execution_output_uses_only_final_answer(self) -> None:
         stdout_text = "\n".join(
             [
                 json.dumps(
@@ -1717,160 +1728,4 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         execution_output = _parse_codex_support_execution_output(stdout_text)
-        self.assertEqual(
-            execution_output.documentation_answers,
-            ["Docs answer\n\n- bullet"],
-        )
         self.assertIn('"answer":"final"', execution_output.final_response_text)
-
-    def test_maybe_prefer_documentation_answer_for_docs_only_turn(self) -> None:
-        support_request = SupportTurnRequest(
-            current_user_message="What is Flex?",
-            recent_transcript=[],
-            channel_type="public",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="test",
-            initial_button_intent=None,
-            requested_intent=None,
-            evidence={},
-            support_state={},
-            constraints={},
-        )
-        support_result = SupportTurnResult(
-            answer="Docs answer - bullet",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked docs",
-            used_tools=["ysupport_mcp.search_documentation", "web_search"],
-        )
-        preferred = _maybe_prefer_documentation_answer(
-            support_result,
-            support_request,
-            ["Docs answer\n\n- bullet"],
-        )
-        self.assertEqual(preferred.answer, "Docs answer\n\n- bullet")
-
-    def test_maybe_prefer_documentation_answer_accepts_dot_prefixed_docs_tool(self) -> None:
-        support_request = SupportTurnRequest(
-            current_user_message="What is Flex?",
-            recent_transcript=[],
-            channel_type="public",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="test",
-            initial_button_intent=None,
-            requested_intent=None,
-            evidence={},
-            support_state={},
-            constraints={},
-        )
-        support_result = SupportTurnResult(
-            answer="Docs answer - bullet",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked docs",
-            used_tools=["mcp__ysupport.search_documentation", "web_search"],
-        )
-        preferred = _maybe_prefer_documentation_answer(
-            support_result,
-            support_request,
-            ["Docs answer\n\n- bullet"],
-        )
-        self.assertEqual(preferred.answer, "Docs answer\n\n- bullet")
-
-    def test_maybe_prefer_documentation_answer_does_not_override_non_docs_tool_mix(self) -> None:
-        support_request = SupportTurnRequest(
-            current_user_message="Why did this tx fail?",
-            recent_transcript=[],
-            channel_type="ticket",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="test",
-            initial_button_intent=None,
-            requested_intent="investigate_issue",
-            evidence={},
-            support_state={},
-            constraints={},
-        )
-        support_result = SupportTurnResult(
-            answer="investigation answer",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked docs and onchain",
-            used_tools=["ysupport_mcp.search_documentation", "ysupport_mcp.support_dashboard_harvests"],
-        )
-        preferred = _maybe_prefer_documentation_answer(
-            support_result,
-            support_request,
-            ["Docs answer\n\n- bullet"],
-        )
-        self.assertEqual(preferred.answer, "investigation answer")
-
-    def test_maybe_prefer_documentation_answer_chooses_best_matching_docs_payload(self) -> None:
-        support_request = SupportTurnRequest(
-            current_user_message="What is Flex?",
-            recent_transcript=[],
-            channel_type="public",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="test",
-            initial_button_intent=None,
-            requested_intent=None,
-            evidence={},
-            support_state={},
-            constraints={},
-        )
-        support_result = SupportTurnResult(
-            answer=(
-                "Flex is a fixed-rate money market.\n\nCompared with Aave:\n\n"
-                "- Aave uses variable rates.\n- Flex uses fixed rates."
-            ),
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked docs",
-            used_tools=["ysupport_mcp.search_documentation", "web_search"],
-        )
-        preferred = _maybe_prefer_documentation_answer(
-            support_result,
-            support_request,
-            [
-                "Unrelated no-context docs result",
-                "Flex is a fixed-rate money market.\n\nCompared with Aave:\n\n- Aave uses variable rates.\n- Flex uses fixed rates.",
-            ],
-        )
-        self.assertEqual(
-            preferred.answer,
-            "Flex is a fixed-rate money market.\n\nCompared with Aave:\n\n- Aave uses variable rates.\n- Flex uses fixed rates.",
-        )
-
-    def test_maybe_prefer_documentation_answer_keeps_model_answer_when_docs_candidates_do_not_match(self) -> None:
-        support_request = SupportTurnRequest(
-            current_user_message="What is Flex?",
-            recent_transcript=[],
-            channel_type="public",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="test",
-            initial_button_intent=None,
-            requested_intent=None,
-            evidence={},
-            support_state={},
-            constraints={},
-        )
-        support_result = SupportTurnResult(
-            answer="Flex is a fixed-rate money market with borrower-chosen rates.",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked docs",
-            used_tools=["ysupport_mcp.search_documentation", "web_search"],
-        )
-        preferred = _maybe_prefer_documentation_answer(
-            support_result,
-            support_request,
-            ["Completely different documentation payload about unrelated content."],
-        )
-        self.assertEqual(
-            preferred.answer,
-            "Flex is a fixed-rate money market with borrower-chosen rates.",
-        )

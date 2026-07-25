@@ -261,7 +261,11 @@ async def _fetch_raw_report_content(raw_url: str, *, max_chars: int) -> str:
     return raw_text
 
 
-async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
+async def _build_docs_context(
+    user_query: str,
+    *,
+    use_hyde: bool = True,
+) -> tuple[str, str, bool]:
     initial_retrieval_k = 15
     rerank_top_n = 8
     query_lower = user_query.lower()
@@ -271,21 +275,22 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
     if _should_include_flex_docs(query_lower):
         namespaces_to_query.append("flex-docs")
 
-    try:
-        hyde_prompt = (
-            f"You are a Yearn documentation expert. A user has asked: '{user_query}'.\n"
-            "Generate a concise, hypothetical answer..."
-        )
-        hyde_response = await _get_openai_async_client().chat.completions.create(
-            model=config.LLM_DOCS_HYDE_MODEL,
-            messages=[{"role": "system", "content": hyde_prompt}],
-            reasoning_effort=config.LLM_DOCS_HYDE_REASONING_EFFORT,
-        )
-        hypothetical_answer = hyde_response.choices[0].message.content.strip()
-        embedding_text = f"{user_query}\n\n{hypothetical_answer}"
-    except Exception as e:
-        logging.error(f"HyDE error: {e}")
-        embedding_text = user_query
+    embedding_text = user_query
+    if use_hyde:
+        try:
+            hyde_prompt = (
+                f"You are a Yearn documentation expert. A user has asked: '{user_query}'.\n"
+                "Generate a concise, hypothetical answer..."
+            )
+            hyde_response = await _get_openai_async_client().chat.completions.create(
+                model=config.LLM_DOCS_HYDE_MODEL,
+                messages=[{"role": "system", "content": hyde_prompt}],
+                reasoning_effort=config.LLM_DOCS_HYDE_REASONING_EFFORT,
+            )
+            hypothetical_answer = hyde_response.choices[0].message.content.strip()
+            embedding_text = f"{user_query}\n\n{hypothetical_answer}"
+        except Exception as e:
+            logging.error(f"HyDE error: {e}")
 
     try:
         response = await asyncio.to_thread(
@@ -368,7 +373,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
             all_matches.sort(key=lambda x: x.score, reverse=True)
             reranked_matches = all_matches[:rerank_top_n]
     else:
-        logging.info("[CoreTool:answer_from_docs] No matches found; proceeding with empty context.")
+        logging.info("[CoreTool:docs_context] No matches found; proceeding with empty context.")
 
     context_pieces = []
     yip_status_entries: List[str] = []
@@ -433,7 +438,7 @@ async def _build_docs_context(user_query: str) -> tuple[str, str, bool]:
         context_text = ""
 
     logging.info(
-        "[CoreTool:answer_from_docs] Built docs context. no_context=%s source_count=%s",
+        "[CoreTool:docs_context] Built docs context. no_context=%s source_count=%s",
         no_context,
         len(context_pieces),
     )
@@ -492,10 +497,35 @@ async def core_answer_from_docs(user_query: str) -> str:
     """
     logging.info(f"[CoreTool:answer_from_docs] Query: '{user_query}'")
     try:
-        context_text, yip_status_summary, no_context = await _build_docs_context(user_query)
+        context_text, yip_status_summary, no_context = await _build_docs_context(
+            user_query,
+            use_hyde=True,
+        )
     except RuntimeError as exc:
         return str(exc)
     return await _synthesize_docs_answer(user_query, context_text, yip_status_summary, no_context)
+
+
+async def core_search_docs_context(user_query: str) -> str:
+    """Return bounded, reranked Yearn docs context for a reasoning caller."""
+    logging.info("[CoreTool:search_docs_context] Query: '%s'", user_query)
+    try:
+        context_text, yip_status_summary, no_context = await _build_docs_context(
+            user_query,
+            use_hyde=False,
+        )
+    except RuntimeError as exc:
+        return str(exc)
+    if no_context:
+        return (
+            "No sufficiently relevant Yearn documentation context was found for "
+            "this query."
+        )
+
+    sections = ["Ranked Yearn documentation excerpts:", context_text]
+    if yip_status_summary:
+        sections.append(f"Relevant YIP status: {yip_status_summary}")
+    return "\n\n".join(sections)
 
 
 async def core_search_repo_context(

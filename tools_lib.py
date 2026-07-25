@@ -413,6 +413,10 @@ async def core_answer_from_docs(user_query: str) -> str:
     return await docs_repo_tools.core_answer_from_docs(user_query)
 
 
+async def core_search_docs_context(user_query: str) -> str:
+    return await docs_repo_tools.core_search_docs_context(user_query)
+
+
 async def core_search_repo_context(
     query: str,
     limit: Optional[int] = None,

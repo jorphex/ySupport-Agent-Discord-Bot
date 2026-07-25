@@ -1,7 +1,7 @@
 import tests as _test_environment  # noqa: F401
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import docs_repo_tools
 from docs_repo_tools import (
@@ -58,3 +58,81 @@ class DocsRepoToolsTests(unittest.TestCase):
                 ("flex-docs", "documentation"),
             ],
         )
+
+
+class DocsRepoToolsAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_context_search_disables_hyde_and_returns_sources(self) -> None:
+        with patch.object(
+            docs_repo_tools,
+            "_build_docs_context",
+            new=AsyncMock(
+                return_value=(
+                    "Source: Vaults (https://docs.yearn.fi/vaults)\nContent:\nVault text",
+                    "YIP-61: Implemented",
+                    False,
+                )
+            ),
+        ) as build_context:
+            result = await docs_repo_tools.core_search_docs_context("How do vaults work?")
+
+        build_context.assert_awaited_once_with(
+            "How do vaults work?",
+            use_hyde=False,
+        )
+        self.assertIn("Ranked Yearn documentation excerpts:", result)
+        self.assertIn("https://docs.yearn.fi/vaults", result)
+        self.assertIn("Relevant YIP status: YIP-61: Implemented", result)
+
+    async def test_direct_context_search_reports_no_relevant_context(self) -> None:
+        with patch.object(
+            docs_repo_tools,
+            "_build_docs_context",
+            new=AsyncMock(return_value=("", "", True)),
+        ):
+            result = await docs_repo_tools.core_search_docs_context("unknown topic")
+
+        self.assertEqual(
+            result,
+            "No sufficiently relevant Yearn documentation context was found for this query.",
+        )
+
+    async def test_direct_context_build_skips_hyde_call(self) -> None:
+        with (
+            patch.object(docs_repo_tools, "_get_openai_async_client") as async_client,
+            patch.object(
+                docs_repo_tools,
+                "_get_openai_sync_client",
+            ) as sync_client,
+        ):
+            sync_client.return_value.embeddings.create.side_effect = RuntimeError(
+                "stop after embedding boundary"
+            )
+            with (
+                self.assertLogs(level="ERROR"),
+                self.assertRaisesRegex(RuntimeError, "Error generating embedding"),
+            ):
+                await docs_repo_tools._build_docs_context(
+                    "direct query",
+                    use_hyde=False,
+                )
+
+        async_client.assert_not_called()
+
+    async def test_synthesized_answer_retains_hyde_path(self) -> None:
+        with (
+            patch.object(
+                docs_repo_tools,
+                "_build_docs_context",
+                new=AsyncMock(return_value=("context", "", False)),
+            ) as build_context,
+            patch.object(
+                docs_repo_tools,
+                "_synthesize_docs_answer",
+                new=AsyncMock(return_value="answer"),
+            ) as synthesize,
+        ):
+            result = await docs_repo_tools.core_answer_from_docs("question")
+
+        self.assertEqual(result, "answer")
+        build_context.assert_awaited_once_with("question", use_hyde=True)
+        synthesize.assert_awaited_once_with("question", "context", "", False)

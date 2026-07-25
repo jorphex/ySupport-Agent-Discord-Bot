@@ -61,7 +61,7 @@ async def search_documentation(
     ],
 ) -> str:
     """
-    Search Yearn documentation (Docs & YIPs) to answer technical or general questions.
+    Search Yearn documentation and YIPs for grounded source excerpts.
 
     Args:
         query: A clear, specific Yearn question or topic. Include the subject and key terms.
@@ -71,11 +71,12 @@ async def search_documentation(
               - "How does a Yearn V3 strategy report work?"
 
     Returns:
-        A concise answer with links and, when relevant, YIP status.
+        Ranked excerpts with source links and, when relevant, YIP status metadata.
+        Use these excerpts to answer the user's question; they are not a prewritten answer.
     """
     try:
         _require_api_key()
-        return await tools_lib.core_answer_from_docs(query)
+        return await tools_lib.core_search_docs_context(query)
     except Exception as e:
         logging.error(f"Error in search_documentation: {e}")
         return f"Error querying documentation: {str(e)}"
