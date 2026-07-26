@@ -1008,6 +1008,26 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             prompt_text,
         )
 
+    def test_codex_support_prompt_leads_ambiguous_bug_intake_with_security_path(
+        self,
+    ) -> None:
+        prompt_text = _codex_support_prompt(
+            support_request_path=Path("support_request.json"),
+            response_schema_path=Path("support_response_schema.json"),
+        )
+
+        security_path_index = prompt_text.index(
+            "begin the reply with https://github.com/yearn/yearn-security/blob/master/SECURITY.md"
+        )
+        product_intake_index = prompt_text.index(
+            "Only after that, offer to accept ordinary product-bug details."
+        )
+        self.assertLess(security_path_index, product_intake_index)
+        self.assertIn(
+            "Do not stop or request human handoff solely because the user used generic bug-report wording.",
+            prompt_text,
+        )
+
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
         original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
