@@ -16,6 +16,21 @@ from state import (
 )
 
 
+def is_ticket_contributor(user: discord.abc.User) -> bool:
+    contributor_role_id = config.TICKET_CONTRIBUTOR_ROLE_ID
+    if contributor_role_id is None:
+        return False
+    roles = getattr(user, "roles", None) or []
+    return any(getattr(role, "id", None) == contributor_role_id for role in roles)
+
+
+def _is_ticket_stop_staff(user: discord.abc.User) -> bool:
+    guild_permissions = getattr(user, "guild_permissions", None)
+    return is_ticket_contributor(user) or bool(
+        getattr(guild_permissions, "administrator", False)
+    )
+
+
 class _TicketOwnerView(View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         channel_id = interaction.channel_id
@@ -151,6 +166,33 @@ class InitialInquiryView(_TicketOwnerView):
 class StopBotView(_TicketOwnerView):
     def __init__(self, *, timeout=None):
         super().__init__(timeout=timeout)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        channel_id = interaction.channel_id
+        if channel_id is not None:
+            hydrate_ticket_state(channel_id)
+        owner_user_id = (
+            ticket_owner_user_id_by_channel.get(channel_id)
+            if channel_id is not None
+            else None
+        )
+        if (
+            owner_user_id is not None
+            and interaction.user.id == owner_user_id
+        ) or _is_ticket_stop_staff(interaction.user):
+            return True
+        message = (
+            "Only the ticket owner or support team can stop the bot."
+            if owner_user_id is not None
+            else (
+                "I couldn't verify the ticket owner yet. Send one message in this "
+                "ticket, then try the button again. Support team members can still "
+                "use this control."
+            )
+        )
+        if not interaction.response.is_done():
+            await interaction.response.send_message(message, ephemeral=True)
+        return False
 
     @button(label="Stop Bot", style=discord.ButtonStyle.secondary, custom_id="stop_bot_button")
     async def stop_button_callback(self, interaction: discord.Interaction, button: Button):

@@ -95,7 +95,7 @@ from ticket_investigation.executor import (
     TicketExecutionHooks,
     TransportTicketInvestigationExecutor,
 )
-from views import InitialInquiryView, StopBotView
+from views import InitialInquiryView, StopBotView, is_ticket_contributor
 from utils import send_long_message
 
 
@@ -678,11 +678,7 @@ def _build_ticket_run_context(
 
 
 def _is_contributor_member(author: discord.abc.User) -> bool:
-    contributor_role_id = config.TICKET_CONTRIBUTOR_ROLE_ID
-    if contributor_role_id is None:
-        return False
-    roles = getattr(author, "roles", None) or []
-    return any(getattr(role, "id", None) == contributor_role_id for role in roles)
+    return is_ticket_contributor(author)
 
 
 def _normalize_contributor_override_prompt(text: str) -> str | None:

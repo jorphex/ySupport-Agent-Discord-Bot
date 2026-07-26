@@ -198,7 +198,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attachments[0]["attachment_id"], 456)
         self.assertEqual(attachments[0]["source_message_id"], 789)
 
-    async def test_persistent_ticket_views_allow_only_known_owner(self) -> None:
+    async def test_persistent_ticket_views_separate_intake_and_stop_authority(
+        self,
+    ) -> None:
         channel_id = 194
 
         class _FakeInteractionResponse:
@@ -211,25 +213,61 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             async def send_message(self, message: str, *, ephemeral: bool) -> None:
                 self.messages.append((message, ephemeral))
 
-        def interaction(user_id: int):
+        def interaction(
+            user_id: int,
+            *,
+            contributor: bool = False,
+            administrator: bool = False,
+        ):
             return SimpleNamespace(
                 channel_id=channel_id,
-                user=SimpleNamespace(id=user_id),
+                user=SimpleNamespace(
+                    id=user_id,
+                    roles=(
+                        [SimpleNamespace(id=config.TICKET_CONTRIBUTOR_ROLE_ID)]
+                        if contributor
+                        else []
+                    ),
+                    guild_permissions=SimpleNamespace(
+                        administrator=administrator,
+                    ),
+                ),
                 response=_FakeInteractionResponse(),
             )
 
         ticket_owner_user_id_by_channel[channel_id] = 777
         try:
             owner_interaction = interaction(777)
-            other_interaction = interaction(888)
+            contributor_interaction = interaction(888, contributor=True)
+            administrator_interaction = interaction(999, administrator=True)
+            other_interaction = interaction(111)
 
             self.assertTrue(
                 await InitialInquiryView().interaction_check(owner_interaction)
             )
+            self.assertFalse(
+                await InitialInquiryView().interaction_check(
+                    contributor_interaction
+                )
+            )
+            self.assertTrue(
+                await StopBotView().interaction_check(owner_interaction)
+            )
+            self.assertTrue(
+                await StopBotView().interaction_check(contributor_interaction)
+            )
+            self.assertTrue(
+                await StopBotView().interaction_check(administrator_interaction)
+            )
             self.assertFalse(await StopBotView().interaction_check(other_interaction))
             self.assertEqual(
                 other_interaction.response.messages,
-                [("Only the ticket owner can use these controls.", True)],
+                [
+                    (
+                        "Only the ticket owner or support team can stop the bot.",
+                        True,
+                    )
+                ],
             )
         finally:
             ticket_owner_user_id_by_channel.pop(channel_id, None)
@@ -259,6 +297,19 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Send one message", fake_interaction.response.messages[0][0])
         self.assertTrue(fake_interaction.response.messages[0][1])
+
+        administrator_interaction = SimpleNamespace(
+            channel_id=channel_id,
+            user=SimpleNamespace(
+                id=888,
+                roles=[],
+                guild_permissions=SimpleNamespace(administrator=True),
+            ),
+            response=_FakeInteractionResponse(),
+        )
+        self.assertTrue(
+            await StopBotView().interaction_check(administrator_interaction)
+        )
 
     def test_build_discord_intents_enables_expected_intents(self) -> None:
         intents = _build_discord_intents()
