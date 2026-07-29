@@ -814,7 +814,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "answer": "  Here is the answer.  ",
                     "requires_human_handoff": True,
-                    "handoff_reason": "  needs strategist confirmation  ",
+                    "handoff_reason": "  needs private internal strategist confirmation  ",
                     "evidence_summary": "  Checked the docs and repo. ",
                     "used_tools": [
                         "shell",
@@ -828,12 +828,118 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         verified = verify_support_turn_result(raw_result, request)
         self.assertEqual(verified.answer, "Here is the answer.")
-        self.assertEqual(verified.handoff_reason, "needs strategist confirmation")
+        self.assertEqual(
+            verified.handoff_reason,
+            "needs private internal strategist confirmation",
+        )
         self.assertEqual(verified.evidence_summary, "Checked the docs and repo.")
         self.assertEqual(
             verified.used_tools,
             ["shell", "ysupport_mcp.search_vaults", "mcp__ysupport__search_documentation"],
         )
+
+    def test_verify_support_turn_result_downgrades_generic_human_request(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="I want a human to look at this.",
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="investigate_issue",
+            requested_intent="investigate_issue",
+            evidence={},
+            support_state={"human_handoff_active": False},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer=(
+                "The transaction is still pending and has not reverted. "
+                "A human can review it too."
+            ),
+            requires_human_handoff=True,
+            handoff_reason="The user asked for human review.",
+            evidence_summary="Checked the transaction status.",
+            used_tools=["ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertFalse(verified.requires_human_handoff)
+        self.assertIsNone(verified.handoff_reason)
+        self.assertEqual(
+            verified.answer,
+            "The transaction is still pending and has not reverted.",
+        )
+
+    def test_verify_support_turn_result_downgrades_generic_moderator_request(self) -> None:
+        request = SupportTurnRequest(
+            current_user_message="I need a moderator to review this.",
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="other_free_form",
+            requested_intent="other_free_form",
+            evidence={},
+            support_state={"human_handoff_active": False},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer=(
+                "Please finish the documented verification flow first. "
+                "A moderator can review this afterward."
+            ),
+            requires_human_handoff=True,
+            handoff_reason="The user asked for moderator review.",
+            evidence_summary="Checked the documented verification process.",
+            used_tools=["ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertFalse(verified.requires_human_handoff)
+        self.assertIsNone(verified.handoff_reason)
+        self.assertNotIn("moderator", verified.answer.lower())
+
+    def test_verify_support_turn_result_allows_concrete_moderator_access_action(
+        self,
+    ) -> None:
+        request = SupportTurnRequest(
+            current_user_message=(
+                "I completed verification and restarted Discord, "
+                "but I still cannot see the general channel."
+            ),
+            recent_transcript=[],
+            channel_type="ticket",
+            channel_id=1,
+            project_context="yearn",
+            workflow_name="tests.verify",
+            initial_button_intent="other_free_form",
+            requested_intent="other_free_form",
+            evidence={},
+            support_state={"human_handoff_active": False},
+            constraints={"allowed_tools": ["ysupport_mcp"]},
+        )
+        result = SupportTurnResult(
+            answer=(
+                "The documented verification and client refresh steps are complete. "
+                "A moderator must now inspect the account's channel access."
+            ),
+            requires_human_handoff=True,
+            handoff_reason=(
+                "A moderator access change is required after the documented "
+                "verification steps were exhausted."
+            ),
+            evidence_summary="Checked the documented verification process.",
+            used_tools=["ysupport_mcp"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertTrue(verified.requires_human_handoff)
+        self.assertIn("moderator access", verified.handoff_reason or "")
 
     def test_verify_support_turn_result_accepts_dot_prefixed_ysupport_mcp_tools(self) -> None:
         request = SupportTurnRequest(
@@ -993,6 +1099,14 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Routine support: concise.", prompt_text)
         self.assertIn("Investigations and report triage: enough prose", prompt_text)
         self.assertIn("Do not mention handoff if public evidence already answers the main question.", prompt_text)
+        self.assertIn(
+            "exhaust the relevant available documentation, live-data, repository, web, and image evidence",
+            prompt_text,
+        )
+        self.assertIn(
+            "does not by itself justify handoff",
+            prompt_text,
+        )
         self.assertIn("Use `current_turn_source`", prompt_text)
         self.assertIn("If `current_turn_source` is `internal_team`", prompt_text)
         self.assertIn(

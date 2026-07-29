@@ -46,7 +46,6 @@ from ysupport import (
     _guardrail_tripwire_reply,
     _maybe_recover_runtime_stopped_ticket_for_message,
     _normalize_contributor_override_prompt,
-    _outer_moderator_access_reply,
     _outer_support_boundary_reply,
 )
 
@@ -328,12 +327,6 @@ class RoutingTests(unittest.TestCase):
             _guardrail_tripwire_reply(exc),
             "Your request could not be processed due to input checks.",
         )
-
-    def test_outer_moderator_access_reply_detects_discord_access_issue(self) -> None:
-        reply = _outer_moderator_access_reply(
-            "I finished verification but still cannot access the Discord."
-        )
-        self.assertEqual(reply, "A moderator needs to check this.")
 
     def test_select_starting_agent_uses_data_button_intent(self) -> None:
         context = BotRunContext(

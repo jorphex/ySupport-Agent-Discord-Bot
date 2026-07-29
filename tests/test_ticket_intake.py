@@ -7,9 +7,11 @@ from unittest.mock import patch
 import discord
 
 import config
+from handoff import TelegramSentMessage
 import tools_lib
 from state import (
     BotRunContext,
+    TicketInvestigationJob,
     clear_team_handoff_notice,
     clear_ticket_investigation_job,
     conversation_threads,
@@ -662,17 +664,39 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             stopped_channels.discard(channel_id)
             clear_ticket_investigation_job(channel_id)
 
-    async def test_process_ticket_message_short_circuits_moderator_access_before_executor(self) -> None:
+    async def test_access_handoff_runs_executor_and_retains_reply_bridge(self) -> None:
         channel_id = 66
         fake_channel = _FakeDiscordChannel(channel_id)
 
-        class _FailingExecutor:
+        updated_job = TicketInvestigationJob(channel_id=channel_id)
+        updated_job.mark_escalated_to_human()
+
+        class _AccessExecutor:
+            def __init__(self) -> None:
+                self.calls = []
+
             async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
-                raise AssertionError("Moderator access reply should stop before executor runs.")
+                self_inner.calls.append(request)
+                return type(
+                    "_Result",
+                    (),
+                    {
+                        "flow_outcome": TicketAgentFlowOutcome(
+                            raw_final_reply=(
+                                "The documented verification steps are complete, "
+                                "so a moderator must inspect the remaining access state."
+                            ),
+                            conversation_history=[],
+                            completed_agent_key=None,
+                            requires_human_handoff=True,
+                        ),
+                        "updated_job": updated_job,
+                    },
+                )()
 
         bot = TicketBot(intents=discord.Intents.none())
         bot.get_channel = lambda _channel_id: fake_channel
-        bot.investigation_executor = _FailingExecutor()
+        bot.investigation_executor = _AccessExecutor()
 
         run_context = BotRunContext(
             channel_id=channel_id,
@@ -691,21 +715,34 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch("ysupport._notify_handoff", return_value=None),
+                patch(
+                    "ysupport.send_handoff_notice",
+                    return_value=TelegramSentMessage(
+                        chat_id="123",
+                        message_id=456,
+                    ),
+                ),
                 patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
             ):
                 await bot.process_ticket_message(channel_id, run_context)
+
+            self.assertEqual(len(bot.investigation_executor.calls), 1)
+            self.assertEqual(len(fake_channel.sent_messages), 1)
+            self.assertIn("moderator", fake_channel.sent_messages[0])
+            self.assertIn("notified", fake_channel.sent_messages[0])
+            self.assertNotIn(channel_id, stopped_channels)
+            self.assertIn(channel_id, team_handoff_notice_by_channel)
+            self.assertEqual(
+                team_handoff_notice_by_channel[channel_id].telegram_message_id,
+                456,
+            )
         finally:
             pending_messages.pop(channel_id, None)
             conversation_threads.pop(channel_id, None)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
             stopped_channels.discard(channel_id)
+            clear_team_handoff_notice(channel_id)
             clear_ticket_investigation_job(channel_id)
-
-        self.assertEqual(len(fake_channel.sent_messages), 1)
-        self.assertIn("A moderator needs to check this.", fake_channel.sent_messages[0])
-        self.assertIn("couldn't send", fake_channel.sent_messages[0])
-        self.assertNotIn(channel_id, stopped_channels)
 
     async def test_process_ticket_message_keeps_security_process_boundary_ticket_active(self) -> None:
         channel_id = 67

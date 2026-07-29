@@ -16,27 +16,15 @@ _FORBIDDEN_DISCORD_REDIRECT_PATTERNS = (
     "open a discord ticket",
     "open a ticket in discord",
 )
-_EXPLICIT_HANDOFF_REQUEST_PATTERNS = (
-    "need a human",
-    "want a human",
-    "can a human",
-    "could a human",
-    "need a person",
-    "want a person",
-    "can someone review",
-    "could someone review",
-    "need a moderator",
-    "need an admin",
-    "manual review",
-    "strategist review",
-)
 _HUMAN_ONLY_HANDOFF_REASON_PATTERNS = (
-    "moderator",
+    "moderator access",
+    "moderator action",
     "admin access",
+    "admin action",
     "server access",
     "verification access",
+    "access change",
     "manual recovery",
-    "recovery",
     "refund",
     "wrong address",
     "treasury",
@@ -61,6 +49,11 @@ _OPTIONAL_HANDOFF_SENTENCE_PATTERNS = (
     "operator review",
     "should get a human",
     "someone can review",
+    "human can review",
+    "moderator can review",
+    "admin can review",
+    "strategist can review",
+    "team can review",
 )
 _OPTIONAL_HANDOFF_CLAUSE_PATTERNS = (
     r",?\s*so this should get a human ops review\.?$",
@@ -405,9 +398,6 @@ def _handoff_is_allowed(
         return True
     if request.current_turn_source != "user":
         return False
-    current_message = request.current_user_message.lower()
-    if any(pattern in current_message for pattern in _EXPLICIT_HANDOFF_REQUEST_PATTERNS):
-        return True
     handoff_reason = (result.handoff_reason or "").lower()
     return any(
         pattern in handoff_reason for pattern in _HUMAN_ONLY_HANDOFF_REASON_PATTERNS

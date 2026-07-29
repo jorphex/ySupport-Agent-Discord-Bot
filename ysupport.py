@@ -363,21 +363,6 @@ def _render_support_reply(raw_reply: str) -> str:
     return strip_handoff_placeholder(raw_reply)
 
 
-def _moderator_access_handoff_route() -> HandoffRoute:
-    return infer_handoff_route(
-        explicit_target="support_manual",
-        explicit_reason="moderator or Discord access check",
-    )
-
-
-def _runtime_error_handoff_route(*texts: str | None) -> HandoffRoute:
-    return infer_handoff_route(
-        *texts,
-        explicit_target="support_manual",
-        explicit_reason="runtime failure or analysis limit",
-    )
-
-
 def _waiting_for_team_reply() -> str:
     return (
         "The team has already been notified and will follow up here. "
@@ -784,58 +769,6 @@ async def _build_recent_channel_history_fallback(
         role = "assistant" if message.author.bot else "user"
         history.append({"role": role, "content": content})
     return history
-
-
-def _outer_moderator_access_reply(text: str) -> str | None:
-    lowered = (text or "").lower()
-    if not lowered:
-        return None
-
-    mentions_access_surface = any(
-        token in lowered
-        for token in (
-            "discord",
-            "#general",
-            "general channel",
-            "public help channel",
-            "server permission",
-            "server-permission",
-            "channel access",
-        )
-    )
-    mentions_human_access_help = (
-        ("moderator" in lowered or "admin" in lowered)
-        and any(token in lowered for token in ("need", "help", "check", "review"))
-    )
-    mentions_blocked_access = any(
-        token in lowered
-        for token in (
-            "cannot access",
-            "can't access",
-            "cant access",
-            "cannot view",
-            "can't view",
-            "cant view",
-            "cannot see",
-            "can't see",
-            "cant see",
-            "locked out",
-        )
-    )
-    mentions_verification_access_issue = (
-        any(token in lowered for token in ("verification", "verified"))
-        and any(token in lowered for token in ("still", "after", "finished"))
-    )
-
-    if not mentions_access_surface:
-        return None
-    if not (
-        mentions_human_access_help
-        or mentions_blocked_access
-        or mentions_verification_access_issue
-    ):
-        return None
-    return "A moderator needs to check this."
 
 
 # Discord Bot Implementation
@@ -1281,37 +1214,6 @@ class TicketBot(discord.Client):
                 trigger_char_used=trigger_char_used,
             )
 
-            moderator_access_reply = _outer_moderator_access_reply(original_message_text)
-            if moderator_access_reply is not None:
-                route = _moderator_access_handoff_route()
-                notice = await _notify_handoff(
-                    route=route,
-                    summary=original_message_text,
-                    channel_id=message.channel.id,
-                    guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
-                    source="public",
-                )
-                if notice is not None:
-                    public_conversations.pop(original_author_id, None)
-                    clear_public_conversation(original_author_id)
-                await original_message.reply(
-                    (
-                        build_user_handoff_reply(
-                            moderator_access_reply,
-                            route,
-                            location="here",
-                        )
-                        if notice is not None
-                        else _handoff_delivery_failure_reply(
-                            moderator_access_reply,
-                            location="here",
-                        )
-                    ),
-                    mention_author=False,
-                    suppress_embeds=True,
-                )
-                return True
-
             boundary_output = await _outer_support_boundary_result(original_message_text)
             boundary_reply = _boundary_reply_from_output(boundary_output)
             if boundary_reply is not None:
@@ -1562,20 +1464,9 @@ class TicketBot(discord.Client):
                     exc,
                     exc_info=True,
                 )
-                route = _runtime_error_handoff_route(
-                    prompt_text,
-                    "Contributor override failed.",
-                )
-                final_reply = build_user_handoff_reply(
-                    "Contributor override failed.",
-                    route,
-                )
-                await _notify_handoff(
-                    route=route,
-                    summary=prompt_text,
-                    channel_id=channel_id,
-                    guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
-                    source="ticket",
+                final_reply = (
+                    "I couldn't complete that contributor override. "
+                    "The ticket remains stopped so the team can handle it directly or retry the override."
                 )
             finally:
                 await progress_reporter.close()
@@ -1818,126 +1709,103 @@ class TicketBot(discord.Client):
                 should_stop_processing = False
                 stop_reason = None
 
-                moderator_access_reply = _outer_moderator_access_reply(aggregated_text)
-                if moderator_access_reply is not None:
-                    route = _moderator_access_handoff_route()
-                    handoff_sent = await _notify_and_record_ticket_handoff(
-                        route=route,
-                        summary=aggregated_text,
-                        channel_id=channel_id,
-                        guild_id=guild_id,
-                        investigation_job=investigation_job,
+                boundary_output = await _outer_support_boundary_result(aggregated_text)
+                boundary_reply = _boundary_reply_from_output(boundary_output)
+                if boundary_reply is not None:
+                    final_reply = boundary_reply
+                    should_stop_processing = _should_stop_for_boundary_output(
+                        boundary_output
                     )
-                    if handoff_sent:
-                        final_reply = build_user_handoff_reply(
-                            moderator_access_reply,
-                            route,
-                        )
-                        should_stop_processing = True
+                    if should_stop_processing:
                         stop_reason = "boundary_stop"
                         reset_ticket_channel_for_terminal_reply(channel_id)
-                    else:
-                        final_reply = _handoff_delivery_failure_reply(
-                            moderator_access_reply
-                        )
                 else:
-                    boundary_output = await _outer_support_boundary_result(aggregated_text)
-                    boundary_reply = _boundary_reply_from_output(boundary_output)
-                    if boundary_reply is not None:
-                        final_reply = boundary_reply
+                    try:
+                        worker_result = await self.investigation_executor.execute_turn(
+                            _build_turn_request(
+                                aggregated_text=aggregated_text,
+                                input_list=input_list,
+                                current_history=current_history,
+                                attachments=attachments,
+                                run_context=run_context,
+                                investigation_job=investigation_job,
+                                workflow_name=_ticket_workflow_name(run_context),
+                                precomputed_boundary=boundary_output,
+                            ),
+                            hooks=TicketExecutionHooks(
+                                send_progress_update=progress_reporter.update,
+                            ),
+                        )
+                        investigation_job.apply_snapshot(worker_result.updated_job)
+                        flow_outcome = worker_result.flow_outcome
+                        conversation_threads[channel_id] = flow_outcome.conversation_history
+
+                        raw_final_reply = flow_outcome.raw_final_reply
+                        if flow_outcome.requires_human_handoff:
+                            route = infer_handoff_route(
+                                aggregated_text,
+                                raw_final_reply,
+                            )
+                            handoff_sent = await _notify_and_record_ticket_handoff(
+                                route=route,
+                                summary=aggregated_text,
+                                channel_id=channel_id,
+                                guild_id=guild_id,
+                                investigation_job=investigation_job,
+                            )
+                            final_reply = (
+                                build_user_handoff_reply(raw_final_reply, route)
+                                if handoff_sent
+                                else _handoff_delivery_failure_reply(raw_final_reply)
+                            )
+                        else:
+                            final_reply = _render_support_reply(raw_final_reply)
+                        if flow_outcome.requires_human_handoff:
+                            logging.info(
+                                "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
+                                channel_id,
+                            )
+                        persist_ticket_state(channel_id)
+                    except InputGuardrailTripwireTriggered as e:
+                        logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
+                        final_reply = _guardrail_tripwire_reply(e)
+                        guardrail_info = getattr(
+                            getattr(getattr(e, "guardrail_result", None), "output", None),
+                            "output_info",
+                            None,
+                        )
                         should_stop_processing = _should_stop_for_boundary_output(
-                            boundary_output
+                            guardrail_info if isinstance(guardrail_info, dict) else None
                         )
                         if should_stop_processing:
                             stop_reason = "boundary_stop"
                             reset_ticket_channel_for_terminal_reply(channel_id)
-                    else:
-                        try:
-                            worker_result = await self.investigation_executor.execute_turn(
-                                _build_turn_request(
-                                    aggregated_text=aggregated_text,
-                                    input_list=input_list,
-                                    current_history=current_history,
-                                    attachments=attachments,
-                                    run_context=run_context,
-                                    investigation_job=investigation_job,
-                                    workflow_name=_ticket_workflow_name(run_context),
-                                    precomputed_boundary=boundary_output,
-                                ),
-                                hooks=TicketExecutionHooks(
-                                    send_progress_update=progress_reporter.update,
-                                ),
-                            )
-                            investigation_job.apply_snapshot(worker_result.updated_job)
-                            flow_outcome = worker_result.flow_outcome
-                            conversation_threads[channel_id] = flow_outcome.conversation_history
-
-                            raw_final_reply = flow_outcome.raw_final_reply
-                            if flow_outcome.requires_human_handoff:
-                                route = infer_handoff_route(
-                                    aggregated_text,
-                                    raw_final_reply,
-                                )
-                                handoff_sent = await _notify_and_record_ticket_handoff(
-                                    route=route,
-                                    summary=aggregated_text,
-                                    channel_id=channel_id,
-                                    guild_id=guild_id,
-                                    investigation_job=investigation_job,
-                                )
-                                final_reply = (
-                                    build_user_handoff_reply(raw_final_reply, route)
-                                    if handoff_sent
-                                    else _handoff_delivery_failure_reply(raw_final_reply)
-                                )
-                            else:
-                                final_reply = _render_support_reply(raw_final_reply)
-                            if flow_outcome.requires_human_handoff:
-                                logging.info(
-                                    "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
-                                    channel_id,
-                                )
-                            persist_ticket_state(channel_id)
-                        except InputGuardrailTripwireTriggered as e:
-                            logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
-                            final_reply = _guardrail_tripwire_reply(e)
-                            guardrail_info = getattr(
-                                getattr(getattr(e, "guardrail_result", None), "output", None),
-                                "output_info",
-                                None,
-                            )
-                            should_stop_processing = _should_stop_for_boundary_output(
-                                guardrail_info if isinstance(guardrail_info, dict) else None
-                            )
-                            if should_stop_processing:
-                                stop_reason = "boundary_stop"
-                                reset_ticket_channel_for_terminal_reply(channel_id)
-                        except MaxTurnsExceeded:
-                            logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                            if run_context.repo_search_calls:
-                                final_reply = (
-                                    "I hit an internal analysis limit while reviewing repo evidence for this report."
-                                )
-                            else:
-                                final_reply = (
-                                    "This conversation has reached its maximum length."
-                                )
-                            should_stop_processing = True
-                            stop_reason = "runtime_error"
-                        except AgentsException as e:
-                            logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
+                    except MaxTurnsExceeded:
+                        logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
+                        if run_context.repo_search_calls:
                             final_reply = (
-                                f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again."
+                                "I hit an internal analysis limit while reviewing repo evidence for this report."
                             )
-                            should_stop_processing = True
-                            stop_reason = "runtime_error"
-                        except Exception as e:
-                            logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
-                            final_reply = "An unexpected error occurred."
-                            should_stop_processing = True
-                            stop_reason = "runtime_error"
-                        finally:
-                            await progress_reporter.close()
+                        else:
+                            final_reply = (
+                                "This conversation has reached its maximum length."
+                            )
+                        should_stop_processing = True
+                        stop_reason = "runtime_error"
+                    except AgentsException as e:
+                        logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
+                        final_reply = (
+                            f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again."
+                        )
+                        should_stop_processing = True
+                        stop_reason = "runtime_error"
+                    except Exception as e:
+                        logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
+                        final_reply = "An unexpected error occurred."
+                        should_stop_processing = True
+                        stop_reason = "runtime_error"
+                    finally:
+                        await progress_reporter.close()
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None

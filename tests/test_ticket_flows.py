@@ -513,7 +513,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             clear_public_conversation(original_author_id)
 
-    async def test_public_trigger_short_circuits_moderator_access_before_executor(self) -> None:
+    async def test_public_access_question_runs_support_before_handoff(self) -> None:
         original_author_id = 72
         channel_id = 73
         original_message = _FakeOriginalMessage(
@@ -526,21 +526,35 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             reference_message_id=12345,
         )
 
-        class _FailingExecutor:
-            async def execute_turn(self, request, hooks=None):
-                raise AssertionError("Moderator access reply should stop before executor runs.")
-
+        updated_job = TicketInvestigationJob(channel_id=channel_id)
         bot = TicketBot(intents=discord.Intents.none())
-        bot.investigation_executor = _FailingExecutor()
+        bot.investigation_executor = _FakeInvestigationExecutor(
+            result=SimpleNamespace(
+                flow_outcome=TicketAgentFlowOutcome(
+                    raw_final_reply=(
+                        "Please confirm you completed the server verification steps "
+                        "and reopen Discord before a moderator check is needed."
+                    ),
+                    conversation_history=[],
+                    completed_agent_key=None,
+                    requires_human_handoff=False,
+                ),
+                updated_job=updated_job,
+            )
+        )
 
-        with patch("ysupport._notify_handoff", return_value=None):
-            handled = await bot._handle_public_trigger_message(trigger_message, "y")
+        try:
+            with patch("ysupport._notify_handoff") as mock_notify:
+                handled = await bot._handle_public_trigger_message(trigger_message, "y")
 
-        self.assertTrue(handled)
-        self.assertEqual(len(original_message.replies), 1)
-        self.assertIn("A moderator needs to check this.", original_message.replies[0][0])
-        self.assertIn("couldn't send", original_message.replies[0][0])
-        self.assertFalse(original_message.replies[0][1]["mention_author"])
+            self.assertTrue(handled)
+            self.assertEqual(len(bot.investigation_executor.calls), 1)
+            mock_notify.assert_not_called()
+            self.assertEqual(len(trigger_channel.sent_messages), 1)
+            self.assertIn("verification steps", trigger_channel.sent_messages[0])
+            self.assertIn(original_author_id, public_conversations)
+        finally:
+            clear_public_conversation(original_author_id)
 
     async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(self) -> None:
         original_author_id = 73
@@ -627,6 +641,51 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(original_author_id, public_conversations)
         self.assertIn("Please try again", original_message.replies[0][0])
         self.assertNotIn("I've notified", original_message.replies[0][0])
+
+    async def test_contributor_override_failure_stays_in_discord(self) -> None:
+        channel_id = 207
+        channel = _FakeDiscordChannel(channel_id)
+        message = SimpleNamespace(
+            id=208,
+            channel=channel,
+            author=SimpleNamespace(name="contributor"),
+            attachments=[],
+        )
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.investigation_executor = _FakeInvestigationExecutor(
+            exc=RuntimeError("override failed")
+        )
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="other_free_form",
+        )
+
+        async def fake_send_long_message(target_channel, message_text, **kwargs):
+            await target_channel.send(message_text, **kwargs)
+
+        try:
+            with (
+                patch("ysupport.send_long_message", new=fake_send_long_message),
+                patch("ysupport._notify_handoff") as mock_notify,
+            ):
+                await bot._handle_stopped_ticket_contributor_override(
+                    message,
+                    run_context,
+                    "check the ticket",
+                )
+
+            mock_notify.assert_not_called()
+            self.assertEqual(len(channel.sent_messages), 1)
+            self.assertIn("couldn't complete", channel.sent_messages[0])
+            self.assertIn("remains stopped", channel.sent_messages[0])
+            self.assertNotIn("notified", channel.sent_messages[0])
+        finally:
+            clear_ticket_channel_state(
+                channel_id,
+                keep_stopped=False,
+                delete_persisted=True,
+            )
 
     async def test_public_handoff_copy_and_state_follow_actual_delivery(self) -> None:
         async def run_case(
