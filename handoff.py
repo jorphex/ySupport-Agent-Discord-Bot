@@ -139,6 +139,16 @@ def build_pending_delivery_handoff_notice(original_notice: str) -> str:
     )
 
 
+def build_failed_delivery_handoff_notice(original_notice: str) -> str:
+    return _replace_handoff_footer(
+        original_notice,
+        (
+            "<i>Update delivery failed. Open the ticket, stop ySupport, "
+            "and reply there manually.</i>"
+        ),
+    )
+
+
 def build_archived_handoff_notice(original_notice: str) -> str:
     return _replace_handoff_footer(
         original_notice,
@@ -355,6 +365,24 @@ async def delete_telegram_message(
         logging.warning("%s", exc)
         return False
     return bool(response_payload)
+
+
+async def retire_handoff_notice(
+    *,
+    chat_id: str,
+    message_id: int,
+    fallback_message_text: str,
+) -> bool:
+    if await delete_telegram_message(
+        chat_id=chat_id,
+        message_id=message_id,
+    ):
+        return True
+    return await edit_handoff_notice(
+        chat_id=chat_id,
+        message_id=message_id,
+        message_text=fallback_message_text,
+    )
 
 
 async def fetch_telegram_updates(offset: int | None = None) -> list[dict[str, Any]]:

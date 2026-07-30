@@ -45,6 +45,7 @@ from handoff import (
     build_archived_handoff_notice,
     build_closed_handoff_notice,
     build_dismissed_handoff_notice,
+    build_failed_delivery_handoff_notice,
     build_handoff_notice,
     build_pending_delivery_handoff_notice,
     TelegramApiError,
@@ -384,6 +385,142 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             pending_tasks.pop(channel_id, None)
             if not active_task.done():
                 active_task.cancel()
+
+    async def test_stop_button_retires_active_telegram_handoff(self) -> None:
+        channel_id = 197
+
+        class _FakeResponse:
+            def is_done(self) -> bool:
+                return False
+
+            async def defer(self) -> None:
+                return None
+
+        class _FakeFollowup:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, bool]] = []
+
+            async def send(
+                self,
+                message: str,
+                *,
+                ephemeral: bool,
+                suppress_embeds: bool,
+            ) -> None:
+                self.messages.append((message, ephemeral))
+
+        original_notice = build_handoff_notice(
+            reason="manual follow-up needed",
+            summary="initial issue",
+            channel_id=channel_id,
+            guild_id=2,
+        )
+        ticket_owner_user_id_by_channel[channel_id] = 777
+        team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            message_text=original_notice,
+        )
+        followup = _FakeFollowup()
+        interaction = SimpleNamespace(
+            channel=SimpleNamespace(id=channel_id),
+            user=SimpleNamespace(id=777, name="owner"),
+            response=_FakeResponse(),
+            followup=followup,
+            message=None,
+        )
+
+        try:
+            with patch(
+                "views.retire_handoff_notice",
+                return_value=True,
+            ) as retire_notice:
+                await StopBotView().children[0].callback(interaction)
+
+            retire_notice.assert_awaited_once_with(
+                chat_id="123",
+                message_id=456,
+                fallback_message_text=build_dismissed_handoff_notice(
+                    original_notice
+                ),
+            )
+            self.assertIn(channel_id, stopped_channels)
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            self.assertEqual(
+                followup.messages,
+                [(
+                    "Support bot stopped for this channel. "
+                    "ySupport contributors are available for further inquiries.",
+                    False,
+                )],
+            )
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_stop_button_persists_handoff_when_telegram_cleanup_fails(
+        self,
+    ) -> None:
+        channel_id = 198
+
+        class _FakeResponse:
+            def is_done(self) -> bool:
+                return False
+
+            async def defer(self) -> None:
+                return None
+
+        class _FakeFollowup:
+            async def send(
+                self,
+                _message: str,
+                *,
+                ephemeral: bool,
+                suppress_embeds: bool,
+            ) -> None:
+                return None
+
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            message_text="initial notice",
+        )
+        ticket_owner_user_id_by_channel[channel_id] = 777
+        team_handoff_notice_by_channel[channel_id] = notice
+        interaction = SimpleNamespace(
+            channel=SimpleNamespace(id=channel_id),
+            user=SimpleNamespace(id=777, name="owner"),
+            response=_FakeResponse(),
+            followup=_FakeFollowup(),
+            message=None,
+        )
+
+        try:
+            with (
+                patch(
+                    "views.retire_handoff_notice",
+                    return_value=False,
+                ) as retire_notice,
+                patch("views.logging.warning") as warning,
+            ):
+                await StopBotView().children[0].callback(interaction)
+
+            retire_notice.assert_awaited_once()
+            self.assertIn(channel_id, stopped_channels)
+            self.assertIs(team_handoff_notice_by_channel[channel_id], notice)
+            persisted = state._read_json(
+                state._TICKET_STATE_DIR / f"{channel_id}.json"
+            )
+            self.assertIsNotNone(persisted)
+            self.assertTrue(persisted["stopped"])
+            self.assertEqual(
+                persisted["team_handoff_notice"]["telegram_message_id"],
+                456,
+            )
+            warning.assert_called_once()
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
 
     def test_build_discord_intents_enables_expected_intents(self) -> None:
         intents = _build_discord_intents()
@@ -1508,6 +1645,34 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_retire_handoff_notice_falls_back_to_closed_status(self) -> None:
+        with (
+            patch(
+                "handoff.delete_telegram_message",
+                return_value=False,
+            ) as delete_message,
+            patch(
+                "handoff.edit_handoff_notice",
+                return_value=True,
+            ) as edit_notice,
+        ):
+            retired = await handoff.retire_handoff_notice(
+                chat_id="123",
+                message_id=456,
+                fallback_message_text="closed",
+            )
+
+        self.assertTrue(retired)
+        delete_message.assert_awaited_once_with(
+            chat_id="123",
+            message_id=456,
+        )
+        edit_notice.assert_awaited_once_with(
+            chat_id="123",
+            message_id=456,
+            message_text="closed",
+        )
+
     async def test_telegram_handoff_dismissal_stops_and_clears_ticket_before_delete(
         self,
     ) -> None:
@@ -1561,7 +1726,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         callback_answers: list[tuple[str, str]] = []
-        deleted_messages: list[tuple[str, int]] = []
+        retired_messages: list[tuple[str, int, str]] = []
 
         async def fake_answer_callback(
             *,
@@ -1575,7 +1740,12 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             callback_answers.append((callback_query_id, message_text))
             return True
 
-        async def fake_delete_message(*, chat_id: str, message_id: int) -> bool:
+        async def fake_retire_notice(
+            *,
+            chat_id: str,
+            message_id: int,
+            fallback_message_text: str,
+        ) -> bool:
             self.assertIn(channel_id, stopped_channels)
             self.assertNotIn(channel_id, conversation_threads)
             self.assertNotIn(channel_id, ticket_investigation_jobs)
@@ -1590,7 +1760,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(persisted["stopped"])
             self.assertEqual(persisted["stop_reason"], "manual_stop")
             self.assertIsNone(persisted["team_handoff_notice"])
-            deleted_messages.append((chat_id, message_id))
+            retired_messages.append(
+                (chat_id, message_id, fallback_message_text)
+            )
             return True
 
         bot = TicketBot(intents=discord.Intents.none())
@@ -1601,8 +1773,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "ysupport.answer_telegram_callback_query",
                     new=fake_answer_callback,
                 ),
-                patch("ysupport.delete_telegram_message", new=fake_delete_message),
-                patch("ysupport.edit_handoff_notice") as edit_notice,
+                patch("ysupport.retire_handoff_notice", new=fake_retire_notice),
                 patch("state.reset_ticket_codex_session") as reset_session,
                 patch("ysupport._run_internal_instruction_turn") as internal_turn,
                 patch("ysupport.send_long_message") as send_message,
@@ -1638,12 +1809,20 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     ("callback-1", "This handoff is already closed."),
                 ],
             )
-            self.assertEqual(deleted_messages, [("123", 456)])
+            self.assertEqual(
+                retired_messages,
+                [(
+                    "123",
+                    456,
+                    build_dismissed_handoff_notice(
+                        "Dismissed. Handle in Discord."
+                    ),
+                )],
+            )
             self.assertNotIn(channel_id, pending_tasks)
             self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
             self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 777)
             reset_session.assert_called_once_with(channel_id)
-            edit_notice.assert_not_called()
             internal_turn.assert_not_called()
             send_message.assert_not_called()
 
@@ -1705,7 +1884,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "ysupport.answer_telegram_callback_query",
                     new=fake_answer_callback,
                 ),
-                patch("ysupport.delete_telegram_message") as delete_message,
+                patch("ysupport.retire_handoff_notice") as retire_notice,
                 patch("state.reset_ticket_codex_session") as reset_session,
             ):
                 await bot._handle_telegram_handoff_update(
@@ -1749,7 +1928,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "This handoff is already closed.",
                 ],
             )
-            delete_message.assert_not_called()
+            retire_notice.assert_not_called()
             reset_session.assert_not_called()
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
@@ -1776,17 +1955,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             reason="manual follow-up needed",
             message_text=original_notice,
         )
-        edited_messages: list[tuple[str, int, str]] = []
-
-        async def fake_edit_notice(
-            *,
-            chat_id: str,
-            message_id: int,
-            message_text: str,
-        ) -> bool:
-            edited_messages.append((chat_id, message_id, message_text))
-            return False
-
         update = {
             "callback_query": {
                 "id": "callback-3",
@@ -1805,21 +1973,20 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "ysupport.answer_telegram_callback_query",
                     return_value=True,
                 ),
-                patch("ysupport.delete_telegram_message", return_value=False),
-                patch("ysupport.edit_handoff_notice", new=fake_edit_notice),
+                patch(
+                    "ysupport.retire_handoff_notice",
+                    return_value=False,
+                ) as retire_notice,
                 patch("ysupport.logging.warning") as warning,
             ):
                 await bot._handle_telegram_handoff_update(update)
 
-            self.assertEqual(
-                edited_messages,
-                [
-                    (
-                        "123",
-                        456,
-                        build_dismissed_handoff_notice(original_notice),
-                    )
-                ],
+            retire_notice.assert_awaited_once_with(
+                chat_id="123",
+                message_id=456,
+                fallback_message_text=build_dismissed_handoff_notice(
+                    original_notice
+                ),
             )
             self.assertIn(channel_id, stopped_channels)
             self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
@@ -1849,15 +2016,18 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     return_value=True,
                 ),
                 patch(
-                    "ysupport.delete_telegram_message",
+                    "ysupport.retire_handoff_notice",
                     return_value=True,
-                ) as retry_delete,
+                ) as retry_retire,
             ):
                 await bot._handle_telegram_handoff_update(update)
 
-            retry_delete.assert_awaited_once_with(
+            retry_retire.assert_awaited_once_with(
                 chat_id="123",
                 message_id=456,
+                fallback_message_text=build_dismissed_handoff_notice(
+                    original_notice
+                ),
             )
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
         finally:
@@ -1900,8 +2070,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "ysupport.answer_telegram_callback_query",
                     return_value=True,
                 ) as answer_callback,
-                patch("ysupport.delete_telegram_message") as delete_message,
-                patch("ysupport.edit_handoff_notice") as edit_notice,
+                patch("ysupport.retire_handoff_notice") as retire_notice,
                 patch("ysupport.logging.error") as log_error,
             ):
                 await bot._handle_telegram_handoff_update(update)
@@ -1913,8 +2082,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "Please try again, or use Stop Bot in Discord."
                 ),
             )
-            delete_message.assert_not_called()
-            edit_notice.assert_not_called()
+            retire_notice.assert_not_called()
             log_error.assert_called_once()
             self.assertIn(channel_id, stopped_channels)
             self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
@@ -1946,9 +2114,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     return_value=True,
                 ) as retry_answer,
                 patch(
-                    "ysupport.delete_telegram_message",
+                    "ysupport.retire_handoff_notice",
                     return_value=True,
-                ) as retry_delete,
+                ) as retry_retire,
             ):
                 await bot._handle_telegram_handoff_update(update)
 
@@ -1956,9 +2124,12 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 callback_query_id="callback-4",
                 message_text="Handoff dismissed. Handle this ticket in Discord.",
             )
-            retry_delete.assert_awaited_once_with(
+            retry_retire.assert_awaited_once_with(
                 chat_id="123",
                 message_id=456,
+                fallback_message_text=build_dismissed_handoff_notice(
+                    "Dismissed. Handle in Discord."
+                ),
             )
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
             persisted = state._read_json(
@@ -2365,25 +2536,48 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         channel_id = 298
+        original_notice = build_handoff_notice(
+            reason="manual follow-up needed",
+            summary="initial issue",
+            channel_id=channel_id,
+            guild_id=2,
+        )
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
             reason="manual follow-up needed",
+            message_text=original_notice,
         )
         team_handoff_notice_by_channel[channel_id] = notice
         bot = TicketBot(intents=discord.Intents.none())
         delivery_calls = 0
+        failed_status_edits: list[tuple[str, int, str]] = []
 
         async def fail_delivery(**_kwargs) -> bool:
             nonlocal delivery_calls
             delivery_calls += 1
             return False
 
+        async def edit_failed_status(
+            *,
+            chat_id: str,
+            message_id: int,
+            message_text: str,
+        ) -> bool:
+            failed_status_edits.append((chat_id, message_id, message_text))
+            return True
+
         try:
-            with patch.object(
-                bot,
-                "_deliver_telegram_handoff_reply",
-                new=fail_delivery,
+            with (
+                patch.object(
+                    bot,
+                    "_deliver_telegram_handoff_reply",
+                    new=fail_delivery,
+                ),
+                patch(
+                    "ysupport.edit_handoff_notice",
+                    new=edit_failed_status,
+                ),
             ):
                 await bot._resume_pending_telegram_handoff_replies()
                 self.assertEqual(delivery_calls, 0)
@@ -2397,6 +2591,21 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 notice.telegram_message_id = 457
                 await bot._resume_pending_telegram_handoff_replies()
                 self.assertEqual(delivery_calls, 2)
+                self.assertEqual(
+                    failed_status_edits,
+                    [
+                        (
+                            "123",
+                            456,
+                            build_failed_delivery_handoff_notice(original_notice),
+                        ),
+                        (
+                            "123",
+                            457,
+                            build_failed_delivery_handoff_notice(original_notice),
+                        ),
+                    ],
+                )
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
             await bot.close()

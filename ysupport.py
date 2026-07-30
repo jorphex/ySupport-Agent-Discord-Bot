@@ -21,8 +21,8 @@ from handoff import (
     build_archived_handoff_notice,
     build_closed_handoff_notice,
     build_dismissed_handoff_notice,
+    build_failed_delivery_handoff_notice,
     build_pending_delivery_handoff_notice,
-    delete_telegram_message,
     DISMISS_HANDOFF_CALLBACK_DATA,
     TelegramApiError,
     TelegramSentMessage,
@@ -32,6 +32,7 @@ from handoff import (
     edit_handoff_notice,
     fetch_telegram_updates,
     is_substantive_team_reply,
+    retire_handoff_notice,
     send_handoff_notice,
     send_telegram_message,
     strip_handoff_placeholder,
@@ -921,11 +922,24 @@ class TicketBot(discord.Client):
                 continue
             if notice.status == "pending_delivery" and notice.pending_reply_text:
                 self._telegram_recovery_attempts.add(recovery_key)
-                await self._deliver_telegram_handoff_reply(
+                delivered = await self._deliver_telegram_handoff_reply(
                     channel_id=channel_id,
                     notice=notice,
                     team_reply_text=notice.pending_reply_text,
                 )
+                if (
+                    not delivered
+                    and channel_id not in stopped_channels
+                    and team_handoff_notice_by_channel.get(channel_id) is notice
+                ):
+                    await edit_handoff_notice(
+                        chat_id=notice.telegram_chat_id,
+                        message_id=notice.telegram_message_id,
+                        message_text=build_failed_delivery_handoff_notice(
+                            notice.message_text
+                            or "Update delivery failed. Handle in Discord."
+                        ),
+                    )
                 continue
             if notice.status == "delivered_pending_close":
                 self._telegram_recovery_attempts.add(recovery_key)
@@ -1063,30 +1077,25 @@ class TicketBot(discord.Client):
             callback_query_id=callback_query_id,
             message_text="Handoff dismissed. Handle this ticket in Discord.",
         )
-        deleted = await delete_telegram_message(
+        retired = await retire_handoff_notice(
             chat_id=chat_id,
             message_id=message_id,
-        )
-        if deleted:
-            return
-
-        edited = await edit_handoff_notice(
-            chat_id=chat_id,
-            message_id=message_id,
-            message_text=build_dismissed_handoff_notice(
+            fallback_message_text=build_dismissed_handoff_notice(
                 matched_notice.message_text or "Dismissed. Handle in Discord."
             ),
         )
-        if not edited:
-            team_handoff_notice_by_channel[matched_channel_id] = matched_notice
-            retry_persisted = persist_ticket_state(matched_channel_id)
-            logging.warning(
-                "Dismissed Telegram handoff for channel %s, but could not remove "
-                "or edit notice %s; cleanup retry persisted=%s.",
-                matched_channel_id,
-                message_id,
-                retry_persisted,
-            )
+        if retired:
+            return
+
+        team_handoff_notice_by_channel[matched_channel_id] = matched_notice
+        retry_persisted = persist_ticket_state(matched_channel_id)
+        logging.warning(
+            "Dismissed Telegram handoff for channel %s, but could not remove "
+            "or edit notice %s; cleanup retry persisted=%s.",
+            matched_channel_id,
+            message_id,
+            retry_persisted,
+        )
 
     async def _deliver_telegram_handoff_reply(
         self,

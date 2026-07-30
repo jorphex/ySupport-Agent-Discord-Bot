@@ -5,13 +5,16 @@ from discord.ui import View, Button, button
 
 import config
 from bot_behavior import STANDARD_REDIRECT_MESSAGE
+from handoff import build_dismissed_handoff_notice, retire_handoff_notice
 from state import (
     apply_initial_button_intent,
     channels_awaiting_initial_button_press,
     hydrate_ticket_state,
     mark_ticket_channel_stopped,
     pending_tasks,
+    persist_ticket_state,
     stop_ticket_channel,
+    team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
 )
 
@@ -203,12 +206,15 @@ class StopBotView(_TicketOwnerView):
         if not interaction.response.is_done():
             await interaction.response.defer()
 
+        handoff_notice = team_handoff_notice_by_channel.get(channel_id)
         stopped_durably = stop_ticket_channel(channel_id)
         task = pending_tasks.pop(channel_id, None)
         if task:
             task.cancel()
 
         if not stopped_durably:
+            if handoff_notice is not None:
+                team_handoff_notice_by_channel[channel_id] = handoff_notice
             logging.error(
                 "Stopped channel %s in memory, but durable cleanup failed.",
                 channel_id,
@@ -251,3 +257,23 @@ class StopBotView(_TicketOwnerView):
         except Exception:
             if interaction.channel:
                 await interaction.channel.send(confirmation_message, suppress_embeds=True)
+
+        if handoff_notice is not None:
+            retired = await retire_handoff_notice(
+                chat_id=handoff_notice.telegram_chat_id,
+                message_id=handoff_notice.telegram_message_id,
+                fallback_message_text=build_dismissed_handoff_notice(
+                    handoff_notice.message_text
+                    or "Dismissed. Handle in Discord."
+                ),
+            )
+            if not retired:
+                team_handoff_notice_by_channel[channel_id] = handoff_notice
+                retry_persisted = persist_ticket_state(channel_id)
+                logging.warning(
+                    "Stopped ticket %s, but could not remove or edit Telegram "
+                    "handoff notice %s; cleanup retry persisted=%s.",
+                    channel_id,
+                    handoff_notice.telegram_message_id,
+                    retry_persisted,
+                )
