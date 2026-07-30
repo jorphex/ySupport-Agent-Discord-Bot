@@ -26,13 +26,11 @@ from handoff import (
     DISMISS_HANDOFF_CALLBACK_DATA,
     TelegramApiError,
     TelegramSentMessage,
-    HandoffRoute,
     build_handoff_notice,
     build_user_handoff_reply,
     build_vague_team_reply_feedback,
     edit_handoff_notice,
     fetch_telegram_updates,
-    infer_handoff_route,
     is_substantive_team_reply,
     send_handoff_notice,
     send_telegram_message,
@@ -439,7 +437,7 @@ def _handoff_known_facts(investigation_job: TicketInvestigationJob) -> list[str]
 
 async def _notify_handoff(
     *,
-    route: HandoffRoute,
+    reason: str,
     summary: str,
     channel_id: int,
     guild_id: int | None,
@@ -448,14 +446,14 @@ async def _notify_handoff(
     known_facts: list[str] | None = None,
 ) -> TelegramSentMessage | None:
     summarized_text = await summarize_handoff_summary(
-        route=route,
+        reason=reason,
         summary=summary,
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
     )
     sent = await send_handoff_notice(
         build_handoff_notice(
-            route,
+            reason=reason,
             summary=summarized_text or summary,
             channel_id=channel_id,
             guild_id=guild_id,
@@ -465,10 +463,9 @@ async def _notify_handoff(
     )
     if isinstance(sent, TelegramSentMessage):
         logging.info(
-            "Sent Telegram handoff notice for %s channel %s (%s).",
+            "Sent Telegram handoff notice for %s channel %s.",
             source,
             channel_id,
-            route.target,
         )
         return sent
     return None
@@ -477,7 +474,7 @@ async def _notify_handoff(
 def _remember_sent_handoff_notice(
     *,
     channel_id: int,
-    route: HandoffRoute,
+    reason: str,
     notice: TelegramSentMessage | None,
 ) -> None:
     if notice is None:
@@ -487,8 +484,7 @@ def _remember_sent_handoff_notice(
         TeamHandoffNotice(
             telegram_chat_id=notice.chat_id,
             telegram_message_id=notice.message_id,
-            target=route.target,
-            reason=route.reason,
+            reason=reason,
             message_text=notice.message_text,
         ),
     )
@@ -496,7 +492,7 @@ def _remember_sent_handoff_notice(
 
 async def _notify_and_record_ticket_handoff(
     *,
-    route: HandoffRoute,
+    reason: str,
     summary: str,
     channel_id: int,
     guild_id: int | None,
@@ -505,7 +501,7 @@ async def _notify_and_record_ticket_handoff(
     recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
     known_facts = _handoff_known_facts(investigation_job)
     notice = await _notify_handoff(
-        route=route,
+        reason=reason,
         summary=summary,
         channel_id=channel_id,
         guild_id=guild_id,
@@ -519,7 +515,7 @@ async def _notify_and_record_ticket_handoff(
     investigation_job.mark_escalated_to_human()
     _remember_sent_handoff_notice(
         channel_id=channel_id,
-        route=route,
+        reason=reason,
         notice=notice,
     )
     return True
@@ -799,6 +795,7 @@ class TicketBot(discord.Client):
         self._telegram_updates_task: asyncio.Task[None] | None = None
         self._state_cleanup_task: asyncio.Task[None] | None = None
         self._telegram_update_offset: int | None = load_telegram_update_offset()
+        self._telegram_recovery_attempts: set[tuple[int, int, str]] = set()
         local_executor = None
         if "local" in {
             config.TICKET_EXECUTION_ENDPOINT,
@@ -915,7 +912,15 @@ class TicketBot(discord.Client):
 
     async def _resume_pending_telegram_handoff_replies(self) -> None:
         for channel_id, notice in list(team_handoff_notice_by_channel.items()):
+            recovery_key = (
+                channel_id,
+                notice.telegram_message_id,
+                notice.status,
+            )
+            if recovery_key in self._telegram_recovery_attempts:
+                continue
             if notice.status == "pending_delivery" and notice.pending_reply_text:
+                self._telegram_recovery_attempts.add(recovery_key)
                 await self._deliver_telegram_handoff_reply(
                     channel_id=channel_id,
                     notice=notice,
@@ -923,10 +928,17 @@ class TicketBot(discord.Client):
                 )
                 continue
             if notice.status == "delivered_pending_close":
+                self._telegram_recovery_attempts.add(recovery_key)
                 await self._finalize_telegram_handoff_notice_close(
                     channel_id=channel_id,
                     notice=notice,
                 )
+        active_recovery_keys = {
+            (channel_id, notice.telegram_message_id, notice.status)
+            for channel_id, notice in team_handoff_notice_by_channel.items()
+            if notice.status in {"pending_delivery", "delivered_pending_close"}
+        }
+        self._telegram_recovery_attempts.intersection_update(active_recovery_keys)
 
     async def _handle_telegram_handoff_update(self, update: dict[str, Any]) -> None:
         callback_query = update.get("callback_query")
@@ -960,7 +972,7 @@ class TicketBot(discord.Client):
         )
         if matched_channel_id is None or matched_notice is None:
             return
-        if matched_notice.reply_consumed or matched_notice.status != "open":
+        if matched_notice.status != "open":
             return
         if matched_channel_id in stopped_channels:
             return
@@ -977,7 +989,6 @@ class TicketBot(discord.Client):
         mark_team_handoff_notice_pending_delivery(
             matched_channel_id,
             reply_text=text,
-            reply_message_id=telegram_message_id,
         )
         await self._deliver_telegram_handoff_reply(
             channel_id=matched_channel_id,
@@ -1020,7 +1031,6 @@ class TicketBot(discord.Client):
         if (
             matched_channel_id is None
             or matched_notice is None
-            or matched_notice.reply_consumed
             or matched_notice.status != "open"
         ):
             await answer_telegram_callback_query(
@@ -1393,12 +1403,12 @@ class TicketBot(discord.Client):
                         else "I could not determine a response."
                     )
                     if flow_outcome.requires_human_handoff:
-                        route = infer_handoff_route(
-                            original_message_text,
-                            raw_reply,
+                        handoff_reason = (
+                            flow_outcome.handoff_reason
+                            or "manual follow-up needed"
                         )
                         notice = await _notify_handoff(
-                            route=route,
+                            reason=handoff_reason,
                             summary=original_message_text,
                             channel_id=message.channel.id,
                             guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
@@ -1407,7 +1417,6 @@ class TicketBot(discord.Client):
                         if notice is not None:
                             final_reply = build_user_handoff_reply(
                                 raw_reply,
-                                route,
                                 location="here",
                             )
                             public_conversations.pop(original_author_id, None)
@@ -1866,19 +1875,19 @@ class TicketBot(discord.Client):
 
                         raw_final_reply = flow_outcome.raw_final_reply
                         if flow_outcome.requires_human_handoff:
-                            route = infer_handoff_route(
-                                aggregated_text,
-                                raw_final_reply,
+                            handoff_reason = (
+                                flow_outcome.handoff_reason
+                                or "manual follow-up needed"
                             )
                             handoff_sent = await _notify_and_record_ticket_handoff(
-                                route=route,
+                                reason=handoff_reason,
                                 summary=aggregated_text,
                                 channel_id=channel_id,
                                 guild_id=guild_id,
                                 investigation_job=investigation_job,
                             )
                             final_reply = (
-                                build_user_handoff_reply(raw_final_reply, route)
+                                build_user_handoff_reply(raw_final_reply)
                                 if handoff_sent
                                 else _handoff_delivery_failure_reply(raw_final_reply)
                             )
@@ -1886,7 +1895,8 @@ class TicketBot(discord.Client):
                             final_reply = _render_support_reply(raw_final_reply)
                         if flow_outcome.requires_human_handoff:
                             logging.info(
-                                "Human handoff tag detected in response for channel %s. Leaving channel active for follow-up.",
+                                "Support turn requested a human handoff for channel %s. "
+                                "Leaving channel active for follow-up.",
                                 channel_id,
                             )
                         persist_ticket_state(channel_id)

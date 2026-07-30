@@ -71,13 +71,10 @@ class InvestigationEvidence:
 class TeamHandoffNotice:
     telegram_chat_id: str
     telegram_message_id: int
-    target: str
     reason: str
     message_text: str | None = None
-    reply_consumed: bool = False
     status: TeamHandoffNoticeStatus = "open"
     pending_reply_text: Optional[str] = None
-    pending_reply_message_id: Optional[int] = None
     followup_attachments: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -278,17 +275,10 @@ def hydrate_ticket_state(channel_id: int) -> None:
             team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
                 telegram_chat_id=str(handoff_chat_id),
                 telegram_message_id=int(handoff_message_id),
-                target=str(handoff_payload.get("target") or "support_manual"),
                 reason=str(handoff_payload.get("reason") or ""),
                 message_text=_normalize_optional_text(handoff_payload.get("message_text")),
-                reply_consumed=bool(handoff_payload.get("reply_consumed")),
                 status=str(handoff_payload.get("status") or "open"),
                 pending_reply_text=handoff_payload.get("pending_reply_text"),
-                pending_reply_message_id=(
-                    int(handoff_payload["pending_reply_message_id"])
-                    if handoff_payload.get("pending_reply_message_id") is not None
-                    else None
-                ),
                 followup_attachments=[
                     dict(attachment)
                     for attachment in handoff_payload.get("followup_attachments", [])
@@ -474,27 +464,16 @@ def clear_team_handoff_notice(channel_id: int) -> None:
         persist_ticket_state(channel_id)
 
 
-def mark_team_handoff_notice_consumed(channel_id: int) -> None:
-    notice = team_handoff_notice_by_channel.get(channel_id)
-    if notice is None:
-        return
-    notice.reply_consumed = True
-    persist_ticket_state(channel_id)
-
-
 def mark_team_handoff_notice_pending_delivery(
     channel_id: int,
     *,
     reply_text: str,
-    reply_message_id: int,
 ) -> None:
     notice = team_handoff_notice_by_channel.get(channel_id)
     if notice is None:
         return
-    notice.reply_consumed = True
     notice.status = "pending_delivery"
     notice.pending_reply_text = reply_text
-    notice.pending_reply_message_id = reply_message_id
     persist_ticket_state(channel_id)
 
 
@@ -502,19 +481,7 @@ def mark_team_handoff_notice_delivered(channel_id: int) -> None:
     notice = team_handoff_notice_by_channel.get(channel_id)
     if notice is None:
         return
-    notice.reply_consumed = True
     notice.status = "delivered_pending_close"
-    persist_ticket_state(channel_id)
-
-
-def reopen_team_handoff_notice(channel_id: int) -> None:
-    notice = team_handoff_notice_by_channel.get(channel_id)
-    if notice is None:
-        return
-    notice.reply_consumed = False
-    notice.status = "open"
-    notice.pending_reply_text = None
-    notice.pending_reply_message_id = None
     persist_ticket_state(channel_id)
 
 
@@ -693,13 +660,10 @@ def _serialize_team_handoff_notice(
     return {
         "telegram_chat_id": notice.telegram_chat_id,
         "telegram_message_id": notice.telegram_message_id,
-        "target": notice.target,
         "reason": notice.reason,
         "message_text": notice.message_text,
-        "reply_consumed": notice.reply_consumed,
         "status": notice.status,
         "pending_reply_text": notice.pending_reply_text,
-        "pending_reply_message_id": notice.pending_reply_message_id,
         "followup_attachments": [
             dict(attachment) for attachment in notice.followup_attachments
         ],

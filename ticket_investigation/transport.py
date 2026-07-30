@@ -61,6 +61,7 @@ TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA: dict[str, Any] = {
                 "conversation_history": {"type": "array"},
                 "completed_agent_key": {"type": ["string", "null"]},
                 "requires_human_handoff": {"type": "boolean"},
+                "handoff_reason": {"type": ["string", "null"]},
             },
             "additionalProperties": False,
         },
@@ -156,6 +157,7 @@ def serialize_flow_outcome(flow_outcome: TicketAgentFlowOutcome) -> dict[str, An
         "conversation_history": list(flow_outcome.conversation_history),
         "completed_agent_key": flow_outcome.completed_agent_key,
         "requires_human_handoff": flow_outcome.requires_human_handoff,
+        "handoff_reason": flow_outcome.handoff_reason,
     }
 
 
@@ -167,6 +169,7 @@ def deserialize_flow_outcome(payload: dict[str, Any]) -> TicketAgentFlowOutcome:
         conversation_history=list(payload["conversation_history"]),
         completed_agent_key=payload.get("completed_agent_key"),
         requires_human_handoff=payload.get("requires_human_handoff", False),
+        handoff_reason=payload.get("handoff_reason"),
     )
 
 
@@ -382,6 +385,7 @@ def build_smoke_transport_result(
             "conversation_history": [],
             "completed_agent_key": None,
             "requires_human_handoff": False,
+            "handoff_reason": None,
         },
         updated_job=dict(request.investigation_job),
     )

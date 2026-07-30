@@ -16,23 +16,8 @@ from openai import AsyncOpenAI
 import config
 
 
-HandoffTarget = Literal[
-    "support_manual",
-    "strategist_ops",
-    "web_team",
-    "security_team",
-]
-
-
 class TelegramApiError(RuntimeError):
     """Raised when Telegram does not return a successful API response."""
-
-
-@dataclass(frozen=True)
-class HandoffRoute:
-    target: HandoffTarget
-    team_label: str
-    reason: str
 
 
 @dataclass(frozen=True)
@@ -41,51 +26,6 @@ class TelegramSentMessage:
     message_id: int
     message_text: str = ""
 
-
-_STRATEGIST_OPS_TOKENS = (
-    "harvest",
-    "report",
-    "keeper",
-    "rewards",
-    "reward",
-    "dump",
-    "compound",
-    "compounding",
-    "profit unlock",
-    "pps",
-    "queued",
-    "pending signatures",
-    "multisig",
-    "swap",
-)
-
-_WEB_TEAM_TOKENS = (
-    "frontend",
-    "front-end",
-    "website",
-    "site",
-    "page",
-    "button",
-    "ui ",
-    " ui",
-    "display",
-    "chart",
-    "loading",
-    "load forever",
-    "spinner",
-    "wallet connect",
-    "connect wallet",
-)
-
-_SECURITY_TEAM_TOKENS = (
-    "immunefi",
-    "sherlock",
-    "bug bounty",
-    "security report",
-    "kyc",
-    "jurisdiction",
-    "official security process",
-)
 
 _VAGUE_TEAM_REPLIES = {
     "ok",
@@ -140,28 +80,14 @@ def strip_handoff_placeholder(text: str | None) -> str:
     return "\n".join(collapsed).strip()
 
 
-def infer_handoff_route(
-    *texts: str | None,
-    explicit_target: HandoffTarget | None = None,
-    explicit_reason: str | None = None,
-) -> HandoffRoute:
-    target = explicit_target or _infer_target_from_texts(*texts)
-    return HandoffRoute(
-        target=target,
-        team_label=_team_label_for_target(target),
-        reason=(explicit_reason or _default_reason_for_target(target)).strip(),
-    )
-
-
 def build_user_handoff_reply(
     base_reply: str | None,
-    route: HandoffRoute,
     *,
     location: Literal["ticket", "here"] = "ticket",
 ) -> str:
     cleaned = strip_handoff_placeholder(base_reply)
     follow_up = (
-        f"I've notified the {route.team_label} about this. "
+        "I've notified the support team about this. "
         f"They'll follow up {'in this ticket' if location == 'ticket' else 'here'}."
     )
     if not cleaned:
@@ -172,8 +98,8 @@ def build_user_handoff_reply(
 
 
 def build_handoff_notice(
-    route: HandoffRoute,
     *,
+    reason: str,
     summary: str,
     channel_id: int,
     guild_id: int | None,
@@ -182,15 +108,14 @@ def build_handoff_notice(
 ) -> str:
     label = ticket_label or _default_ticket_label(channel_id)
     link_line = (
-        f'<a href="https://discord.com/channels/{guild_id}/{channel_id}">{html.escape(label)}</a>: '
-        f"<code>{html.escape(route.target)}</code>"
+        f'<a href="https://discord.com/channels/{guild_id}/{channel_id}">{html.escape(label)}</a>'
         if guild_id is not None
-        else f"<b>{html.escape(label)}</b>: <code>{html.escape(route.target)}</code>"
+        else f"<b>{html.escape(label)}</b>"
     )
     lines = [link_line]
     if guild_id is not None:
         lines.append("")
-    lines.append(f"<b>Reason</b>: {html.escape(route.reason)}")
+    lines.append(f"<b>Reason</b>: {html.escape(_summarize_text(reason))}")
     lines.append(f"<b>Summary</b>: {html.escape(_summarize_text(summary))}")
     lines.append("")
     if reply_enabled:
@@ -262,7 +187,7 @@ async def send_handoff_notice(
 
 async def summarize_handoff_summary(
     *,
-    route: HandoffRoute,
+    reason: str,
     summary: str,
     recent_user_messages: list[str] | None = None,
     known_facts: list[str] | None = None,
@@ -287,8 +212,7 @@ async def summarize_handoff_summary(
         return None
 
     payload = {
-        "route": route.target,
-        "reason": route.reason,
+        "reason": reason,
         "latest_text": cleaned_summary,
         "recent_user_messages": cleaned_messages[-8:],
         "known_facts": cleaned_facts[:6],
@@ -514,37 +438,6 @@ def build_vague_team_reply_feedback() -> str:
         "Reply with the exact update I should give them. "
         "Only one clear reply will be used."
     )
-
-
-def _infer_target_from_texts(*texts: str | None) -> HandoffTarget:
-    lowered = " ".join((text or "").lower() for text in texts)
-    if any(token in lowered for token in _SECURITY_TEAM_TOKENS):
-        return "security_team"
-    if any(token in lowered for token in _WEB_TEAM_TOKENS):
-        return "web_team"
-    if any(token in lowered for token in _STRATEGIST_OPS_TOKENS):
-        return "strategist_ops"
-    return "support_manual"
-
-
-def _team_label_for_target(target: HandoffTarget) -> str:
-    if target == "strategist_ops":
-        return "strategy team"
-    if target == "web_team":
-        return "web team"
-    if target == "security_team":
-        return "security team"
-    return "support team"
-
-
-def _default_reason_for_target(target: HandoffTarget) -> str:
-    if target == "strategist_ops":
-        return "likely manual strategist or ops action"
-    if target == "web_team":
-        return "likely frontend or website issue"
-    if target == "security_team":
-        return "security-process or disclosure follow-up"
-    return "manual follow-up needed"
 
 
 def _summarize_text(text: str, limit: int = 260) -> str:

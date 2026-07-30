@@ -19,7 +19,6 @@ from state import (
     stop_reasons_by_channel,
 )
 from handoff import (
-    HandoffRoute,
     build_handoff_notice,
     strip_handoff_placeholder,
 )
@@ -153,11 +152,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_build_handoff_notice_includes_one_reply_instruction(self) -> None:
         notice = build_handoff_notice(
-            HandoffRoute(
-                target="support_manual",
-                team_label="support team",
-                reason="manual follow-up needed",
-            ),
+            reason="manual follow-up needed",
             summary="i need a human asap",
             channel_id=1506309610192113917,
             guild_id=734804446353031319,
@@ -171,6 +166,20 @@ class RoutingTests(unittest.TestCase):
             "discord.com/channels/734804446353031319/1506309610192113917",
             notice,
         )
+
+    def test_build_handoff_notice_bounds_model_generated_reason(self) -> None:
+        notice = build_handoff_notice(
+            reason="x" * 400,
+            summary="manual action needed",
+            channel_id=1506309610192113917,
+            guild_id=734804446353031319,
+        )
+
+        reason_line = next(
+            line for line in notice.splitlines() if line.startswith("<b>Reason</b>:")
+        )
+        self.assertLessEqual(len(reason_line), len("<b>Reason</b>: ") + 260)
+        self.assertTrue(reason_line.endswith("..."))
 
     def test_strip_handoff_placeholder_preserves_newlines(self) -> None:
         text = (

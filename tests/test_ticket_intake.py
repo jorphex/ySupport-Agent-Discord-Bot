@@ -795,7 +795,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             stopped_channels.discard(channel_id)
             clear_ticket_investigation_job(channel_id)
 
-    async def test_process_ticket_message_security_exception_does_not_notify_security_team(self) -> None:
+    async def test_process_ticket_message_security_exception_does_not_notify_telegram(self) -> None:
         channel_id = 167
         fake_channel = _FakeDiscordChannel(channel_id)
 

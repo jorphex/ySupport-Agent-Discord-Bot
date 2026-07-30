@@ -12,6 +12,7 @@ class TicketAgentFlowOutcome:
     conversation_history: list[TResponseInputItem]
     completed_agent_key: str | None
     requires_human_handoff: bool
+    handoff_reason: str | None = None
 
 
 @dataclass

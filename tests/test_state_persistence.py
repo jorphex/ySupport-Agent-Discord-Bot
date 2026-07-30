@@ -336,13 +336,10 @@ class TicketStatePersistenceTests(unittest.TestCase):
                     TeamHandoffNotice(
                         telegram_chat_id="123",
                         telegram_message_id=456,
-                        target="support_manual",
                         reason="manual follow-up needed",
-                        message_text="Ticket-0107: support_manual",
-                        reply_consumed=True,
+                        message_text="Ticket-0107",
                         status="delivered_pending_close",
                         pending_reply_text="tell the user we queued the tx",
-                        pending_reply_message_id=789,
                         followup_attachments=[
                             {
                                 "filename": "details.png",
@@ -362,13 +359,10 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 assert notice is not None
                 self.assertEqual(notice.telegram_chat_id, "123")
                 self.assertEqual(notice.telegram_message_id, 456)
-                self.assertEqual(notice.target, "support_manual")
                 self.assertEqual(notice.reason, "manual follow-up needed")
-                self.assertEqual(notice.message_text, "Ticket-0107: support_manual")
-                self.assertTrue(notice.reply_consumed)
+                self.assertEqual(notice.message_text, "Ticket-0107")
                 self.assertEqual(notice.status, "delivered_pending_close")
                 self.assertEqual(notice.pending_reply_text, "tell the user we queued the tx")
-                self.assertEqual(notice.pending_reply_message_id, 789)
                 self.assertEqual(
                     notice.followup_attachments[0]["url"],
                     "https://cdn.example/details.png",
@@ -401,7 +395,6 @@ class TicketStatePersistenceTests(unittest.TestCase):
                     TeamHandoffNotice(
                         telegram_chat_id="123",
                         telegram_message_id=456,
-                        target="support_manual",
                         reason="manual follow-up needed",
                     ),
                 )

@@ -42,7 +42,6 @@ from state import (
 )
 from handoff import (
     DISMISS_HANDOFF_CALLBACK_DATA,
-    HandoffRoute,
     build_archived_handoff_notice,
     build_closed_handoff_notice,
     build_dismissed_handoff_notice,
@@ -442,11 +441,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         mock_sleep.assert_called_once_with(60.0)
 
     async def test_notify_handoff_uses_model_summary_when_available(self) -> None:
-        route = HandoffRoute(
-            target="support_manual",
-            team_label="support team",
-            reason="manual follow-up needed",
-        )
         notices: list[str] = []
 
         async def fake_summarize_handoff_summary(**kwargs) -> str | None:
@@ -474,7 +468,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             patch("ysupport.send_handoff_notice", new=fake_send_handoff_notice),
         ):
             await _notify_handoff(
-                route=route,
+                reason="manual follow-up needed",
                 summary="yes please tell them",
                 channel_id=1506309610192113917,
                 guild_id=734804446353031319,
@@ -493,11 +487,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_notify_handoff_falls_back_to_raw_summary_when_model_summary_missing(self) -> None:
-        route = HandoffRoute(
-            target="support_manual",
-            team_label="support team",
-            reason="manual follow-up needed",
-        )
         notices: list[str] = []
 
         async def fake_summarize_handoff_summary(**kwargs) -> str | None:
@@ -517,7 +506,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             patch("ysupport.send_handoff_notice", new=fake_send_handoff_notice),
         ):
             await _notify_handoff(
-                route=route,
+                reason="manual follow-up needed",
                 summary="yes please tell them",
                 channel_id=1506309610192113917,
                 guild_id=734804446353031319,
@@ -939,6 +928,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                         ],
                         completed_agent_key=None,
                         requires_human_handoff=True,
+                        handoff_reason=(
+                            "manual strategy action is required to process rewards"
+                        ),
                     ),
                     "updated_job": updated_job,
                 },
@@ -986,10 +978,13 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(fake_channel.sent_messages), 1)
         self.assertIn("This likely needs manual review.", fake_channel.sent_messages[0])
-        self.assertIn("I've notified the strategy team", fake_channel.sent_messages[0])
+        self.assertIn("I've notified the support team", fake_channel.sent_messages[0])
         self.assertNotIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, fake_channel.sent_messages[0])
         self.assertEqual(len(handoff_notices), 1)
-        self.assertIn("<code>strategist_ops</code>", handoff_notices[0])
+        self.assertIn(
+            "<b>Reason</b>: manual strategy action is required to process rewards",
+            handoff_notices[0],
+        )
 
     async def test_failed_ticket_handoff_notification_does_not_park_or_claim_success(self) -> None:
         channel_id = 193
@@ -1082,7 +1077,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
         )
         last_bot_reply_ts_by_channel.pop(channel_id, None)
@@ -1323,11 +1317,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         conversation_threads[channel_id] = [{"role": "user", "content": "initial issue"}]
         ticket_owner_user_id_by_channel[channel_id] = 777
         original_notice = build_handoff_notice(
-            HandoffRoute(
-                target="support_manual",
-                team_label="support team",
-                reason="manual follow-up needed",
-            ),
+            reason="manual follow-up needed",
             summary="initial issue",
             channel_id=channel_id,
             guild_id=2,
@@ -1335,7 +1325,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
             message_text=original_notice,
             followup_attachments=[
@@ -1537,7 +1526,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
             followup_attachments=[
                 {"url": "https://cdn.example/parked.png"}
@@ -1682,7 +1670,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
         )
         team_handoff_notice_by_channel[channel_id] = notice
@@ -1742,7 +1729,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                         message_id=999,
                     )
                 )
-                notice.reply_consumed = True
                 notice.status = "pending_delivery"
                 await bot._handle_telegram_handoff_update(
                     callback_update(
@@ -1773,11 +1759,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         channel_id = 297
         original_notice = build_handoff_notice(
-            HandoffRoute(
-                target="support_manual",
-                team_label="support team",
-                reason="manual follow-up needed",
-            ),
+            reason="manual follow-up needed",
             summary="initial issue",
             channel_id=channel_id,
             guild_id=2,
@@ -1791,7 +1773,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
             message_text=original_notice,
         )
@@ -1896,7 +1877,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
         )
         team_handoff_notice_by_channel[channel_id] = notice
@@ -2003,7 +1983,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
         )
         job = get_or_create_ticket_investigation_job(channel_id)
@@ -2043,7 +2022,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 )],
             )
             notice = team_handoff_notice_by_channel[channel_id]
-            self.assertFalse(notice.reply_consumed)
             self.assertEqual(notice.status, "open")
             self.assertIsNone(notice.pending_reply_text)
         finally:
@@ -2063,11 +2041,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         conversation_threads[channel_id] = [{"role": "user", "content": "initial issue"}]
         ticket_owner_user_id_by_channel[channel_id] = 777
         original_notice = build_handoff_notice(
-            HandoffRoute(
-                target="support_manual",
-                team_label="support team",
-                reason="manual follow-up needed",
-            ),
+            reason="manual follow-up needed",
             summary="initial issue",
             channel_id=channel_id,
             guild_id=2,
@@ -2075,13 +2049,10 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
             message_text=original_notice,
-            reply_consumed=True,
             status="pending_delivery",
             pending_reply_text="tell the user the tx is queued pending signatures",
-            pending_reply_message_id=999,
         )
         job = get_or_create_ticket_investigation_job(channel_id)
         job.mark_escalated_to_human()
@@ -2135,12 +2106,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
-            reply_consumed=True,
             status="pending_delivery",
             pending_reply_text="internal shorthand only",
-            pending_reply_message_id=999,
         )
         team_handoff_notice_by_channel[channel_id] = notice
 
@@ -2179,12 +2147,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
-            reply_consumed=True,
             status="pending_delivery",
             pending_reply_text="Tell the user this is resolved.",
-            pending_reply_message_id=999,
         )
         team_handoff_notice_by_channel[channel_id] = notice
         get_or_create_ticket_investigation_job(
@@ -2226,11 +2191,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_deleted_ticket_archives_open_telegram_handoff_notice(self) -> None:
         channel_id = 188
         original_notice = build_handoff_notice(
-            HandoffRoute(
-                target="support_manual",
-                team_label="support team",
-                reason="manual follow-up needed",
-            ),
+            reason="manual follow-up needed",
             summary="need human",
             channel_id=channel_id,
             guild_id=734804446353031319,
@@ -2238,7 +2199,6 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
             message_text=original_notice,
         )
@@ -2268,11 +2228,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_delivered_pending_close_resumes_without_resending_discord_update(self) -> None:
         channel_id = 196
         original_notice = build_handoff_notice(
-            HandoffRoute(
-                target="support_manual",
-                team_label="support team",
-                reason="manual follow-up needed",
-            ),
+            reason="manual follow-up needed",
             summary="need human",
             channel_id=channel_id,
             guild_id=734804446353031319,
@@ -2280,13 +2236,10 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
-            target="support_manual",
             reason="manual follow-up needed",
             message_text=original_notice,
-            reply_consumed=True,
             status="delivered_pending_close",
             pending_reply_text="tell the user the tx is queued pending signatures",
-            pending_reply_message_id=999,
         )
 
         bot = TicketBot(intents=discord.Intents.none())
@@ -2368,6 +2321,84 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(bot._telegram_update_offset)
             self.assertEqual(sleep_calls, [5])
         finally:
+            await bot.close()
+
+    async def test_telegram_loop_checks_for_new_pending_state_each_poll(
+        self,
+    ) -> None:
+        bot = TicketBot(intents=discord.Intents.none())
+        recovery_calls = 0
+        fetch_calls = 0
+
+        async def fake_recover_pending() -> None:
+            nonlocal recovery_calls
+            recovery_calls += 1
+
+        async def fake_fetch_updates(_offset):
+            nonlocal fetch_calls
+            fetch_calls += 1
+            if fetch_calls == 1:
+                return []
+            raise asyncio.CancelledError
+
+        try:
+            with (
+                patch.object(
+                    bot,
+                    "_resume_pending_telegram_handoff_replies",
+                    new=fake_recover_pending,
+                ),
+                patch(
+                    "ysupport.fetch_telegram_updates",
+                    new=fake_fetch_updates,
+                ),
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await bot._telegram_handoff_reply_loop()
+
+            self.assertEqual(recovery_calls, 2)
+            self.assertEqual(fetch_calls, 2)
+        finally:
+            await bot.close()
+
+    async def test_pending_telegram_recovery_is_bounded_per_notice_state(
+        self,
+    ) -> None:
+        channel_id = 298
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        bot = TicketBot(intents=discord.Intents.none())
+        delivery_calls = 0
+
+        async def fail_delivery(**_kwargs) -> bool:
+            nonlocal delivery_calls
+            delivery_calls += 1
+            return False
+
+        try:
+            with patch.object(
+                bot,
+                "_deliver_telegram_handoff_reply",
+                new=fail_delivery,
+            ):
+                await bot._resume_pending_telegram_handoff_replies()
+                self.assertEqual(delivery_calls, 0)
+
+                notice.status = "pending_delivery"
+                notice.pending_reply_text = "Tell the user the transaction is queued."
+                await bot._resume_pending_telegram_handoff_replies()
+                await bot._resume_pending_telegram_handoff_replies()
+                self.assertEqual(delivery_calls, 1)
+
+                notice.telegram_message_id = 457
+                await bot._resume_pending_telegram_handoff_replies()
+                self.assertEqual(delivery_calls, 2)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
             await bot.close()
 
     async def test_telegram_api_transport_failure_raises_typed_error(self) -> None:

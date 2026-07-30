@@ -182,14 +182,12 @@ class ConfigSummaryTests(unittest.TestCase):
         original_category = config.YEARN_TICKET_CATEGORY_ID
         original_trigger = config.YEARN_PUBLIC_TRIGGER_CHAR
         original_pr_channel = config.PR_MARKETING_CHANNEL_ID
-        original_handoff = config.HUMAN_HANDOFF_TARGET_USER_ID
         try:
             config.OPENAI_API_KEY = None
             config.DISCORD_BOT_TOKEN = None
             config.YEARN_TICKET_CATEGORY_ID = None
             config.YEARN_PUBLIC_TRIGGER_CHAR = None
             config.PR_MARKETING_CHANNEL_ID = None
-            config.HUMAN_HANDOFF_TARGET_USER_ID = None
             with self.assertRaises(ValueError) as exc:
                 config.validate_runtime_environment_config()
         finally:
@@ -198,7 +196,6 @@ class ConfigSummaryTests(unittest.TestCase):
             config.YEARN_TICKET_CATEGORY_ID = original_category
             config.YEARN_PUBLIC_TRIGGER_CHAR = original_trigger
             config.PR_MARKETING_CHANNEL_ID = original_pr_channel
-            config.HUMAN_HANDOFF_TARGET_USER_ID = original_handoff
 
         self.assertIn("OPENAI_API_KEY is required", str(exc.exception))
         self.assertIn("DISCORD_BOT_TOKEN is required", str(exc.exception))
