@@ -203,10 +203,33 @@ class StopBotView(_TicketOwnerView):
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-        stop_ticket_channel(channel_id)
+        stopped_durably = stop_ticket_channel(channel_id)
         task = pending_tasks.pop(channel_id, None)
         if task:
             task.cancel()
+
+        if not stopped_durably:
+            logging.error(
+                "Stopped channel %s in memory, but durable cleanup failed.",
+                channel_id,
+            )
+            failure_message = (
+                "The bot stopped, but I couldn't save that setting for a restart. "
+                "Please try Stop Bot again."
+            )
+            try:
+                await interaction.followup.send(
+                    failure_message,
+                    ephemeral=True,
+                    suppress_embeds=True,
+                )
+            except Exception:
+                if interaction.channel:
+                    await interaction.channel.send(
+                        failure_message,
+                        suppress_embeds=True,
+                    )
+            return
 
         try:
             if interaction.message:

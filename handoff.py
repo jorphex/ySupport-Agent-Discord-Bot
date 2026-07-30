@@ -104,6 +104,14 @@ _VAGUE_TEAM_REPLIES = {
     "done",
 }
 
+DISMISS_HANDOFF_CALLBACK_DATA = "dismiss_handoff"
+_DISMISS_HANDOFF_BUTTON_TEXT = "Dismiss and handle in Discord"
+_REPLY_ENABLED_FOOTER = (
+    "Reply to this message with what I should tell the user or do next. "
+    "Your reply will be used for the next ticket update. "
+    "Only one reply is accepted."
+)
+
 _handoff_summary_async_client: AsyncOpenAI | None = None
 
 
@@ -186,62 +194,69 @@ def build_handoff_notice(
     lines.append(f"<b>Summary</b>: {html.escape(_summarize_text(summary))}")
     lines.append("")
     if reply_enabled:
-        lines.append(
-            "Reply to this message with what I should tell the user or do next. "
-            "Your reply will be used for the next ticket update. "
-            "Only one reply is accepted."
-        )
+        lines.append(_REPLY_ENABLED_FOOTER)
     else:
         lines.append("Alert only. Follow up in the linked Discord channel.")
     return "\n".join(lines)
 
 
 def build_closed_handoff_notice(original_notice: str) -> str:
-    lines = original_notice.splitlines()
-    footer = (
-        "Reply to this message with what I should tell the user or do next. "
-        "Your reply will be used for the next ticket update. "
-        "Only one reply is accepted."
+    return _replace_handoff_footer(
+        original_notice,
+        "<i>Reply received. Replies closed.</i>",
     )
-    closed_footer = "<i>Reply received. Replies closed.</i>"
-    if lines and lines[-1].strip() == footer:
-        lines[-1] = closed_footer
-        return "\n".join(lines)
-    return f"{original_notice}\n\n{closed_footer}"
 
 
 def build_pending_delivery_handoff_notice(original_notice: str) -> str:
-    lines = original_notice.splitlines()
-    footer = (
-        "Reply to this message with what I should tell the user or do next. "
-        "Your reply will be used for the next ticket update. "
-        "Only one reply is accepted."
+    return _replace_handoff_footer(
+        original_notice,
+        "<i>Reply received. Delivering update...</i>",
     )
-    pending_footer = "<i>Reply received. Delivering update...</i>"
-    if lines and lines[-1].strip() == footer:
-        lines[-1] = pending_footer
-        return "\n".join(lines)
-    return f"{original_notice}\n\n{pending_footer}"
 
 
 def build_archived_handoff_notice(original_notice: str) -> str:
-    lines = original_notice.splitlines()
-    footer = (
-        "Reply to this message with what I should tell the user or do next. "
-        "Your reply will be used for the next ticket update. "
-        "Only one reply is accepted."
+    return _replace_handoff_footer(
+        original_notice,
+        "<i>Ticket closed. Replies disabled.</i>",
     )
-    archived_footer = "<i>Ticket closed. Replies disabled.</i>"
-    if lines and lines[-1].strip() == footer:
-        lines[-1] = archived_footer
+
+
+def build_dismissed_handoff_notice(original_notice: str) -> str:
+    return _replace_handoff_footer(
+        original_notice,
+        "<i>Dismissed. Handle in Discord.</i>",
+    )
+
+
+def _replace_handoff_footer(original_notice: str, replacement: str) -> str:
+    lines = original_notice.splitlines()
+    if lines and lines[-1].strip() == _REPLY_ENABLED_FOOTER:
+        lines[-1] = replacement
         return "\n".join(lines)
-    return f"{original_notice}\n\n{archived_footer}"
+    return f"{original_notice}\n\n{replacement}"
 
 
-async def send_handoff_notice(message_text: str) -> TelegramSentMessage | None:
+async def send_handoff_notice(
+    message_text: str,
+    *,
+    dismiss_enabled: bool = False,
+) -> TelegramSentMessage | None:
+    reply_markup = None
+    if dismiss_enabled:
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": _DISMISS_HANDOFF_BUTTON_TEXT,
+                        "callback_data": DISMISS_HANDOFF_CALLBACK_DATA,
+                    }
+                ]
+            ]
+        }
     return await send_telegram_message(
         chat_id=config.TELEGRAM_YSUPPORT_CHAT,
         message_text=message_text,
+        reply_markup=reply_markup,
     )
 
 
@@ -319,6 +334,7 @@ async def send_telegram_message(
     chat_id: str | None,
     message_text: str,
     reply_to_message_id: int | None = None,
+    reply_markup: dict[str, Any] | None = None,
 ) -> TelegramSentMessage | None:
     if "unittest" in sys.modules and os.getenv("YSUPPORT_ALLOW_TEST_TELEGRAM") != "1":
         return None
@@ -333,6 +349,8 @@ async def send_telegram_message(
     }
     if reply_to_message_id is not None:
         payload["reply_to_message_id"] = reply_to_message_id
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     try:
         response_payload = await _telegram_api_call("sendMessage", payload)
     except TelegramApiError as exc:
@@ -367,6 +385,7 @@ async def edit_handoff_notice(
         "text": message_text,
         "disable_web_page_preview": True,
         "parse_mode": "HTML",
+        "reply_markup": {"inline_keyboard": []},
     }
     try:
         response_payload = await _telegram_api_call("editMessageText", payload)
@@ -376,12 +395,50 @@ async def edit_handoff_notice(
     return bool(response_payload)
 
 
+async def answer_telegram_callback_query(
+    *,
+    callback_query_id: str,
+    message_text: str,
+) -> bool:
+    if "unittest" in sys.modules and os.getenv("YSUPPORT_ALLOW_TEST_TELEGRAM") != "1":
+        return False
+    payload = {
+        "callback_query_id": callback_query_id,
+        "text": message_text,
+    }
+    try:
+        response_payload = await _telegram_api_call("answerCallbackQuery", payload)
+    except TelegramApiError as exc:
+        logging.warning("%s", exc)
+        return False
+    return bool(response_payload)
+
+
+async def delete_telegram_message(
+    *,
+    chat_id: str,
+    message_id: int,
+) -> bool:
+    if "unittest" in sys.modules and os.getenv("YSUPPORT_ALLOW_TEST_TELEGRAM") != "1":
+        return False
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+    }
+    try:
+        response_payload = await _telegram_api_call("deleteMessage", payload)
+    except TelegramApiError as exc:
+        logging.warning("%s", exc)
+        return False
+    return bool(response_payload)
+
+
 async def fetch_telegram_updates(offset: int | None = None) -> list[dict[str, Any]]:
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_YSUPPORT_CHAT:
         return []
     payload: dict[str, Any] = {
         "timeout": 25,
-        "allowed_updates": ["message"],
+        "allowed_updates": ["message", "callback_query"],
     }
     if offset is not None:
         payload["offset"] = offset

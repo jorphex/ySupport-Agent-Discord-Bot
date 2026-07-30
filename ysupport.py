@@ -17,9 +17,13 @@ from agents import (
 
 import config
 from handoff import (
+    answer_telegram_callback_query,
     build_archived_handoff_notice,
     build_closed_handoff_notice,
+    build_dismissed_handoff_notice,
     build_pending_delivery_handoff_notice,
+    delete_telegram_message,
+    DISMISS_HANDOFF_CALLBACK_DATA,
     TelegramApiError,
     TelegramSentMessage,
     HandoffRoute,
@@ -74,7 +78,9 @@ from state import (
     remember_team_handoff_notice,
     remember_team_handoff_followup_attachments,
     remember_ticket_owner_user_id,
+    reset_ticket_codex_session,
     reset_ticket_channel_for_terminal_reply,
+    stop_ticket_channel,
     stopped_channels,
     TeamHandoffNotice,
     team_handoff_notice_by_channel,
@@ -377,6 +383,20 @@ def _should_ack_waiting_for_team(channel_id: int, *, cooldown_seconds: int = 180
     return (datetime.now(timezone.utc) - last_reply_at).total_seconds() >= cooldown_seconds
 
 
+def _find_team_handoff_notice(
+    *,
+    chat_id: str,
+    message_id: int,
+) -> tuple[int | None, TeamHandoffNotice | None]:
+    for channel_id, notice in team_handoff_notice_by_channel.items():
+        if (
+            notice.telegram_chat_id == chat_id
+            and notice.telegram_message_id == message_id
+        ):
+            return channel_id, notice
+    return None, None
+
+
 def _recent_user_messages_for_handoff(
     channel_id: int,
     latest_user_text: str,
@@ -440,7 +460,8 @@ async def _notify_handoff(
             channel_id=channel_id,
             guild_id=guild_id,
             reply_enabled=source == "ticket",
-        )
+        ),
+        dismiss_enabled=source == "ticket",
     )
     if isinstance(sent, TelegramSentMessage):
         logging.info(
@@ -908,6 +929,11 @@ class TicketBot(discord.Client):
                 )
 
     async def _handle_telegram_handoff_update(self, update: dict[str, Any]) -> None:
+        callback_query = update.get("callback_query")
+        if isinstance(callback_query, dict):
+            await self._handle_telegram_handoff_dismissal(callback_query)
+            return
+
         message = update.get("message")
         if not isinstance(message, dict):
             return
@@ -928,19 +954,15 @@ class TicketBot(discord.Client):
         if not isinstance(reply_to_message_id, int):
             return
 
-        matched_channel_id = None
-        matched_notice = None
-        for channel_id, notice in team_handoff_notice_by_channel.items():
-            if (
-                notice.telegram_chat_id == chat_id
-                and notice.telegram_message_id == reply_to_message_id
-            ):
-                matched_channel_id = channel_id
-                matched_notice = notice
-                break
+        matched_channel_id, matched_notice = _find_team_handoff_notice(
+            chat_id=chat_id,
+            message_id=reply_to_message_id,
+        )
         if matched_channel_id is None or matched_notice is None:
             return
         if matched_notice.reply_consumed or matched_notice.status != "open":
+            return
+        if matched_channel_id in stopped_channels:
             return
         if not is_substantive_team_reply(text):
             await send_telegram_message(
@@ -963,6 +985,99 @@ class TicketBot(discord.Client):
             team_reply_text=text,
         )
 
+    async def _handle_telegram_handoff_dismissal(
+        self,
+        callback_query: dict[str, Any],
+    ) -> None:
+        callback_query_id = str(callback_query.get("id") or "").strip()
+        if not callback_query_id:
+            return
+        message = callback_query.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        chat_id = (
+            str(chat.get("id") or "").strip()
+            if isinstance(chat, dict)
+            else ""
+        )
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        if (
+            callback_query.get("data") != DISMISS_HANDOFF_CALLBACK_DATA
+            or not chat_id
+            or chat_id != config.TELEGRAM_YSUPPORT_CHAT
+            or not isinstance(message_id, int)
+        ):
+            await answer_telegram_callback_query(
+                callback_query_id=callback_query_id,
+                message_text="This action is no longer available.",
+            )
+            return
+
+        matched_channel_id, matched_notice = _find_team_handoff_notice(
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+
+        if (
+            matched_channel_id is None
+            or matched_notice is None
+            or matched_notice.reply_consumed
+            or matched_notice.status != "open"
+        ):
+            await answer_telegram_callback_query(
+                callback_query_id=callback_query_id,
+                message_text="This handoff is already closed.",
+            )
+            return
+
+        stopped_durably = stop_ticket_channel(matched_channel_id)
+        task = pending_tasks.pop(matched_channel_id, None)
+        if task is not None:
+            task.cancel()
+
+        if not stopped_durably:
+            team_handoff_notice_by_channel[matched_channel_id] = matched_notice
+            logging.error(
+                "Stopped Telegram handoff for channel %s in memory, but durable cleanup failed.",
+                matched_channel_id,
+            )
+            await answer_telegram_callback_query(
+                callback_query_id=callback_query_id,
+                message_text=(
+                    "The handoff could not be dismissed safely. "
+                    "Please try again, or use Stop Bot in Discord."
+                ),
+            )
+            return
+
+        await answer_telegram_callback_query(
+            callback_query_id=callback_query_id,
+            message_text="Handoff dismissed. Handle this ticket in Discord.",
+        )
+        deleted = await delete_telegram_message(
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        if deleted:
+            return
+
+        edited = await edit_handoff_notice(
+            chat_id=chat_id,
+            message_id=message_id,
+            message_text=build_dismissed_handoff_notice(
+                matched_notice.message_text or "Dismissed. Handle in Discord."
+            ),
+        )
+        if not edited:
+            team_handoff_notice_by_channel[matched_channel_id] = matched_notice
+            retry_persisted = persist_ticket_state(matched_channel_id)
+            logging.warning(
+                "Dismissed Telegram handoff for channel %s, but could not remove "
+                "or edit notice %s; cleanup retry persisted=%s.",
+                matched_channel_id,
+                message_id,
+                retry_persisted,
+            )
+
     async def _deliver_telegram_handoff_reply(
         self,
         *,
@@ -970,6 +1085,8 @@ class TicketBot(discord.Client):
         notice: TeamHandoffNotice,
         team_reply_text: str,
     ) -> bool:
+        if channel_id in stopped_channels:
+            return False
         if notice.status == "pending_delivery":
             await edit_handoff_notice(
                 chat_id=notice.telegram_chat_id,
@@ -978,6 +1095,8 @@ class TicketBot(discord.Client):
                     notice.message_text or "Reply received. Delivering update..."
                 ),
             )
+            if channel_id in stopped_channels:
+                return False
 
         channel = self.get_channel(channel_id)
         if channel is None or not hasattr(channel, "send") or not hasattr(channel, "typing"):
@@ -1015,6 +1134,8 @@ class TicketBot(discord.Client):
                         channel,
                         list(notice.followup_attachments),
                     )
+                    if channel_id in stopped_channels:
+                        return False
                     final_reply = await _run_internal_instruction_turn(
                         executor=self.investigation_executor,
                         channel=channel,
@@ -1025,6 +1146,9 @@ class TicketBot(discord.Client):
                         workflow_suffix="team handoff reply",
                         attachments=attachments,
                     )
+                    if channel_id in stopped_channels:
+                        reset_ticket_codex_session(channel_id)
+                        return False
                 except Exception as exc:
                     logging.error(
                         "Failed to synthesize Telegram handoff reply for channel %s: %s",

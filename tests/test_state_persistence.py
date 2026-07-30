@@ -212,7 +212,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
             ):
                 conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
 
-                stop_ticket_channel(channel_id)
+                self.assertTrue(stop_ticket_channel(channel_id))
                 self.assertIn(channel_id, stopped_channels)
                 self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
 
@@ -230,6 +230,59 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 assert payload is not None
                 self.assertTrue(payload["stopped"])
                 self.assertEqual(payload["stop_reason"], "runtime_error")
+
+    def test_stop_ticket_channel_reports_state_write_failure(
+        self,
+    ) -> None:
+        channel_id = 105
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                ticket_dir = Path(temp_dir) / "tickets"
+                public_dir = Path(temp_dir) / "public"
+                with (
+                    patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                    patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+                    patch("state._write_json", return_value=False),
+                    patch("state.reset_ticket_codex_session"),
+                ):
+                    self.assertFalse(stop_ticket_channel(channel_id))
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    def test_session_reset_failure_is_logged_without_raising(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    state.config,
+                    "TICKET_EXECUTION_CODEX_SESSION_DIR",
+                    temp_dir,
+                ),
+                patch.object(
+                    state.CodexSupportSessionManager,
+                    "reset",
+                    side_effect=OSError("read-only"),
+                ),
+                patch("state.logging.error") as log_error,
+            ):
+                state.reset_ticket_codex_session(105)
+
+        log_error.assert_called_once()
+
+    def test_clear_ticket_channel_state_reports_persisted_delete_failure(
+        self,
+    ) -> None:
+        with (
+            patch("state._safe_unlink", return_value=False),
+            patch("state.reset_ticket_codex_session"),
+        ):
+            self.assertFalse(
+                clear_ticket_channel_state(
+                    105,
+                    delete_persisted=True,
+                )
+            )
 
     def test_recover_ticket_channel_from_runtime_stop_preserves_context(self) -> None:
         channel_id = 106

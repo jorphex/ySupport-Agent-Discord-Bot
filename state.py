@@ -320,9 +320,9 @@ def hydrate_persisted_team_handoff_states() -> int:
     return hydrated
 
 
-def persist_ticket_state(channel_id: int) -> None:
+def persist_ticket_state(channel_id: int) -> bool:
     if not _ensure_state_dirs():
-        return
+        return False
     payload = {
         "channel_id": channel_id,
         "history": list(conversation_threads.get(channel_id, [])),
@@ -342,7 +342,7 @@ def persist_ticket_state(channel_id: int) -> None:
             team_handoff_notice_by_channel.get(channel_id)
         ),
     }
-    _write_json(_TICKET_STATE_DIR / f"{channel_id}.json", payload)
+    return _write_json(_TICKET_STATE_DIR / f"{channel_id}.json", payload)
 
 
 def clear_ticket_channel_state(
@@ -352,7 +352,7 @@ def clear_ticket_channel_state(
     stop_reason: TicketStopReason | None = None,
     preserve_ticket_owner: bool = False,
     delete_persisted: bool = False,
-) -> None:
+) -> bool:
     preserved_ticket_owner_user_id = (
         ticket_owner_user_id_by_channel.get(channel_id)
         if keep_stopped or preserve_ticket_owner
@@ -386,11 +386,13 @@ def clear_ticket_channel_state(
         monitored_new_channels.discard(channel_id)
     if preserved_ticket_owner_user_id is not None:
         ticket_owner_user_id_by_channel[channel_id] = preserved_ticket_owner_user_id
-    reset_ticket_codex_session(channel_id)
     if delete_persisted:
-        _safe_unlink(_TICKET_STATE_DIR / f"{channel_id}.json")
-        return
-    persist_ticket_state(channel_id)
+        deleted = _safe_unlink(_TICKET_STATE_DIR / f"{channel_id}.json")
+        reset_ticket_codex_session(channel_id)
+        return deleted
+    persisted = persist_ticket_state(channel_id)
+    reset_ticket_codex_session(channel_id)
+    return persisted
 
 
 def reset_ticket_channel_for_terminal_reply(channel_id: int) -> None:
@@ -406,8 +408,8 @@ def stop_ticket_channel(
     channel_id: int,
     *,
     reason: TicketStopReason = "manual_stop",
-) -> None:
-    clear_ticket_channel_state(
+) -> bool:
+    return clear_ticket_channel_state(
         channel_id,
         keep_stopped=True,
         stop_reason=reason,
@@ -622,11 +624,18 @@ def persist_telegram_update_offset(update_offset: int) -> None:
 def _reset_codex_session(conversation_key: str) -> None:
     if not config.TICKET_EXECUTION_CODEX_SESSION_DIR:
         return
-    manager = CodexSupportSessionManager(
-        config.TICKET_EXECUTION_CODEX_SESSION_DIR,
-        max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
-    )
-    manager.reset(conversation_key)
+    try:
+        manager = CodexSupportSessionManager(
+            config.TICKET_EXECUTION_CODEX_SESSION_DIR,
+            max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+        )
+        manager.reset(conversation_key)
+    except OSError as exc:
+        logging.error(
+            "Failed to reset Codex session for %s: %s",
+            conversation_key,
+            exc,
+        )
 
 
 def _ticket_state_is_loaded(channel_id: int) -> bool:
@@ -739,11 +748,13 @@ def _write_json(path: Path, payload: dict[str, Any]) -> bool:
     return True
 
 
-def _safe_unlink(path: Path) -> None:
+def _safe_unlink(path: Path) -> bool:
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
         logging.warning("Failed to remove Discord state file %s: %s", path, exc)
+        return False
+    return True
 
 
 def _format_datetime(value: datetime | None) -> str | None:
