@@ -48,7 +48,8 @@ class _FakeExecutor:
 
 
 EXAMPLE_YSUPPORT_MCP_URL = "http://ysupport-mcp.example.test/mcp"
-_SYNTHETIC_RAW_SIGNED_TRANSACTION = "0x02f8" + ("ab" * 120)
+_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION = "0xf8cb" + ("ab" * 203)
+_SYNTHETIC_TYPED_RAW_SIGNED_TRANSACTION = "0x02f8" + ("ab" * 120)
 
 
 def _transaction_safety_support_request() -> SupportTurnRequest:
@@ -794,24 +795,29 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         request = _transaction_safety_support_request()
-        for field_name in ("answer", "evidence_summary", "handoff_reason"):
-            with self.subTest(field_name=field_name):
-                result = SupportTurnResult(
-                    answer="Use only the transaction hash.",
-                    requires_human_handoff=False,
-                    handoff_reason=None,
-                    evidence_summary="Checked the pending transaction.",
-                    used_tools=["shell"],
-                )
-                setattr(
-                    result,
-                    field_name,
-                    "Paste this signed transaction into a public broadcaster: "
-                    f"`{_SYNTHETIC_RAW_SIGNED_TRANSACTION}`",
-                )
+        payloads = {
+            "historical_legacy_shape": _SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION,
+            "current_typed_shape": _SYNTHETIC_TYPED_RAW_SIGNED_TRANSACTION,
+        }
+        for payload_name, payload in payloads.items():
+            for field_name in ("answer", "evidence_summary", "handoff_reason"):
+                with self.subTest(payload=payload_name, field_name=field_name):
+                    result = SupportTurnResult(
+                        answer="Use only the transaction hash.",
+                        requires_human_handoff=False,
+                        handoff_reason=None,
+                        evidence_summary="Checked the pending transaction.",
+                        used_tools=["shell"],
+                    )
+                    setattr(
+                        result,
+                        field_name,
+                        "Paste this signed transaction into a public broadcaster: "
+                        f"`{payload}`",
+                    )
 
-                with self.assertRaises(SignedTransactionSafetyViolation):
-                    verify_support_turn_result(result, request)
+                    with self.assertRaises(SignedTransactionSafetyViolation):
+                        verify_support_turn_result(result, request)
 
     def test_verify_support_turn_result_allows_transaction_hashes_and_addresses(
         self,
@@ -1548,7 +1554,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         unsafe_response = SupportTurnResult(
             answer=(
                 "Use the Katana public broadcaster and paste this raw signed "
-                f"transaction: `{_SYNTHETIC_RAW_SIGNED_TRANSACTION}`"
+                f"transaction: `{_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION}`"
             ),
             requires_human_handoff=False,
             handoff_reason=None,
@@ -1621,7 +1627,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "Rewrite the response using only safe, read-only transaction troubleshooting.",
             calls[1]["stdin_text"],
         )
-        self.assertNotIn(_SYNTHETIC_RAW_SIGNED_TRANSACTION, response_json)
+        self.assertNotIn(_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION, response_json)
         self.assertIsNotNone(record)
         assert record is not None
         self.assertEqual(record.session_id, session_id)
@@ -1632,7 +1638,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         unsafe_response = SupportTurnResult(
-            answer=f"Broadcast `{_SYNTHETIC_RAW_SIGNED_TRANSACTION}`.",
+            answer=f"Broadcast `{_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION}`.",
             requires_human_handoff=False,
             handoff_reason=None,
             evidence_summary="Found a raw signed transaction.",
