@@ -213,7 +213,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 max_output_chars=1000,
                 max_error_chars=500,
                 timeout_message=(
-                    f"Timed out deleting expired Codex session {session_id}."
+                    f"Timed out deleting Codex session {session_id}."
                 ),
                 empty_stdout_message=(
                     f"Codex did not confirm deletion of session {session_id}."
@@ -221,12 +221,12 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 oversized_stdout_message=(
                     f"Codex returned oversized deletion output for session {session_id}."
                 ),
-                metadata={"operation": "delete_expired_codex_session"},
+                metadata={"operation": "delete_codex_session"},
                 artifact_run_dir=None,
             )
-        except RuntimeError as exc:
+        except (OSError, RuntimeError) as exc:
             logging.warning(
-                "Failed to delete expired Codex session %s: %s",
+                "Failed to delete Codex session %s: %s",
                 session_id,
                 str(exc)[:500],
             )
@@ -288,6 +288,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
                     )
                     successful_bundle = bundle
                     successful_run_dir = run_dir
+                    persist_session = True
+                    export_workspace = True
                     exported_run_dir: Path | None = None
                     try:
                         execution_output = await self._run_with_auth_retry(
@@ -303,6 +305,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
                                 support_request,
                             )
                         except SignedTransactionSafetyViolation:
+                            persist_session = False
+                            export_workspace = False
                             logging.warning(
                                 "Codex support output crossed the signed-transaction "
                                 "safety boundary for %s; requesting one safe rewrite.",
@@ -312,31 +316,48 @@ class CodexSupportTicketExecutionJsonEndpoint:
                                 self._extract_session_id_from_run_dir(run_dir)
                                 or bundle.resumed_session_id
                             )
+                            _discard_unsafe_execution_stdout(run_dir)
                             if rewrite_session_id is None:
                                 raise
-                            rewrite_run_dir = run_dir / "transaction-safety-rewrite"
-                            rewrite_bundle = _build_codex_support_execution_bundle(
-                                support_request=support_request,
-                                run_dir=rewrite_run_dir,
-                                codex_command=self.codex_command,
-                                model=self.model,
-                                reasoning_effort=self.reasoning_effort,
-                                resume_session_id=rewrite_session_id,
-                                transaction_safety_rewrite=True,
-                            )
-                            rewrite_output = await self._run_with_auth_retry(
-                                bundle=rewrite_bundle,
-                                run_dir=rewrite_run_dir,
-                                hooks=hooks,
-                            )
-                            support_result = verify_support_turn_result(
-                                SupportTurnResult.from_json(
-                                    rewrite_output.final_response_text
-                                ),
-                                support_request,
-                            )
-                            successful_bundle = rewrite_bundle
-                            successful_run_dir = rewrite_run_dir
+                            try:
+                                if (
+                                    self.session_manager is not None
+                                    and conversation_key is not None
+                                ):
+                                    self.session_manager.reset(conversation_key)
+                                rewrite_run_dir = (
+                                    run_dir / "transaction-safety-rewrite"
+                                )
+                                rewrite_bundle = _build_codex_support_execution_bundle(
+                                    support_request=support_request,
+                                    run_dir=rewrite_run_dir,
+                                    codex_command=self.codex_command,
+                                    model=self.model,
+                                    reasoning_effort=self.reasoning_effort,
+                                    resume_session_id=rewrite_session_id,
+                                    transaction_safety_rewrite=True,
+                                )
+                                rewrite_output = await self._run_with_auth_retry(
+                                    bundle=rewrite_bundle,
+                                    run_dir=rewrite_run_dir,
+                                    hooks=hooks,
+                                )
+                                support_result = verify_support_turn_result(
+                                    SupportTurnResult.from_json(
+                                        rewrite_output.final_response_text
+                                    ),
+                                    support_request,
+                                )
+                            finally:
+                                deleted = await self._delete_codex_session(
+                                    rewrite_session_id
+                                )
+                                if not deleted:
+                                    logging.warning(
+                                        "Detached contaminated Codex session %s; "
+                                        "immediate deletion failed.",
+                                        rewrite_session_id,
+                                    )
                     except Exception as exc:
                         if (
                             self.session_manager is not None
@@ -349,11 +370,12 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             )
                         raise
                     finally:
-                        exported_run_dir = safe_export_workspace_copy(
-                            workspace,
-                            logger_name=__name__,
-                            context="codex support execution",
-                        )
+                        if export_workspace:
+                            exported_run_dir = safe_export_workspace_copy(
+                                workspace,
+                                logger_name=__name__,
+                                context="codex support execution",
+                            )
 
                 try:
                     response_json = support_result_to_transport_result(
@@ -375,7 +397,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         )
                     raise
 
-                if self.session_manager is not None and conversation_key is not None:
+                if (
+                    persist_session
+                    and self.session_manager is not None
+                    and conversation_key is not None
+                ):
                     session_id = (
                         self._extract_session_id_from_run_dir(successful_run_dir)
                         or successful_bundle.resumed_session_id
@@ -507,6 +533,16 @@ class CodexSupportTicketExecutionJsonEndpoint:
             self.session_manager.extract_session_id(stderr_text)
             if self.session_manager is not None
             else None
+        )
+
+
+def _discard_unsafe_execution_stdout(run_dir: Path) -> None:
+    try:
+        (run_dir / "stdout.txt").unlink(missing_ok=True)
+    except OSError as exc:
+        logging.warning(
+            "Could not remove unsafe Codex execution stdout from temporary workspace: %s",
+            exc,
         )
 
 

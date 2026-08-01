@@ -94,6 +94,25 @@ def _transaction_safety_transport_request(
 
 
 class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_session_deletion_handles_unavailable_executable(self) -> None:
+        endpoint = CodexSupportTicketExecutionJsonEndpoint(
+            codex_command=["missing-codex-for-test", "exec"],
+            allowed_command_prefixes=[["missing-codex-for-test", "exec"]],
+        )
+
+        with self.assertLogs(level="WARNING") as captured_logs:
+            deleted = await endpoint._delete_codex_session(
+                "019dade1-5acf-70e2-9c61-f5ba37862a78"
+            )
+
+        self.assertFalse(deleted)
+        self.assertTrue(
+            any(
+                "Failed to delete Codex session" in line
+                for line in captured_logs.output
+            )
+        )
+
     async def test_cancelled_codex_execution_kills_spawned_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             child_pid_path = Path(temp_dir) / "child_pid.txt"
@@ -1574,8 +1593,10 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         ).to_json()
         session_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
         calls: list[dict[str, object]] = []
+        unsafe_stdout_removed = False
 
         async def fake_run_streaming_subprocess(**kwargs):
+            nonlocal unsafe_stdout_removed
             calls.append(kwargs)
             if len(calls) == 1:
                 run_dir = kwargs["artifact_run_dir"]
@@ -1588,16 +1609,24 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     encoding="utf-8",
                 )
+            else:
+                first_run_dir = calls[0]["artifact_run_dir"]
+                unsafe_stdout_removed = not Path(
+                    first_run_dir,
+                    "stdout.txt",
+                ).exists()
             response = unsafe_response if len(calls) == 1 else safe_response
             return CodexSupportExecutionOutput(final_response_text=response)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             session_dir = Path(temp_dir) / "sessions"
+            artifact_dir = Path(temp_dir) / "artifacts"
             session_manager = CodexSupportSessionManager(session_dir)
             endpoint = CodexSupportTicketExecutionJsonEndpoint(
                 codex_command=["codex", "exec"],
                 session_dir=session_dir,
                 allowed_command_prefixes=[["codex", "exec"]],
+                artifact_dir=str(artifact_dir),
             )
             request = _transaction_safety_transport_request(
                 history=[
@@ -1608,7 +1637,11 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
 
-            with mock.patch(
+            with mock.patch.object(
+                endpoint,
+                "_delete_codex_session",
+                new=mock.AsyncMock(return_value=True),
+            ) as mock_delete, mock.patch(
                 "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
                 side_effect=fake_run_streaming_subprocess,
             ):
@@ -1622,17 +1655,16 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             SupportTurnResult.from_json(safe_response).answer,
         )
         self.assertEqual(len(calls), 2)
+        mock_delete.assert_awaited_once_with(session_id)
         self.assertIn(session_id, calls[1]["command"])
         self.assertIn(
             "Rewrite the response using only safe, read-only transaction troubleshooting.",
             calls[1]["stdin_text"],
         )
         self.assertNotIn(_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION, response_json)
-        self.assertIsNotNone(record)
-        assert record is not None
-        self.assertEqual(record.session_id, session_id)
-        self.assertEqual(record.run_count, 1)
-        self.assertEqual(record.consecutive_failures, 0)
+        self.assertTrue(unsafe_stdout_removed)
+        self.assertIsNone(record)
+        self.assertFalse(artifact_dir.exists())
 
     async def test_codex_support_endpoint_limits_transaction_safety_rewrite_to_once(
         self,
@@ -1660,7 +1692,11 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
             request = _transaction_safety_transport_request()
 
-            with mock.patch(
+            with mock.patch.object(
+                endpoint,
+                "_delete_codex_session",
+                new=mock.AsyncMock(return_value=True),
+            ) as mock_delete, mock.patch(
                 "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
                 return_value=CodexSupportExecutionOutput(
                     final_response_text=unsafe_response
@@ -1672,10 +1708,83 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             failed_record = session_manager.load("ticket:109")
 
         self.assertEqual(mock_run.call_count, 2)
-        self.assertIsNotNone(failed_record)
-        assert failed_record is not None
-        self.assertEqual(failed_record.run_count, 1)
-        self.assertEqual(failed_record.consecutive_failures, 1)
+        mock_delete.assert_awaited_once_with(session_id)
+        self.assertIsNone(failed_record)
+
+    async def test_codex_support_endpoint_detaches_session_when_deletion_fails(
+        self,
+    ) -> None:
+        unsafe_response = SupportTurnResult(
+            answer=f"Broadcast `{_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION}`.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Found a raw signed transaction.",
+            used_tools=["shell"],
+        ).to_json()
+        safe_response = SupportTurnResult(
+            answer="Use the wallet's built-in cancel flow and share only the public hash.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Kept troubleshooting read-only.",
+            used_tools=["shell"],
+        ).to_json()
+        session_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+        calls: list[dict[str, object]] = []
+
+        async def fake_run_streaming_subprocess(**kwargs):
+            calls.append(kwargs)
+            response = unsafe_response if len(calls) == 1 else safe_response
+            return CodexSupportExecutionOutput(final_response_text=response)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir) / "sessions"
+            session_manager = CodexSupportSessionManager(session_dir)
+            session_manager.record_success(
+                conversation_key="ticket:109",
+                session_id=session_id,
+            )
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=["codex", "exec"],
+                session_dir=session_dir,
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+            request = _transaction_safety_transport_request()
+
+            with mock.patch.object(
+                endpoint,
+                "_delete_codex_session",
+                new=mock.AsyncMock(return_value=False),
+            ) as mock_delete, mock.patch(
+                "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+                side_effect=fake_run_streaming_subprocess,
+            ), self.assertLogs(level="WARNING") as captured_logs:
+                first_response = await endpoint.execute_json_turn(request.to_json())
+                second_response = await endpoint.execute_json_turn(request.to_json())
+
+            record = session_manager.load("ticket:109")
+
+        self.assertEqual(
+            TicketExecutionTransportResult.from_json(first_response).flow_outcome[
+                "raw_final_reply"
+            ],
+            SupportTurnResult.from_json(safe_response).answer,
+        )
+        self.assertEqual(
+            TicketExecutionTransportResult.from_json(second_response).flow_outcome[
+                "raw_final_reply"
+            ],
+            SupportTurnResult.from_json(safe_response).answer,
+        )
+        mock_delete.assert_awaited_once_with(session_id)
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn("resume", calls[2]["command"])
+        self.assertIsNone(record)
+        self.assertTrue(
+            any(
+                "Detached contaminated Codex session" in line
+                for line in captured_logs.output
+            )
+        )
 
     async def test_codex_support_endpoint_records_verification_failure_not_success(self) -> None:
         invalid_response = SupportTurnResult(
