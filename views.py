@@ -19,7 +19,7 @@ from state import (
 )
 
 
-def is_ticket_contributor(user: discord.abc.User) -> bool:
+def _has_ticket_contributor_role(user: discord.abc.User) -> bool:
     contributor_role_id = config.TICKET_CONTRIBUTOR_ROLE_ID
     if contributor_role_id is None:
         return False
@@ -27,11 +27,52 @@ def is_ticket_contributor(user: discord.abc.User) -> bool:
     return any(getattr(role, "id", None) == contributor_role_id for role in roles)
 
 
-def _is_ticket_stop_staff(user: discord.abc.User) -> bool:
+def is_ticket_support_staff(user: discord.abc.User) -> bool:
     guild_permissions = getattr(user, "guild_permissions", None)
-    return is_ticket_contributor(user) or bool(
+    return _has_ticket_contributor_role(user) or bool(
         getattr(guild_permissions, "administrator", False)
     )
+
+
+async def stop_ticket_for_manual_support(channel_id: int) -> bool:
+    handoff_notice = team_handoff_notice_by_channel.get(channel_id)
+    stopped_durably = stop_ticket_channel(channel_id)
+    task = pending_tasks.pop(channel_id, None)
+    if task is not None:
+        task.cancel()
+
+    if not stopped_durably:
+        if handoff_notice is not None:
+            team_handoff_notice_by_channel[channel_id] = handoff_notice
+        logging.error(
+            "Stopped channel %s in memory, but durable cleanup failed.",
+            channel_id,
+        )
+        return False
+
+    if handoff_notice is None:
+        return True
+
+    retired = await retire_handoff_notice(
+        chat_id=handoff_notice.telegram_chat_id,
+        message_id=handoff_notice.telegram_message_id,
+        fallback_message_text=build_dismissed_handoff_notice(
+            handoff_notice.message_text or "Dismissed. Handle in Discord."
+        ),
+    )
+    if retired:
+        return True
+
+    team_handoff_notice_by_channel[channel_id] = handoff_notice
+    retry_persisted = persist_ticket_state(channel_id)
+    logging.warning(
+        "Stopped ticket %s, but could not remove or edit Telegram handoff "
+        "notice %s; cleanup retry persisted=%s.",
+        channel_id,
+        handoff_notice.telegram_message_id,
+        retry_persisted,
+    )
+    return True
 
 
 class _TicketOwnerView(View):
@@ -182,7 +223,7 @@ class StopBotView(_TicketOwnerView):
         if (
             owner_user_id is not None
             and interaction.user.id == owner_user_id
-        ) or _is_ticket_stop_staff(interaction.user):
+        ) or is_ticket_support_staff(interaction.user):
             return True
         message = (
             "Only the ticket owner or support team can stop the bot."
@@ -206,19 +247,9 @@ class StopBotView(_TicketOwnerView):
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-        handoff_notice = team_handoff_notice_by_channel.get(channel_id)
-        stopped_durably = stop_ticket_channel(channel_id)
-        task = pending_tasks.pop(channel_id, None)
-        if task:
-            task.cancel()
+        stopped_durably = await stop_ticket_for_manual_support(channel_id)
 
         if not stopped_durably:
-            if handoff_notice is not None:
-                team_handoff_notice_by_channel[channel_id] = handoff_notice
-            logging.error(
-                "Stopped channel %s in memory, but durable cleanup failed.",
-                channel_id,
-            )
             failure_message = (
                 "The bot stopped, but I couldn't save that setting for a restart. "
                 "Please try Stop Bot again."
@@ -257,23 +288,3 @@ class StopBotView(_TicketOwnerView):
         except Exception:
             if interaction.channel:
                 await interaction.channel.send(confirmation_message, suppress_embeds=True)
-
-        if handoff_notice is not None:
-            retired = await retire_handoff_notice(
-                chat_id=handoff_notice.telegram_chat_id,
-                message_id=handoff_notice.telegram_message_id,
-                fallback_message_text=build_dismissed_handoff_notice(
-                    handoff_notice.message_text
-                    or "Dismissed. Handle in Discord."
-                ),
-            )
-            if not retired:
-                team_handoff_notice_by_channel[channel_id] = handoff_notice
-                retry_persisted = persist_ticket_state(channel_id)
-                logging.warning(
-                    "Stopped ticket %s, but could not remove or edit Telegram "
-                    "handoff notice %s; cleanup retry persisted=%s.",
-                    channel_id,
-                    handoff_notice.telegram_message_id,
-                    retry_persisted,
-                )

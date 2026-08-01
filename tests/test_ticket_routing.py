@@ -44,18 +44,22 @@ from ysupport import (
     _extract_ticket_owner_user_id_from_messages,
     _guardrail_tripwire_reply,
     _maybe_recover_runtime_stopped_ticket_for_message,
-    _normalize_contributor_override_prompt,
+    _normalize_staff_summon_prompt,
     _outer_support_boundary_reply,
 )
 
 class RoutingTests(unittest.TestCase):
-    def test_normalize_contributor_override_prompt_strips_prefix(self) -> None:
+    def test_normalize_staff_summon_prompt_strips_prefix(self) -> None:
         self.assertEqual(
-            _normalize_contributor_override_prompt("[y] find the apy logic"),
+            _normalize_staff_summon_prompt("y: find the apy logic"),
             "find the apy logic",
         )
-        self.assertIsNone(_normalize_contributor_override_prompt("find the apy logic"))
-        self.assertIsNone(_normalize_contributor_override_prompt("[y]   "))
+        self.assertEqual(
+            _normalize_staff_summon_prompt("Y:find the apy logic"),
+            "find the apy logic",
+        )
+        self.assertIsNone(_normalize_staff_summon_prompt("find the apy logic"))
+        self.assertIsNone(_normalize_staff_summon_prompt("y:   "))
 
     def test_extract_ticket_owner_user_id_from_messages_prefers_bot_opener_mention(self) -> None:
         human_message = SimpleNamespace(
@@ -75,14 +79,14 @@ class RoutingTests(unittest.TestCase):
             222,
         )
 
-    @patch("ysupport._is_contributor_member")
-    def test_classify_ticket_message_action_active_ticket_only_allows_owner(
+    @patch("ysupport._is_support_staff_member")
+    def test_classify_ticket_message_action_active_ticket_separates_owner_and_staff(
         self,
-        mock_is_contributor_member,
+        mock_is_support_staff_member,
     ) -> None:
-        mock_is_contributor_member.side_effect = lambda author: author.id == 2
+        mock_is_support_staff_member.side_effect = lambda author: author.id == 2
         owner = SimpleNamespace(id=1)
-        contributor = SimpleNamespace(id=2)
+        staff = SimpleNamespace(id=2)
         stranger = SimpleNamespace(id=3)
 
         self.assertEqual(
@@ -96,36 +100,54 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             _classify_ticket_message_action(
-                author=contributor,
+                author=owner,
+                content="y: this is ordinary owner text",
+                ticket_owner_user_id=1,
+                stopped=False,
+            ),
+            "process",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=staff,
                 content="I have thoughts",
                 ticket_owner_user_id=1,
                 stopped=False,
             ),
-            "ignore",
+            "staff_takeover",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=staff,
+                content="Y: explain the gas requirement",
+                ticket_owner_user_id=1,
+                stopped=False,
+            ),
+            "staff_summon",
         )
         self.assertEqual(
             _classify_ticket_message_action(
                 author=stranger,
-                content="same issue",
+                content="y: same issue",
                 ticket_owner_user_id=1,
                 stopped=False,
             ),
             "ignore",
         )
 
-    @patch("ysupport._is_contributor_member")
-    def test_classify_ticket_message_action_stopped_ticket_allows_only_prefixed_contributor(
+    @patch("ysupport._is_support_staff_member")
+    def test_classify_ticket_message_action_stopped_ticket_supports_staff_commands(
         self,
-        mock_is_contributor_member,
+        mock_is_support_staff_member,
     ) -> None:
-        mock_is_contributor_member.side_effect = lambda author: author.id == 2
+        mock_is_support_staff_member.side_effect = lambda author: author.id == 2
         owner = SimpleNamespace(id=1)
-        contributor = SimpleNamespace(id=2)
+        staff = SimpleNamespace(id=2)
 
         self.assertEqual(
             _classify_ticket_message_action(
                 author=owner,
-                content="[y] try again",
+                content="y: try again",
                 ticket_owner_user_id=1,
                 stopped=True,
             ),
@@ -133,21 +155,30 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             _classify_ticket_message_action(
-                author=contributor,
+                author=staff,
                 content="please retry",
                 ticket_owner_user_id=1,
                 stopped=True,
             ),
-            "ignore",
+            "staff_takeover",
         )
         self.assertEqual(
             _classify_ticket_message_action(
-                author=contributor,
-                content="[y] retry with vault evidence",
+                author=staff,
+                content="y: retry with vault evidence",
                 ticket_owner_user_id=1,
                 stopped=True,
             ),
-            "contributor_override",
+            "staff_summon",
+        )
+        self.assertEqual(
+            _classify_ticket_message_action(
+                author=staff,
+                content="y:   ",
+                ticket_owner_user_id=1,
+                stopped=True,
+            ),
+            "staff_summon_usage",
         )
 
     def test_build_handoff_notice_includes_one_reply_instruction(self) -> None:
@@ -193,12 +224,12 @@ class RoutingTests(unittest.TestCase):
             "Main difference from Aave:\n- Flex uses fixed rates.\n- Aave uses variable rates.",
         )
 
-    @patch("ysupport._is_contributor_member")
+    @patch("ysupport._is_support_staff_member")
     def test_runtime_stopped_ticket_recovers_for_owner_message(
         self,
-        mock_is_contributor_member,
+        mock_is_support_staff_member,
     ) -> None:
-        mock_is_contributor_member.return_value = False
+        mock_is_support_staff_member.return_value = False
         channel_id = 77
         owner = SimpleNamespace(id=1, name="owner")
         stopped_channels.add(channel_id)
@@ -217,12 +248,12 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    @patch("ysupport._is_contributor_member")
+    @patch("ysupport._is_support_staff_member")
     def test_runtime_stopped_ticket_recovers_for_known_owner_with_contributor_role(
         self,
-        mock_is_contributor_member,
+        mock_is_support_staff_member,
     ) -> None:
-        mock_is_contributor_member.return_value = True
+        mock_is_support_staff_member.return_value = True
         channel_id = 177
         owner = SimpleNamespace(id=1, name="owner")
         stopped_channels.add(channel_id)
@@ -241,12 +272,12 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    @patch("ysupport._is_contributor_member")
+    @patch("ysupport._is_support_staff_member")
     def test_runtime_stopped_ticket_does_not_recover_for_non_owner_contributor(
         self,
-        mock_is_contributor_member,
+        mock_is_support_staff_member,
     ) -> None:
-        mock_is_contributor_member.return_value = True
+        mock_is_support_staff_member.return_value = True
         channel_id = 277
         contributor = SimpleNamespace(id=2, name="contributor")
         stopped_channels.add(channel_id)
@@ -265,12 +296,12 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    @patch("ysupport._is_contributor_member")
+    @patch("ysupport._is_support_staff_member")
     def test_boundary_stopped_ticket_does_not_recover_for_owner_message(
         self,
-        mock_is_contributor_member,
+        mock_is_support_staff_member,
     ) -> None:
-        mock_is_contributor_member.return_value = False
+        mock_is_support_staff_member.return_value = False
         channel_id = 78
         owner = SimpleNamespace(id=1, name="owner")
         stopped_channels.add(channel_id)

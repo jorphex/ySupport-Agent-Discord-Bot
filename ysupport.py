@@ -100,7 +100,12 @@ from ticket_investigation.executor import (
     TicketExecutionHooks,
     TransportTicketInvestigationExecutor,
 )
-from views import InitialInquiryView, StopBotView, is_ticket_contributor
+from views import (
+    InitialInquiryView,
+    is_ticket_support_staff,
+    StopBotView,
+    stop_ticket_for_manual_support,
+)
 from utils import send_long_message
 
 
@@ -304,6 +309,12 @@ def _restore_active_ticket_payload(channel_id: int) -> None:
             queued_text,
             queued_attachments,
         )
+
+
+def _discard_pending_ticket_payload(channel_id: int) -> None:
+    pending_messages.pop(channel_id, None)
+    pending_attachments_by_channel.pop(channel_id, None)
+    active_ticket_payloads.pop(channel_id, None)
 
 
 def _record_waiting_for_team_followup(
@@ -551,10 +562,20 @@ async def _run_internal_instruction_turn(
     instruction_text: str,
     workflow_suffix: str,
     attachments: list[dict[str, Any]],
+    current_history_override: List[TResponseInputItem] | None = None,
+    persist_result: bool = True,
 ) -> str:
     investigation_job = deepcopy(get_or_create_ticket_investigation_job(channel_id))
-    current_history = list(conversation_threads.get(channel_id, []))
-    if not current_history and isinstance(channel, discord.TextChannel):
+    current_history = (
+        list(current_history_override)
+        if current_history_override is not None
+        else list(conversation_threads.get(channel_id, []))
+    )
+    if (
+        current_history_override is None
+        and not current_history
+        and isinstance(channel, discord.TextChannel)
+    ):
         current_history = await _build_recent_channel_history_fallback(
             channel,
             exclude_message_id=-1,
@@ -583,8 +604,11 @@ async def _run_internal_instruction_turn(
                 send_progress_update=progress_reporter.update,
             ),
         )
-        conversation_threads[channel_id] = worker_result.flow_outcome.conversation_history
-        persist_ticket_state(channel_id)
+        if persist_result:
+            conversation_threads[channel_id] = (
+                worker_result.flow_outcome.conversation_history
+            )
+            persist_ticket_state(channel_id)
         return _render_support_reply(worker_result.flow_outcome.raw_final_reply)
     finally:
         await progress_reporter.close()
@@ -680,17 +704,21 @@ def _build_ticket_run_context(
     )
 
 
-def _is_contributor_member(author: discord.abc.User) -> bool:
-    return is_ticket_contributor(author)
+def _is_support_staff_member(author: discord.abc.User) -> bool:
+    return is_ticket_support_staff(author)
 
 
-def _normalize_contributor_override_prompt(text: str) -> str | None:
+def _has_staff_summon_prefix(text: str) -> bool:
     stripped = (text or "").strip()
-    prefix = config.TICKET_CONTRIBUTOR_OVERRIDE_PREFIX.strip()
-    if not stripped or not prefix:
+    prefix = config.TICKET_STAFF_SUMMON_PREFIX
+    return bool(stripped) and stripped.lower().startswith(prefix.lower())
+
+
+def _normalize_staff_summon_prompt(text: str) -> str | None:
+    if not _has_staff_summon_prefix(text):
         return None
-    if not stripped.lower().startswith(prefix.lower()):
-        return None
+    stripped = (text or "").strip()
+    prefix = config.TICKET_STAFF_SUMMON_PREFIX
     prompt = stripped[len(prefix) :].strip()
     return prompt or None
 
@@ -722,7 +750,13 @@ async def _detect_ticket_owner_user_id(channel: discord.TextChannel) -> int | No
     return _extract_ticket_owner_user_id_from_messages(opener_messages)
 
 
-TicketMessageAction = Literal["process", "ignore", "contributor_override"]
+TicketMessageAction = Literal[
+    "process",
+    "ignore",
+    "staff_summon",
+    "staff_summon_usage",
+    "staff_takeover",
+]
 
 
 def _classify_ticket_message_action(
@@ -732,16 +766,22 @@ def _classify_ticket_message_action(
     ticket_owner_user_id: int | None,
     stopped: bool,
 ) -> TicketMessageAction:
-    is_contributor = _is_contributor_member(author)
+    if ticket_owner_user_id is not None and author.id == ticket_owner_user_id:
+        return "ignore" if stopped else "process"
+    is_staff = _is_support_staff_member(author)
+    if is_staff and _has_staff_summon_prefix(content):
+        return (
+            "staff_summon"
+            if _normalize_staff_summon_prompt(content)
+            else "staff_summon_usage"
+        )
+    if is_staff:
+        return "staff_takeover"
     if stopped:
-        if is_contributor and _normalize_contributor_override_prompt(content):
-            return "contributor_override"
         return "ignore"
     if ticket_owner_user_id is None:
-        return "ignore" if is_contributor else "process"
-    if author.id != ticket_owner_user_id:
-        return "ignore"
-    return "process"
+        return "process"
+    return "ignore"
 
 
 def _maybe_recover_runtime_stopped_ticket_for_message(
@@ -755,7 +795,7 @@ def _maybe_recover_runtime_stopped_ticket_for_message(
     if ticket_owner_user_id is not None:
         if author.id != ticket_owner_user_id:
             return False
-    elif _is_contributor_member(author):
+    elif _is_support_staff_member(author):
         return False
     recovered = recover_ticket_channel_from_runtime_stop(channel_id)
     if recovered:
@@ -787,6 +827,41 @@ async def _build_recent_channel_history_fallback(
         role = "assistant" if message.author.bot else "user"
         history.append({"role": role, "content": content})
     return history
+
+
+async def _build_staff_summon_history(
+    channel: discord.TextChannel,
+    *,
+    exclude_message_id: int,
+    ticket_owner_user_id: int | None,
+    bot_user_id: int | None,
+    scan_limit: int = 30,
+    history_limit: int = 12,
+) -> List[TResponseInputItem]:
+    messages = [message async for message in channel.history(limit=scan_limit)]
+    messages.reverse()
+    history: List[TResponseInputItem] = []
+    for message in messages:
+        if message.id == exclude_message_id:
+            continue
+        content = _message_text_for_turn(message)
+        if not content:
+            continue
+        if message.author.bot:
+            if bot_user_id is None or message.author.id == bot_user_id:
+                history.append({"role": "assistant", "content": content})
+            continue
+        if _is_support_staff_member(message.author):
+            history.append(
+                {
+                    "role": "system",
+                    "content": f"Internal support staff message: {content}",
+                }
+            )
+            continue
+        if ticket_owner_user_id is None or message.author.id == ticket_owner_user_id:
+            history.append({"role": "user", "content": content})
+    return history[-history_limit:]
 
 
 # Discord Bot Implementation
@@ -1546,76 +1621,96 @@ class TicketBot(discord.Client):
             )
         return aggregated_text, attachments
 
-    async def _handle_stopped_ticket_contributor_override(
+    async def _handle_ticket_staff_summon(
         self,
         message: discord.Message,
         run_context: BotRunContext,
         prompt_text: str,
+        *,
+        was_stopped: bool,
     ) -> None:
         channel_id = message.channel.id
-        investigation_job = deepcopy(get_or_create_ticket_investigation_job(channel_id))
-        current_history = list(conversation_threads.get(channel_id, []))
-        if not current_history and isinstance(message.channel, discord.TextChannel):
-            current_history = await _build_recent_channel_history_fallback(
-                message.channel,
-                exclude_message_id=message.id,
-            )
-        input_list: List[TResponseInputItem] = current_history + [
-            {
-                "role": "system",
-                "content": (
-                    "This is a contributor override turn in a stopped ticket. "
-                    "Answer the contributor request using the existing ticket context, "
-                    "but do not treat this as a normal user turn or a full bot resume."
-                ),
-            },
-            {"role": "user", "content": prompt_text},
-        ]
-
         logging.info(
-            "Processing contributor override in stopped ticket %s from %s.",
+            "Processing staff-directed ySupport turn in ticket %s from %s; "
+            "ticket_stopped=%s.",
             channel_id,
             message.author.name,
+            was_stopped,
         )
+        instruction_text = (
+            "This is an explicit instruction from authorized Yearn support staff. "
+            "Write the reply ySupport should send to the ticket user. Treat the "
+            "current message and any system-labeled staff transcript entries as "
+            "internal staff direction, not as claims or requests from the ticket "
+            "user. Use the ticket context, do not expose the internal instruction, "
+            "and do not request a human or Telegram handoff."
+        )
+        if was_stopped:
+            instruction_text += (
+                " This ticket remains under manual staff control after this one "
+                "reply. Give a complete answer and do not ask the user to reply or "
+                "promise unattended follow-up from the bot."
+            )
 
-        async with message.channel.typing():
-            progress_reporter = _DiscordProgressReporter(message.channel, channel_id)
-            try:
-                worker_result = await self.investigation_executor.execute_turn(
-                    _build_turn_request(
-                        aggregated_text=prompt_text,
-                        input_list=input_list,
-                        current_history=current_history,
-                        attachments=_attachment_payloads_from_message(message),
-                        run_context=run_context,
-                        investigation_job=investigation_job,
-                        workflow_name=f"{_ticket_workflow_name(run_context)} [contributor override]",
-                        precomputed_boundary=None,
-                    ),
-                    hooks=TicketExecutionHooks(
-                        send_progress_update=progress_reporter.update,
-                    ),
+        current_task = asyncio.current_task()
+        try:
+            current_history = await _build_staff_summon_history(
+                message.channel,
+                exclude_message_id=message.id,
+                ticket_owner_user_id=ticket_owner_user_id_by_channel.get(channel_id),
+                bot_user_id=self.user.id if self.user is not None else None,
+            )
+            async with message.channel.typing():
+                final_reply = await _run_internal_instruction_turn(
+                    executor=self.investigation_executor,
+                    channel=message.channel,
+                    channel_id=channel_id,
+                    run_context=run_context,
+                    prompt_text=prompt_text,
+                    instruction_text=instruction_text,
+                    workflow_suffix="staff summon",
+                    attachments=_attachment_payloads_from_message(message),
+                    current_history_override=current_history,
+                    persist_result=not was_stopped,
                 )
-                final_reply = _render_support_reply(
-                    worker_result.flow_outcome.raw_final_reply
-                )
-            except Exception as exc:
+            await send_long_message(
+                message.channel,
+                final_reply,
+                view=StopBotView() if not was_stopped else None,
+            )
+            last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+            if not was_stopped:
+                persist_ticket_state(channel_id)
+        except asyncio.CancelledError:
+            logging.info(
+                "Staff-directed ySupport turn in ticket %s was cancelled.",
+                channel_id,
+            )
+            raise
+        except Exception as exc:
+            logging.error(
+                "Staff-directed ySupport turn failed in ticket %s: %s",
+                channel_id,
+                exc,
+                exc_info=True,
+            )
+            failure_reply = "I couldn't complete that ySupport request."
+            if was_stopped:
+                failure_reply += " The ticket remains under manual staff control."
+            await send_long_message(
+                message.channel,
+                failure_reply,
+                view=StopBotView() if not was_stopped else None,
+            )
+        finally:
+            if was_stopped and not stop_ticket_channel(channel_id):
                 logging.error(
-                    "Contributor override failed in stopped ticket %s: %s",
+                    "Could not preserve stopped state after staff-directed turn "
+                    "in ticket %s.",
                     channel_id,
-                    exc,
-                    exc_info=True,
                 )
-                final_reply = (
-                    "I couldn't complete that contributor override. "
-                    "The ticket remains stopped so the team can handle it directly or retry the override."
-                )
-            finally:
-                await progress_reporter.close()
-
-        await send_long_message(message.channel, final_reply)
-        last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-        persist_ticket_state(channel_id)
+            if pending_tasks.get(channel_id) is current_task:
+                pending_tasks.pop(channel_id, None)
 
     async def _build_ticket_turn_input(
         self,
@@ -1718,20 +1813,71 @@ class TicketBot(discord.Client):
 
         if action == "ignore":
             logging.info(
-                "Ignoring ticket message in %s from %s. owner=%s stopped=%s contributor=%s",
+                "Ignoring ticket message in %s from %s. owner=%s stopped=%s staff=%s",
                 channel_id,
                 message.author.name,
                 ticket_owner_user_id,
                 channel_id in stopped_channels,
-                _is_contributor_member(message.author),
+                _is_support_staff_member(message.author),
             )
             return
 
-        if ticket_owner_user_id is None and not _is_contributor_member(message.author):
+        if action == "staff_takeover":
+            stopped_durably = await stop_ticket_for_manual_support(channel_id)
+            logging.info(
+                "Support staff took manual control of ticket %s; persisted=%s.",
+                channel_id,
+                stopped_durably,
+            )
+            return
+
+        if action == "staff_summon_usage":
+            try:
+                await message.channel.send(
+                    "Add an instruction after `y:` to ask ySupport to reply.",
+                    delete_after=20,
+                    suppress_embeds=True,
+                )
+            except Exception:
+                logging.warning(
+                    "Could not send staff summon usage help in ticket %s.",
+                    channel_id,
+                )
+            return
+
+        if action == "staff_summon":
+            summon_prompt = _normalize_staff_summon_prompt(message.content)
+            if summon_prompt is None:
+                return
+            was_stopped = channel_id in stopped_channels
+            investigation_job = get_or_create_ticket_investigation_job(channel_id)
+            summon_run_context = _build_ticket_run_context(
+                channel_id=channel_id,
+                category_id=message.channel.category.id,
+                initial_button_intent=investigation_job.requested_intent,
+                conversation_owner_id=ticket_owner_user_id,
+            )
+            existing_task = pending_tasks.get(channel_id)
+            if existing_task is not None and not existing_task.done():
+                existing_task.cancel()
+            _discard_pending_ticket_payload(channel_id)
+            summon_task = asyncio.create_task(
+                self._handle_ticket_staff_summon(
+                    message,
+                    summon_run_context,
+                    summon_prompt,
+                    was_stopped=was_stopped,
+                )
+            )
+            pending_tasks[channel_id] = summon_task
+            return
+
+        if ticket_owner_user_id is None and not _is_support_staff_member(message.author):
             ticket_owner_user_id = message.author.id
             remember_ticket_owner_user_id(channel_id, ticket_owner_user_id)
             logging.info(
-                "Assigned fallback ticket owner %s for channel %s from first non-contributor message.",
+                "Assigned fallback ticket owner %s for channel %s from first "
+                "non-staff message.",
                 ticket_owner_user_id,
                 channel_id,
             )
@@ -1777,17 +1923,6 @@ class TicketBot(discord.Client):
 
         if ticket_run_context.project_context == "unknown":
             return
-        if action == "contributor_override":
-            override_prompt = _normalize_contributor_override_prompt(message.content)
-            if override_prompt is None:
-                return
-            await self._handle_stopped_ticket_contributor_override(
-                message,
-                ticket_run_context,
-                override_prompt,
-            )
-            return
-
         logging.info(f"Processing ticket message in {channel_id} from {message.author.name} (Context: {ticket_run_context.project_context}, Intent: {current_intent_from_map})")
 
         existing_task = pending_tasks.get(channel_id)
