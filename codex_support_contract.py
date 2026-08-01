@@ -49,6 +49,10 @@ _OPTIONAL_HANDOFF_CLAUSE_PATTERNS = (
     r",?\s*so this should get operator review\.?$",
     r",?\s*so this should get a human operator review\.?$",
 )
+_TRANSACTION_SIZED_HEX_PAYLOAD_RE = re.compile(
+    r"(?<![0-9a-f])0x(?:0[1-4])?f[89][0-9a-f]{196,}(?![0-9a-f])",
+    re.IGNORECASE,
+)
 CODEX_SUPPORT_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
@@ -243,6 +247,10 @@ class SupportTurnResult:
         )
 
 
+class SignedTransactionSafetyViolation(ValueError):
+    """Raised when a support response exposes a transaction-sized hex payload."""
+
+
 def verify_support_turn_result(
     result: SupportTurnResult,
     request: SupportTurnRequest,
@@ -254,6 +262,19 @@ def verify_support_turn_result(
     if result.requires_human_handoff and not result.handoff_reason:
         raise ValueError(
             "Support result requires a handoff reason when requires_human_handoff is true."
+        )
+    visible_text = "\n".join(
+        value
+        for value in (
+            result.answer,
+            result.evidence_summary,
+            result.handoff_reason,
+        )
+        if value
+    )
+    if _TRANSACTION_SIZED_HEX_PAYLOAD_RE.search(visible_text):
+        raise SignedTransactionSafetyViolation(
+            "Support result contains a transaction-sized serialized hex payload."
         )
 
     lowered_answer = result.answer.lower()

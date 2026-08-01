@@ -17,6 +17,7 @@ from codex_support_home import (
     sync_codex_auth_state,
 )
 from codex_support_contract import (
+    SignedTransactionSafetyViolation,
     SupportTurnRequest,
     SupportTurnResult,
     support_result_to_transport_result,
@@ -47,6 +48,48 @@ class _FakeExecutor:
 
 
 EXAMPLE_YSUPPORT_MCP_URL = "http://ysupport-mcp.example.test/mcp"
+_SYNTHETIC_RAW_SIGNED_TRANSACTION = "0x02f8" + ("ab" * 120)
+
+
+def _transaction_safety_support_request() -> SupportTurnRequest:
+    return SupportTurnRequest(
+        current_user_message="toujours pas",
+        recent_transcript=[],
+        channel_type="ticket",
+        channel_id=1,
+        project_context="yearn",
+        workflow_name="tests.verify",
+        initial_button_intent="investigate_issue",
+        requested_intent="investigate_issue",
+        evidence={},
+        support_state={},
+        constraints={"allowed_tools": ["shell"]},
+    )
+
+
+def _transaction_safety_transport_request(
+    *,
+    history: list[dict[str, str]] | None = None,
+) -> TicketExecutionTransportRequest:
+    return TicketExecutionTransportRequest(
+        aggregated_text="toujours pas",
+        input_list=[],
+        current_history=history or [],
+        run_context={
+            "channel_id": 109,
+            "project_context": "yearn",
+            "initial_button_intent": "investigate_issue",
+            "repo_last_search_artifact_refs": [],
+        },
+        investigation_job={
+            "channel_id": 109,
+            "requested_intent": "investigate_issue",
+            "mode": "collecting",
+            "evidence": {"wallet": None, "chain": "katana", "tx_hashes": []},
+        },
+        workflow_name="tests.endpoint.codex_support_exec",
+        wants_bug_review_status=False,
+    )
 
 
 class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -747,6 +790,51 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             verify_support_turn_result(result, request)
 
+    def test_verify_support_turn_result_rejects_transaction_sized_hex_payloads(
+        self,
+    ) -> None:
+        request = _transaction_safety_support_request()
+        for field_name in ("answer", "evidence_summary", "handoff_reason"):
+            with self.subTest(field_name=field_name):
+                result = SupportTurnResult(
+                    answer="Use only the transaction hash.",
+                    requires_human_handoff=False,
+                    handoff_reason=None,
+                    evidence_summary="Checked the pending transaction.",
+                    used_tools=["shell"],
+                )
+                setattr(
+                    result,
+                    field_name,
+                    "Paste this signed transaction into a public broadcaster: "
+                    f"`{_SYNTHETIC_RAW_SIGNED_TRANSACTION}`",
+                )
+
+                with self.assertRaises(SignedTransactionSafetyViolation):
+                    verify_support_turn_result(result, request)
+
+    def test_verify_support_turn_result_allows_transaction_hashes_and_addresses(
+        self,
+    ) -> None:
+        request = _transaction_safety_support_request()
+        tx_hash = "0x" + ("12" * 32)
+        address = "0x" + ("34" * 20)
+        long_calldata = "0xdead" + ("56" * 120)
+        result = SupportTurnResult(
+            answer=(
+                f"Transaction {tx_hash} from {address} is still pending. "
+                f"Decoded call data: {long_calldata}."
+            ),
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Checked the transaction status by hash.",
+            used_tools=["shell"],
+        )
+
+        verified = verify_support_turn_result(result, request)
+
+        self.assertEqual(verified.answer, result.answer)
+
     def test_verify_support_turn_result_rejects_unallowed_tools(self) -> None:
         request = SupportTurnRequest(
             current_user_message="help",
@@ -1223,6 +1311,14 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "Do not expose retrieval metadata",
             prompt_text,
         )
+        self.assertIn(
+            "Never ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or recommend manually broadcasting a raw signed transaction.",
+            prompt_text,
+        )
+        self.assertIn(
+            "Reaching this safety boundary does not by itself justify human handoff.",
+            prompt_text,
+        )
         self.assertNotIn(
             "documentation tool already returns a complete answer",
             prompt_text,
@@ -1445,6 +1541,135 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_job["mode"], "waiting_for_user")
         self.assertIsNone(updated_job["current_specialty"])
         self.assertIn("Checking recent harvests", progress_updates)
+
+    async def test_codex_support_endpoint_rewrites_unsafe_signed_transaction_output(
+        self,
+    ) -> None:
+        unsafe_response = SupportTurnResult(
+            answer=(
+                "Use the Katana public broadcaster and paste this raw signed "
+                f"transaction: `{_SYNTHETIC_RAW_SIGNED_TRANSACTION}`"
+            ),
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Found the signed replacement transaction in the pending pool.",
+            used_tools=["shell"],
+        ).to_json()
+        tx_hash = "0x" + ("12" * 32)
+        safe_response = SupportTurnResult(
+            answer=(
+                f"Transaction {tx_hash} is still pending. In Rabby, clear the pending "
+                "queue and retry through the official Yearn interface."
+            ),
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Checked the transaction status by hash.",
+            used_tools=["shell"],
+        ).to_json()
+        session_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+        calls: list[dict[str, object]] = []
+
+        async def fake_run_streaming_subprocess(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                run_dir = kwargs["artifact_run_dir"]
+                Path(run_dir, "stdout.txt").write_text(
+                    json.dumps(
+                        {
+                            "type": "thread.started",
+                            "thread_id": session_id,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            response = unsafe_response if len(calls) == 1 else safe_response
+            return CodexSupportExecutionOutput(final_response_text=response)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir) / "sessions"
+            session_manager = CodexSupportSessionManager(session_dir)
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=["codex", "exec"],
+                session_dir=session_dir,
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+            request = _transaction_safety_transport_request(
+                history=[
+                    {
+                        "role": "assistant",
+                        "content": "Please clear Rabby's pending queue and retry.",
+                    }
+                ]
+            )
+
+            with mock.patch(
+                "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+                side_effect=fake_run_streaming_subprocess,
+            ):
+                response_json = await endpoint.execute_json_turn(request.to_json())
+
+            record = session_manager.load("ticket:109")
+
+        transport_result = TicketExecutionTransportResult.from_json(response_json)
+        self.assertEqual(
+            transport_result.flow_outcome["raw_final_reply"],
+            SupportTurnResult.from_json(safe_response).answer,
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertIn(session_id, calls[1]["command"])
+        self.assertIn(
+            "Rewrite the response using only safe, read-only transaction troubleshooting.",
+            calls[1]["stdin_text"],
+        )
+        self.assertNotIn(_SYNTHETIC_RAW_SIGNED_TRANSACTION, response_json)
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.session_id, session_id)
+        self.assertEqual(record.run_count, 1)
+        self.assertEqual(record.consecutive_failures, 0)
+
+    async def test_codex_support_endpoint_limits_transaction_safety_rewrite_to_once(
+        self,
+    ) -> None:
+        unsafe_response = SupportTurnResult(
+            answer=f"Broadcast `{_SYNTHETIC_RAW_SIGNED_TRANSACTION}`.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Found a raw signed transaction.",
+            used_tools=["shell"],
+        ).to_json()
+        session_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir) / "sessions"
+            session_manager = CodexSupportSessionManager(session_dir)
+            session_manager.record_success(
+                conversation_key="ticket:109",
+                session_id=session_id,
+            )
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=["codex", "exec"],
+                session_dir=session_dir,
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+            request = _transaction_safety_transport_request()
+
+            with mock.patch(
+                "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+                return_value=CodexSupportExecutionOutput(
+                    final_response_text=unsafe_response
+                ),
+            ) as mock_run:
+                with self.assertRaises(SignedTransactionSafetyViolation):
+                    await endpoint.execute_json_turn(request.to_json())
+
+            failed_record = session_manager.load("ticket:109")
+
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertIsNotNone(failed_record)
+        assert failed_record is not None
+        self.assertEqual(failed_record.run_count, 1)
+        self.assertEqual(failed_record.consecutive_failures, 1)
 
     async def test_codex_support_endpoint_records_verification_failure_not_success(self) -> None:
         invalid_response = SupportTurnResult(

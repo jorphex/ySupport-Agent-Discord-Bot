@@ -20,6 +20,7 @@ from codex_support_home import (
 )
 from codex_support_contract import (
     CODEX_SUPPORT_RESULT_SCHEMA,
+    SignedTransactionSafetyViolation,
     SupportTurnRequest,
     SupportTurnResult,
     support_result_to_transport_result,
@@ -285,6 +286,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         reasoning_effort=self.reasoning_effort,
                         resume_session_id=session_record.session_id if session_record else None,
                     )
+                    successful_bundle = bundle
+                    successful_run_dir = run_dir
                     exported_run_dir: Path | None = None
                     try:
                         execution_output = await self._run_with_auth_retry(
@@ -292,6 +295,48 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             run_dir=run_dir,
                             hooks=hooks,
                         )
+                        try:
+                            support_result = verify_support_turn_result(
+                                SupportTurnResult.from_json(
+                                    execution_output.final_response_text
+                                ),
+                                support_request,
+                            )
+                        except SignedTransactionSafetyViolation:
+                            logging.warning(
+                                "Codex support output crossed the signed-transaction "
+                                "safety boundary for %s; requesting one safe rewrite.",
+                                conversation_key or "unkeyed conversation",
+                            )
+                            rewrite_session_id = (
+                                self._extract_session_id_from_run_dir(run_dir)
+                                or bundle.resumed_session_id
+                            )
+                            if rewrite_session_id is None:
+                                raise
+                            rewrite_run_dir = run_dir / "transaction-safety-rewrite"
+                            rewrite_bundle = _build_codex_support_execution_bundle(
+                                support_request=support_request,
+                                run_dir=rewrite_run_dir,
+                                codex_command=self.codex_command,
+                                model=self.model,
+                                reasoning_effort=self.reasoning_effort,
+                                resume_session_id=rewrite_session_id,
+                                transaction_safety_rewrite=True,
+                            )
+                            rewrite_output = await self._run_with_auth_retry(
+                                bundle=rewrite_bundle,
+                                run_dir=rewrite_run_dir,
+                                hooks=hooks,
+                            )
+                            support_result = verify_support_turn_result(
+                                SupportTurnResult.from_json(
+                                    rewrite_output.final_response_text
+                                ),
+                                support_request,
+                            )
+                            successful_bundle = rewrite_bundle
+                            successful_run_dir = rewrite_run_dir
                     except Exception as exc:
                         if (
                             self.session_manager is not None
@@ -311,10 +356,6 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         )
 
                 try:
-                    support_result = verify_support_turn_result(
-                        SupportTurnResult.from_json(execution_output.final_response_text),
-                        support_request,
-                    )
                     response_json = support_result_to_transport_result(
                         support_result,
                         request,
@@ -336,8 +377,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
 
                 if self.session_manager is not None and conversation_key is not None:
                     session_id = (
-                        self._extract_session_id_from_run_dir(run_dir)
-                        or bundle.resumed_session_id
+                        self._extract_session_id_from_run_dir(successful_run_dir)
+                        or successful_bundle.resumed_session_id
                     )
                     if session_id is not None:
                         self.session_manager.record_success(
@@ -477,6 +518,7 @@ def _build_codex_support_execution_bundle(
     model: str | None,
     reasoning_effort: str | None,
     resume_session_id: str | None = None,
+    transaction_safety_rewrite: bool = False,
 ) -> CodexSupportExecutionBundle:
     run_dir_path = Path(run_dir)
     run_dir_path.mkdir(parents=True, exist_ok=True)
@@ -490,10 +532,15 @@ def _build_codex_support_execution_bundle(
         json.dumps(CODEX_SUPPORT_RESULT_SCHEMA, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    prompt_text = _codex_support_prompt(
-        support_request_path=support_request_path,
-        response_schema_path=response_schema_path,
-    )
+    if transaction_safety_rewrite:
+        prompt_text = _codex_support_transaction_safety_rewrite_prompt(
+            response_schema_path=response_schema_path,
+        )
+    else:
+        prompt_text = _codex_support_prompt(
+            support_request_path=support_request_path,
+            response_schema_path=response_schema_path,
+        )
     prompt_path.write_text(prompt_text, encoding="utf-8")
 
     command = _build_codex_support_command(
@@ -787,6 +834,7 @@ def _codex_support_prompt(
         "Treat Yearn documentation excerpts as the sole factual grounding for those answers when they resolve the question; do not add web search or external sources.\n"
         "Do not expose retrieval metadata or say that YIP status metadata is absent.\n"
         "No file writes.\n"
+        "For transaction troubleshooting, remain read-only. You may use transaction hashes, decoded fields, statuses, non-mutating calls or simulations, and official wallet or Yearn UI recovery flows. Never ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or recommend manually broadcasting a raw signed transaction. Do not direct the user to a generic third-party transaction broadcaster. Reaching this safety boundary does not by itself justify human handoff.\n"
         "Do not tell the user to go to Discord or open a Discord ticket.\n"
         "If the exact fact is known, give it first.\n"
         "If the user asked multiple questions, answer them in order.\n"
@@ -806,6 +854,25 @@ def _codex_support_prompt(
         "Routine support: concise.\n"
         "Investigations and report triage: enough prose to explain conclusion, evidence, and remaining limit.\n"
         "Stop once the asked question is answered. No add-on sections.\n"
+    )
+
+
+def _codex_support_transaction_safety_rewrite_prompt(
+    *,
+    response_schema_path: Path,
+) -> str:
+    response_schema_path = response_schema_path.resolve()
+    return (
+        "Your previous response for this support turn exposed a transaction-sized "
+        "serialized hex payload. Rewrite the response using only safe, read-only "
+        "transaction troubleshooting. Keep the useful verified diagnosis and use "
+        "transaction hashes, decoded fields, statuses, non-mutating calls or "
+        "simulations, and official wallet or Yearn UI recovery flows as appropriate. "
+        "Do not ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or "
+        "recommend manually broadcasting a raw signed transaction. Do not direct the "
+        "user to a generic third-party transaction broadcaster. Do not request human "
+        "handoff solely because of this safety boundary. "
+        f"Return only JSON matching {response_schema_path}."
     )
 
 
