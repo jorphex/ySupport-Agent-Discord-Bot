@@ -58,6 +58,15 @@ _ROLLOUT_SESSION_ID_RE = re.compile(
     r"(?P<session_id>[0-9a-fA-F-]{36})\.jsonl$"
 )
 _CODEX_SESSION_DELETE_TIMEOUT_SECONDS = 30.0
+_TRANSACTION_SAFETY_INSTRUCTION = (
+    "For transaction troubleshooting, remain read-only. You may use transaction "
+    "hashes, decoded fields, statuses, non-mutating calls or simulations, and "
+    "official wallet or Yearn UI recovery flows. Never ask for, retrieve, retain, "
+    "reconstruct, quote, display, submit, broadcast, or recommend manually "
+    "broadcasting a raw signed transaction. Do not direct the user to a generic "
+    "third-party transaction broadcaster. Reaching this safety boundary does not "
+    "by itself justify human handoff."
+)
 _GAS_SUFFICIENCY_INSTRUCTION = (
     "For any gas-sufficiency conclusion, compare the spendable native-token balance "
     "with the transaction's native-token value plus its maximum gas cost: gas limit "
@@ -314,8 +323,6 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         reasoning_effort=self.reasoning_effort,
                         resume_session_id=session_record.session_id if session_record else None,
                     )
-                    successful_bundle = bundle
-                    successful_run_dir = run_dir
                     persist_session = True
                     export_workspace = True
                     exported_run_dir: Path | None = None
@@ -425,8 +432,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
                     and conversation_key is not None
                 ):
                     session_id = (
-                        self._extract_session_id_from_run_dir(successful_run_dir)
-                        or successful_bundle.resumed_session_id
+                        self._extract_session_id_from_run_dir(run_dir)
+                        or bundle.resumed_session_id
                     )
                     if session_id is not None:
                         self.session_manager.record_success(
@@ -892,7 +899,7 @@ def _codex_support_prompt(
         "Treat Yearn documentation excerpts as the sole factual grounding for those answers when they resolve the question; do not add web search or external sources.\n"
         "Do not expose retrieval metadata or say that YIP status metadata is absent.\n"
         "No file writes.\n"
-        "For transaction troubleshooting, remain read-only. You may use transaction hashes, decoded fields, statuses, non-mutating calls or simulations, and official wallet or Yearn UI recovery flows. Never ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or recommend manually broadcasting a raw signed transaction. Do not direct the user to a generic third-party transaction broadcaster. Reaching this safety boundary does not by itself justify human handoff.\n"
+        f"{_TRANSACTION_SAFETY_INSTRUCTION}\n"
         f"{_GAS_SUFFICIENCY_INSTRUCTION}\n"
         "Do not tell the user to go to Discord or open a Discord ticket.\n"
         "If the exact fact is known, give it first.\n"
@@ -928,10 +935,7 @@ def _codex_support_transaction_safety_rewrite_prompt(
         "transaction troubleshooting. Keep the useful verified diagnosis and use "
         "transaction hashes, decoded fields, statuses, non-mutating calls or "
         "simulations, and official wallet or Yearn UI recovery flows as appropriate. "
-        "Do not ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or "
-        "recommend manually broadcasting a raw signed transaction. Do not direct the "
-        "user to a generic third-party transaction broadcaster. Do not request human "
-        "handoff solely because of this safety boundary. "
+        f"{_TRANSACTION_SAFETY_INSTRUCTION} "
         f"{_GAS_SUFFICIENCY_INSTRUCTION} "
         f"Return only JSON matching {response_schema_path}."
     )

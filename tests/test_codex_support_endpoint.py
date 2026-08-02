@@ -51,6 +51,12 @@ class _FakeExecutor:
 EXAMPLE_YSUPPORT_MCP_URL = "http://ysupport-mcp.example.test/mcp"
 _SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION = "0xf8cb" + ("ab" * 203)
 _SYNTHETIC_TYPED_RAW_SIGNED_TRANSACTION = "0x02f8" + ("ab" * 120)
+_SYNTHETIC_HIGH_TYPE_RAW_SIGNED_TRANSACTION = "0x7afa" + ("ab" * 120)
+_SHORT_LEGACY_RAW_SIGNED_TRANSACTION = (
+    "0xf85f8001825208940000000000000000000000000000000000000000808025"
+    "a05a420b0a542873e0f1a0a6bcf149ab3d26204c0fe61ebcb30dad82a8e7e9a370"
+    "a057d3f4e87c966ab79a22aa4fbfcffd48f586a65190125aac497aacafab2a7a6f"
+)
 
 
 def _transaction_safety_support_request() -> SupportTurnRequest:
@@ -861,8 +867,10 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         request = _transaction_safety_support_request()
         payloads = {
+            "short_legacy_transfer": _SHORT_LEGACY_RAW_SIGNED_TRANSACTION,
             "historical_legacy_shape": _SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION,
             "current_typed_shape": _SYNTHETIC_TYPED_RAW_SIGNED_TRANSACTION,
+            "high_type_long_rlp_shape": _SYNTHETIC_HIGH_TYPE_RAW_SIGNED_TRANSACTION,
         }
         for payload_name, payload in payloads.items():
             for field_name in ("answer", "evidence_summary", "handoff_reason"):
@@ -1382,14 +1390,18 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "Do not expose retrieval metadata",
             prompt_text,
         )
-        self.assertIn(
-            "Never ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or recommend manually broadcasting a raw signed transaction.",
-            prompt_text,
+        rewrite_prompt_text = _codex_support_transaction_safety_rewrite_prompt(
+            response_schema_path=Path("support_response_schema.json"),
         )
-        self.assertIn(
-            "Reaching this safety boundary does not by itself justify human handoff.",
-            prompt_text,
-        )
+        for rendered_prompt in (prompt_text, rewrite_prompt_text):
+            self.assertIn(
+                "Never ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or recommend manually broadcasting a raw signed transaction.",
+                rendered_prompt,
+            )
+            self.assertIn(
+                "Reaching this safety boundary does not by itself justify human handoff.",
+                rendered_prompt,
+            )
         self.assertNotIn(
             "documentation tool already returns a complete answer",
             prompt_text,

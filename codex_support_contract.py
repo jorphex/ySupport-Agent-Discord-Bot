@@ -49,8 +49,12 @@ _OPTIONAL_HANDOFF_CLAUSE_PATTERNS = (
     r",?\s*so this should get operator review\.?$",
     r",?\s*so this should get a human operator review\.?$",
 )
+# EIP-2718 transaction types occupy 0x01–0x7f, while signed legacy and current
+# typed transactions use the 0xf8–0xff long-list RLP envelope. The 80-byte hex
+# tail floor includes compact signed transfers while excluding hashes and addresses.
 _TRANSACTION_SIZED_HEX_PAYLOAD_RE = re.compile(
-    r"(?<![0-9a-f])0x(?:0[1-4])?f[89][0-9a-f]{196,}(?![0-9a-f])",
+    r"(?<![0-9a-f])0x(?:0[1-9a-f]|[1-7][0-9a-f])?f[89a-f]"
+    r"[0-9a-f]{160,}(?![0-9a-f])",
     re.IGNORECASE,
 )
 CODEX_SUPPORT_RESULT_SCHEMA: dict[str, Any] = {
