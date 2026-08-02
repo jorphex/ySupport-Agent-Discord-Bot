@@ -16,6 +16,7 @@ import config
 import handoff
 import state
 from state import (
+    active_ticket_executor_tasks,
     active_ticket_payloads,
     BotRunContext,
     TicketInvestigationJob,
@@ -903,6 +904,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(channel.sent_messages), 1)
             self.assertIn("couldn't complete", channel.sent_messages[0])
             self.assertIn("remains under manual staff control", channel.sent_messages[0])
+            self.assertNotIn(channel_id, active_ticket_executor_tasks)
             self.assertNotIn("notified", channel.sent_messages[0])
         finally:
             clear_ticket_channel_state(
@@ -1005,6 +1007,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
 
         active_task = asyncio.create_task(active_turn())
         pending_tasks[channel_id] = active_task
+        active_ticket_executor_tasks[channel_id] = active_task
         ticket_owner_user_id_by_channel[channel_id] = owner_id
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
@@ -1026,6 +1029,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
             self.assertEqual(ticket_owner_user_id_by_channel[channel_id], owner_id)
             self.assertNotIn(channel_id, pending_tasks)
+            self.assertNotIn(channel_id, active_ticket_executor_tasks)
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
             self.assertEqual(channel.sent_messages, [])
             retire.assert_awaited_once()
@@ -1217,6 +1221,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(channel_id, pending_messages)
             self.assertNotIn(channel_id, pending_attachments_by_channel)
             self.assertNotIn(channel_id, active_ticket_payloads)
+            self.assertNotIn(channel_id, active_ticket_executor_tasks)
             self.assertNotIn(channel_id, pending_tasks)
             self.assertEqual(
                 channel.sent_messages,
@@ -1672,7 +1677,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
-    async def test_debounce_followup_is_added_without_losing_original_payload(
+    async def test_debounce_followup_is_silently_added_without_losing_payload(
         self,
     ) -> None:
         channel_id = 294
@@ -1761,15 +1766,106 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 [item["filename"] for item in captured_requests[0].attachments],
                 ["first.png", "second.png"],
             )
-            self.assertEqual(
-                fake_channel.sent_messages[0],
-                "Got it. I’ve added your follow-up to your previous request for context, "
-                "and I’m continuing to work on it now. Please wait for my response. "
-                "There’s no need to resend anything.",
-            )
+            self.assertEqual(fake_channel.sent_messages, ["Combined answer."])
             self.assertNotIn(channel_id, pending_messages)
             self.assertNotIn(channel_id, pending_attachments_by_channel)
             self.assertNotIn(channel_id, active_ticket_payloads)
+            self.assertNotIn(channel_id, active_ticket_executor_tasks)
+            self.assertNotIn(channel_id, pending_tasks)
+        finally:
+            task = pending_tasks.pop(channel_id, None)
+            if task is not None:
+                task.cancel()
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_pre_executor_followup_restarts_silently_with_complete_payload(
+        self,
+    ) -> None:
+        channel_id = 395
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        fake_channel.guild = SimpleNamespace(id=2)
+        owner = SimpleNamespace(id=777, bot=False, name="owner")
+        first_boundary_started = asyncio.Event()
+        first_boundary_cancelled = asyncio.Event()
+        boundary_calls = 0
+        captured_requests: list[TicketTurnRequest] = []
+
+        async def fake_boundary(_text: str):
+            nonlocal boundary_calls
+            boundary_calls += 1
+            if boundary_calls == 1:
+                first_boundary_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    first_boundary_cancelled.set()
+                    raise
+            return {
+                "classification": "yearn_support",
+                "tripwire_triggered": False,
+            }
+
+        class _Executor:
+            async def execute_turn(self, request: TicketTurnRequest, hooks=None):
+                del hooks
+                captured_requests.append(request)
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply="Updated answer.",
+                        conversation_history=[],
+                        completed_agent_key="docs",
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        def ticket_message(message_id: int, content: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                author=owner,
+                content=content,
+                channel=fake_channel,
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                attachments=[],
+            )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+        bot.investigation_executor = _Executor()
+        ticket_owner_user_id_by_channel[channel_id] = owner.id
+
+        async def fake_send_long_message(channel, message, **kwargs):
+            await channel.send(message, **kwargs)
+
+        try:
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch.object(config, "COOLDOWN_SECONDS", 0),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch("ysupport.send_long_message", new=fake_send_long_message),
+                patch("ysupport._outer_support_boundary_result", new=fake_boundary),
+            ):
+                await bot.on_message(ticket_message(3001, "Initial vault issue."))
+                await asyncio.wait_for(first_boundary_started.wait(), timeout=1)
+                self.assertNotIn(channel_id, active_ticket_executor_tasks)
+
+                await bot.on_message(ticket_message(3002, "The tx hash is 0xabc."))
+                restarted_task = pending_tasks[channel_id]
+                await asyncio.wait_for(first_boundary_cancelled.wait(), timeout=1)
+                await asyncio.wait_for(restarted_task, timeout=1)
+
+            self.assertEqual(boundary_calls, 2)
+            self.assertEqual(len(captured_requests), 1)
+            self.assertEqual(
+                captured_requests[0].aggregated_text,
+                "Initial vault issue.\nThe tx hash is 0xabc.",
+            )
+            self.assertEqual(fake_channel.sent_messages, ["Updated answer."])
+            self.assertNotIn(channel_id, pending_messages)
+            self.assertNotIn(channel_id, active_ticket_payloads)
+            self.assertNotIn(channel_id, active_ticket_executor_tasks)
             self.assertNotIn(channel_id, pending_tasks)
         finally:
             task = pending_tasks.pop(channel_id, None)
@@ -1791,8 +1887,17 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
         captured_requests: list[TicketTurnRequest] = []
 
         class _Executor:
-            async def execute_turn(self, request: TicketTurnRequest, hooks=None):
+            async def execute_turn(
+                _executor_self,
+                request: TicketTurnRequest,
+                hooks=None,
+            ):
+                del _executor_self, hooks
                 captured_requests.append(request)
+                self.assertIs(
+                    active_ticket_executor_tasks.get(channel_id),
+                    asyncio.current_task(),
+                )
                 if len(captured_requests) == 1:
                     first_started.set()
                     try:
@@ -1851,13 +1956,17 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 "Initial vault issue.\nThe tx hash is 0xabc.",
             )
             self.assertEqual(
-                fake_channel.sent_messages[0],
-                "Got it. I’ve added your follow-up to your previous request for context, "
-                "and I’m continuing to work on it now. Please wait for my response. "
-                "There’s no need to resend anything.",
+                fake_channel.sent_messages,
+                [
+                    "Got it. I’ve added your follow-up to your previous request for context, "
+                    "and I’m continuing to work on it now. Please wait for my response. "
+                    "There’s no need to resend anything.",
+                    "Updated answer.",
+                ],
             )
             self.assertNotIn(channel_id, pending_messages)
             self.assertNotIn(channel_id, active_ticket_payloads)
+            self.assertNotIn(channel_id, active_ticket_executor_tasks)
             self.assertNotIn(channel_id, pending_tasks)
         finally:
             task = pending_tasks.pop(channel_id, None)

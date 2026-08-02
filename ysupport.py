@@ -41,6 +41,7 @@ from handoff import (
 from router import is_bug_report_query
 from support_boundary import evaluate_support_boundary
 from state import (
+    active_ticket_executor_tasks,
     active_ticket_payloads,
     BotRunContext,
     PublicConversation,
@@ -587,8 +588,10 @@ async def _run_internal_instruction_turn(
 
     progress_reporter = _DiscordProgressReporter(channel, channel_id)
     try:
-        worker_result = await executor.execute_turn(
-            _build_turn_request(
+        worker_result = await _execute_ticket_turn(
+            executor=executor,
+            channel_id=channel_id,
+            request=_build_turn_request(
                 aggregated_text=prompt_text,
                 input_list=input_list,
                 current_history=current_history,
@@ -612,6 +615,23 @@ async def _run_internal_instruction_turn(
         return _render_support_reply(worker_result.flow_outcome.raw_final_reply)
     finally:
         await progress_reporter.close()
+
+
+async def _execute_ticket_turn(
+    *,
+    executor: TransportTicketInvestigationExecutor,
+    channel_id: int,
+    request: TicketTurnRequest,
+    hooks: TicketExecutionHooks,
+):
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        active_ticket_executor_tasks[channel_id] = current_task
+    try:
+        return await executor.execute_turn(request, hooks=hooks)
+    finally:
+        if active_ticket_executor_tasks.get(channel_id) is current_task:
+            active_ticket_executor_tasks.pop(channel_id, None)
 
 
 def _build_turn_request(
@@ -1927,18 +1947,24 @@ class TicketBot(discord.Client):
 
         existing_task = pending_tasks.get(channel_id)
         if existing_task and not existing_task.done():
+            interrupted_active_executor = (
+                active_ticket_executor_tasks.get(channel_id) is existing_task
+            )
             _restore_active_ticket_payload(channel_id)
             existing_task.cancel()
-            try:
-                await message.channel.send(
-                    "Got it. I’ve added your follow-up to your previous request for context, "
-                    "and I’m continuing to work on it now. Please wait for my response. "
-                    "There’s no need to resend anything.",
-                    suppress_embeds=True,
-                )
-                last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-            except Exception:
-                pass
+            if interrupted_active_executor:
+                try:
+                    await message.channel.send(
+                        "Got it. I’ve added your follow-up to your previous request for context, "
+                        "and I’m continuing to work on it now. Please wait for my response. "
+                        "There’s no need to resend anything.",
+                        suppress_embeds=True,
+                    )
+                    last_bot_reply_ts_by_channel[channel_id] = datetime.now(
+                        timezone.utc
+                    )
+                except Exception:
+                    pass
 
         normalized_message_text = _message_text_for_turn(message)
         _merge_pending_ticket_payload(
@@ -1998,8 +2024,10 @@ class TicketBot(discord.Client):
                         reset_ticket_channel_for_terminal_reply(channel_id)
                 else:
                     try:
-                        worker_result = await self.investigation_executor.execute_turn(
-                            _build_turn_request(
+                        worker_result = await _execute_ticket_turn(
+                            executor=self.investigation_executor,
+                            channel_id=channel_id,
+                            request=_build_turn_request(
                                 aggregated_text=aggregated_text,
                                 input_list=input_list,
                                 current_history=current_history,
