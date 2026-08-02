@@ -898,6 +898,7 @@ def _codex_support_prompt(
         "If the exact fact is known, give it first.\n"
         "If the user asked multiple questions, answer them in order.\n"
         "For screenshot or metric-comparison questions, do not stop at a plausible explanation. Identify the exact labels and numbers in the user evidence, then compare them to current Yearn data only if needed.\n"
+        "For unexplained portfolio value or redemption of a retired or non-redeemable receipt, reconcile displayed balances with presently realizable wallet positions and available history, including whether the value was already redeemed, migrated, distributed, or represented elsewhere. A receipt or share balance, PPS, vault accounting field, or zero redemption limit alone does not prove a current economic claim; if corresponding realizable value is unproven, report the discrepancy or uncertainty and do not claim the funds are safe, stuck, claimable, awaiting liquidity or operator action, or will later become redeemable.\n"
         "For investigation answers, use at least one Yearn-specific fact source and one metric-definition or repo/docs source when the question is about how displayed metrics differ.\n"
         "Before setting requires_human_handoff=true, exhaust the relevant available documentation, live-data, repository, web, and image evidence for the issue. Give every useful verified finding and troubleshooting step first.\n"
         "Inspect linked artifacts before handoff.\n"
@@ -985,23 +986,38 @@ async def _run_codex_support_json_subprocess(
         nonlocal final_response_text
         if process.stdout is None:
             return
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip("\n")
+
+        async def _handle_line(line: bytes) -> None:
+            nonlocal final_response_text
+            text = line.decode("utf-8", errors="replace").rstrip("\r")
             if not text:
-                continue
+                return
             stdout_lines.append(text)
             event = _parse_json_event(text)
             if event is None:
-                continue
+                return
             progress_text = _progress_update_from_codex_event(event)
             if progress_text and progress_callback is not None:
                 await progress_callback(progress_text)
             response_text = _final_response_from_codex_event(event)
             if response_text:
                 final_response_text = response_text
+
+        pending = bytearray()
+        while True:
+            chunk = await process.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            pending.extend(chunk)
+            while True:
+                separator_index = pending.find(b"\n")
+                if separator_index < 0:
+                    break
+                line = bytes(pending[:separator_index])
+                del pending[: separator_index + 1]
+                await _handle_line(line)
+        if pending:
+            await _handle_line(bytes(pending))
 
     async def _read_stderr() -> None:
         if process.stderr is None:

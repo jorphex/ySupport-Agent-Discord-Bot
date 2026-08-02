@@ -169,6 +169,51 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             else:
                 self.fail("Cancelled Codex execution left a child process running.")
 
+    async def test_codex_support_stream_accepts_large_jsonl_tool_event(self) -> None:
+        response = {
+            "answer": "grounded answer",
+            "requires_human_handoff": False,
+            "handoff_reason": None,
+            "evidence_summary": "checked",
+            "used_tools": ["shell"],
+        }
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; "
+                "tool_event={'type':'item.completed','item':{"
+                "'type':'command_execution','aggregated_output':'x'*300000}}; "
+                f"response={response!r}; "
+                "final_event={'type':'item.completed','item':{"
+                "'type':'agent_message','text':json.dumps(response)}}; "
+                "sys.stdout.write(json.dumps(tool_event)+'\\n'+json.dumps(final_event))"
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = await _run_codex_support_json_subprocess(
+                command=command,
+                stdin_text="",
+                cwd=None,
+                env=dict(os.environ),
+                timeout_seconds=5,
+                max_output_chars=1000,
+                max_error_chars=1000,
+                timeout_message="timed out",
+                empty_stdout_message="empty",
+                oversized_stdout_message="oversized",
+                metadata={},
+                artifact_run_dir=Path(temp_dir),
+                progress_callback=None,
+            )
+
+            self.assertEqual(output.final_response_text, json.dumps(response))
+            self.assertGreater(
+                (Path(temp_dir) / "stdout.txt").stat().st_size,
+                300000,
+            )
+
     async def test_image_attachment_stream_enforces_size_without_content_length(
         self,
     ) -> None:
@@ -1407,6 +1452,31 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "sufficiency is conditional and name the missing check",
                 rendered_prompt,
             )
+
+    def test_codex_support_prompt_requires_economic_claim_reconciliation(self) -> None:
+        prompt_text = _codex_support_prompt(
+            support_request_path=Path("support_request.json"),
+            response_schema_path=Path("support_response_schema.json"),
+        )
+
+        self.assertIn(
+            "reconcile displayed balances with presently realizable wallet positions and available history",
+            prompt_text,
+        )
+        self.assertIn(
+            "whether the value was already redeemed, migrated, distributed, or represented elsewhere",
+            prompt_text,
+        )
+        self.assertIn(
+            "does not prove a current economic claim",
+            prompt_text,
+        )
+        self.assertIn(
+            "do not claim the funds are safe, stuck, claimable, awaiting liquidity or operator action, or will later become redeemable",
+            prompt_text,
+        )
+        for temporary_product_term in ("kpdUSDC", "yvvbUSDC", "Katana pre-deposit"):
+            self.assertNotIn(temporary_product_term, prompt_text)
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT
