@@ -1666,6 +1666,84 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(record)
         self.assertFalse(artifact_dir.exists())
 
+    async def test_contaminated_session_deletion_survives_repeated_cancellation(
+        self,
+    ) -> None:
+        unsafe_response = SupportTurnResult(
+            answer=f"Broadcast `{_SYNTHETIC_LEGACY_RAW_SIGNED_TRANSACTION}`.",
+            requires_human_handoff=False,
+            handoff_reason=None,
+            evidence_summary="Found a raw signed transaction.",
+            used_tools=["shell"],
+        ).to_json()
+        session_id = "019dade1-5acf-70e2-9c61-f5ba37862a78"
+        rewrite_started = asyncio.Event()
+        deletion_started = asyncio.Event()
+        allow_deletion = asyncio.Event()
+        deletion_completed = asyncio.Event()
+        run_count = 0
+
+        async def fake_run_streaming_subprocess(**kwargs):
+            nonlocal run_count
+            del kwargs
+            run_count += 1
+            if run_count == 1:
+                return CodexSupportExecutionOutput(
+                    final_response_text=unsafe_response
+                )
+            rewrite_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def fake_delete(_session_id: str) -> bool:
+            self.assertEqual(_session_id, session_id)
+            deletion_started.set()
+            await allow_deletion.wait()
+            deletion_completed.set()
+            return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir) / "sessions"
+            session_manager = CodexSupportSessionManager(session_dir)
+            session_manager.record_success(
+                conversation_key="ticket:109",
+                session_id=session_id,
+            )
+            endpoint = CodexSupportTicketExecutionJsonEndpoint(
+                codex_command=["codex", "exec"],
+                session_dir=session_dir,
+                allowed_command_prefixes=[["codex", "exec"]],
+            )
+            request = _transaction_safety_transport_request()
+
+            with mock.patch.object(
+                endpoint,
+                "_delete_codex_session",
+                side_effect=fake_delete,
+            ), mock.patch(
+                "ticket_investigation.codex_support_endpoint._run_codex_support_json_subprocess",
+                side_effect=fake_run_streaming_subprocess,
+            ):
+                turn_task = asyncio.create_task(
+                    endpoint.execute_json_turn(request.to_json())
+                )
+                await asyncio.wait_for(rewrite_started.wait(), timeout=1)
+                turn_task.cancel()
+                await asyncio.wait_for(deletion_started.wait(), timeout=1)
+
+                turn_task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(turn_task.done())
+
+                allow_deletion.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(turn_task, timeout=1)
+
+            record = session_manager.load("ticket:109")
+
+        self.assertTrue(deletion_completed.is_set())
+        self.assertIsNone(record)
+
     async def test_codex_support_endpoint_limits_transaction_safety_rewrite_to_once(
         self,
     ) -> None:

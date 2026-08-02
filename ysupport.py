@@ -1946,25 +1946,13 @@ class TicketBot(discord.Client):
         logging.info(f"Processing ticket message in {channel_id} from {message.author.name} (Context: {ticket_run_context.project_context}, Intent: {current_intent_from_map})")
 
         existing_task = pending_tasks.get(channel_id)
+        interrupted_active_executor = False
         if existing_task and not existing_task.done():
             interrupted_active_executor = (
                 active_ticket_executor_tasks.get(channel_id) is existing_task
             )
             _restore_active_ticket_payload(channel_id)
             existing_task.cancel()
-            if interrupted_active_executor:
-                try:
-                    await message.channel.send(
-                        "Got it. I’ve added your follow-up to your previous request for context, "
-                        "and I’m continuing to work on it now. Please wait for my response. "
-                        "There’s no need to resend anything.",
-                        suppress_embeds=True,
-                    )
-                    last_bot_reply_ts_by_channel[channel_id] = datetime.now(
-                        timezone.utc
-                    )
-                except Exception:
-                    pass
 
         normalized_message_text = _message_text_for_turn(message)
         _merge_pending_ticket_payload(
@@ -1974,6 +1962,19 @@ class TicketBot(discord.Client):
         )
 
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
+        if interrupted_active_executor:
+            try:
+                await message.channel.send(
+                    "Got it. I’ve added your follow-up to your previous request for context, "
+                    "and I’m continuing to work on it now. Please wait for my response. "
+                    "There’s no need to resend anything.",
+                    suppress_embeds=True,
+                )
+                last_bot_reply_ts_by_channel[channel_id] = datetime.now(
+                    timezone.utc
+                )
+            except Exception:
+                pass
         debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
         logging.debug(f"Scheduled processing task for channel {channel_id} in {debounce_seconds}s")
 

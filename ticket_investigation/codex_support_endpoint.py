@@ -234,6 +234,24 @@ class CodexSupportTicketExecutionJsonEndpoint:
         else:
             return True
 
+    async def _retire_contaminated_session(self, session_id: str) -> None:
+        deletion_task = asyncio.create_task(self._delete_codex_session(session_id))
+        interrupted = False
+        while not deletion_task.done():
+            try:
+                await asyncio.shield(deletion_task)
+            except asyncio.CancelledError:
+                interrupted = True
+
+        deleted = deletion_task.result()
+        if not deleted:
+            logging.warning(
+                "Detached contaminated Codex session %s; immediate deletion failed.",
+                session_id,
+            )
+        if interrupted:
+            raise asyncio.CancelledError()
+
     async def execute_json_turn(
         self,
         request_json: str,
@@ -349,15 +367,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
                                     support_request,
                                 )
                             finally:
-                                deleted = await self._delete_codex_session(
+                                await self._retire_contaminated_session(
                                     rewrite_session_id
                                 )
-                                if not deleted:
-                                    logging.warning(
-                                        "Detached contaminated Codex session %s; "
-                                        "immediate deletion failed.",
-                                        rewrite_session_id,
-                                    )
                     except Exception as exc:
                         if (
                             self.session_manager is not None

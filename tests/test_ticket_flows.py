@@ -1974,6 +1974,139 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
+    async def test_active_followups_cannot_race_while_acknowledgement_sends(
+        self,
+    ) -> None:
+        channel_id = 396
+        acknowledgement_started = asyncio.Event()
+        release_acknowledgement = asyncio.Event()
+
+        class _BlockingAcknowledgementChannel(_FakeDiscordChannel):
+            async def send(self, message: str, *args, **kwargs):
+                del args, kwargs
+                self.sent_messages.append(message)
+                if message.startswith("Got it."):
+                    acknowledgement_started.set()
+                    await release_acknowledgement.wait()
+
+        channel = _BlockingAcknowledgementChannel(channel_id)
+        channel.category = SimpleNamespace(id=1)
+        channel.guild = SimpleNamespace(id=2)
+        owner = SimpleNamespace(id=777, bot=False, name="owner")
+
+        def ticket_message(
+            message_id: int,
+            content: str,
+            filename: str,
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                author=owner,
+                content=content,
+                channel=channel,
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                attachments=[
+                    SimpleNamespace(
+                        id=message_id,
+                        filename=filename,
+                        url=(
+                            "https://cdn.discordapp.com/attachments/1/2/"
+                            f"{filename}"
+                        ),
+                        content_type="image/png",
+                        size=100,
+                    )
+                ],
+            )
+
+        async def active_turn() -> None:
+            await asyncio.Event().wait()
+
+        active_task = asyncio.create_task(active_turn())
+        pending_tasks[channel_id] = active_task
+        active_ticket_executor_tasks[channel_id] = active_task
+        active_ticket_payloads[channel_id] = (
+            active_task,
+            "Initial vault issue.",
+            [
+                {
+                    "filename": "initial.png",
+                    "url": (
+                        "https://cdn.discordapp.com/attachments/1/2/initial.png"
+                    ),
+                }
+            ],
+        )
+        ticket_owner_user_id_by_channel[channel_id] = owner.id
+        bot = TicketBot(intents=discord.Intents.none())
+
+        first_handler: asyncio.Task | None = None
+        try:
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch.object(config, "COOLDOWN_SECONDS", 60),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+            ):
+                first_handler = asyncio.create_task(
+                    bot.on_message(
+                        ticket_message(4001, "It is on Base.", "base.png")
+                    )
+                )
+                await asyncio.wait_for(acknowledgement_started.wait(), timeout=1)
+                first_replacement = pending_tasks[channel_id]
+
+                await asyncio.wait_for(
+                    bot.on_message(
+                        ticket_message(
+                            4002,
+                            "The tx hash is 0xabc.",
+                            "transaction.png",
+                        )
+                    ),
+                    timeout=1,
+                )
+                final_replacement = pending_tasks[channel_id]
+
+                self.assertIsNot(first_replacement, final_replacement)
+                await asyncio.sleep(0)
+                self.assertTrue(first_replacement.done())
+                self.assertEqual(
+                    pending_messages[channel_id],
+                    "Initial vault issue.\nIt is on Base.\nThe tx hash is 0xabc.",
+                )
+                self.assertEqual(
+                    [
+                        attachment["filename"]
+                        for attachment in pending_attachments_by_channel[channel_id]
+                    ],
+                    ["initial.png", "base.png", "transaction.png"],
+                )
+                self.assertEqual(
+                    channel.sent_messages,
+                    [
+                        "Got it. I’ve added your follow-up to your previous request for context, "
+                        "and I’m continuing to work on it now. Please wait for my response. "
+                        "There’s no need to resend anything."
+                    ],
+                )
+
+                release_acknowledgement.set()
+                await asyncio.wait_for(first_handler, timeout=1)
+
+            with self.assertRaises(asyncio.CancelledError):
+                await active_task
+        finally:
+            release_acknowledgement.set()
+            if first_handler is not None and not first_handler.done():
+                first_handler.cancel()
+            task = pending_tasks.pop(channel_id, None)
+            if task is not None:
+                task.cancel()
+            if not active_task.done():
+                active_task.cancel()
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
     async def test_telegram_handoff_reply_consumes_notice_and_posts_update(self) -> None:
         channel_id = 95
         fake_channel = _FakeDiscordChannel(channel_id)
