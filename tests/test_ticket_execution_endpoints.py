@@ -562,7 +562,8 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             child_pid = None
             while time.time() < deadline:
                 if os.path.exists(child_pid_path):
-                    child_pid = int(open(child_pid_path, encoding="utf-8").read().strip())
+                    with open(child_pid_path, encoding="utf-8") as handle:
+                        child_pid = int(handle.read().strip())
                     break
                 await asyncio.sleep(0.05)
 
