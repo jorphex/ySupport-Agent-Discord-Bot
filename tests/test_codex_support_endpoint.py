@@ -1383,12 +1383,16 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         for rendered_prompt in (prompt_text, rewrite_prompt_text):
             self.assertIn(
-                "gas limit multiplied by maximum fee per gas, or legacy gas price",
+                "transaction's native-token value plus its maximum gas cost",
                 rendered_prompt,
             )
-            self.assertIn("include a conservative buffer", rendered_prompt)
             self.assertIn(
-                "pending or wallet-queued transactions that may reserve the balance",
+                "gas limit multiplied by maximum fee per gas, or by legacy gas price",
+                rendered_prompt,
+            )
+            self.assertIn("Retain a conservative buffer", rendered_prompt)
+            self.assertIn(
+                "gas and native-token value committed by pending or wallet-queued transactions",
                 rendered_prompt,
             )
             self.assertIn(
@@ -1396,7 +1400,11 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 rendered_prompt,
             )
             self.assertIn(
-                "state that sufficiency is conditional and name the missing check",
+                "transaction-value, fee, or queue evidence is unknown",
+                rendered_prompt,
+            )
+            self.assertIn(
+                "sufficiency is conditional and name the missing check",
                 rendered_prompt,
             )
 

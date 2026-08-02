@@ -60,11 +60,13 @@ _ROLLOUT_SESSION_ID_RE = re.compile(
 _CODEX_SESSION_DELETE_TIMEOUT_SECONDS = 30.0
 _GAS_SUFFICIENCY_INSTRUCTION = (
     "For any gas-sufficiency conclusion, compare the spendable native-token balance "
-    "with gas limit multiplied by maximum fee per gas, or legacy gas price, include "
-    "a conservative buffer, and account for pending or wallet-queued transactions "
-    "that may reserve the balance. Never claim the wallet definitely has enough gas "
-    "from its current balance alone. If any required fee or queue evidence is unknown, "
-    "state that sufficiency is conditional and name the missing check."
+    "with the transaction's native-token value plus its maximum gas cost: gas limit "
+    "multiplied by maximum fee per gas, or by legacy gas price. Retain a conservative "
+    "buffer and also account for the gas and native-token value committed by pending "
+    "or wallet-queued transactions. Never claim the wallet definitely has enough gas "
+    "from its current balance alone. If any required transaction-value, fee, or queue "
+    "evidence is unknown, state that sufficiency is conditional and name the missing "
+    "check."
 )
 
 
