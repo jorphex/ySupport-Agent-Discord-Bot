@@ -262,6 +262,18 @@ _VAULT_URL_PATTERN = re.compile(
 )
 
 
+def extract_address_or_ens(text: str) -> str | None:
+    address_match = re.search(r"(0x[a-fA-F0-9]{40})", text)
+    if address_match:
+        return address_match.group(1)
+    ens_match = re.search(
+        r"\b([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.eth)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return ens_match.group(1) if ens_match else None
+
+
 def extract_yearn_vault_url_target(text: str) -> tuple[str, str] | None:
     match = _VAULT_URL_PATTERN.search(text or "")
     if not match:

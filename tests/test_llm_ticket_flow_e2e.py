@@ -65,9 +65,9 @@ class LlmTicketFlowTests(LlmE2EBase):
                 "summary: current_allowance must be at least amount or the call reverts.\n"
             )
 
-        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
-            with patch("tools_lib.core_search_repo_context", new=fake_search_repo_context):
-                with patch("tools_lib.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts):
+        with patch("onchain_tools.core_inspect_onchain", new=fake_inspect_onchain):
+            with patch("docs_repo_tools.core_search_repo_context", new=fake_search_repo_context):
+                with patch("docs_repo_tools.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts):
                     outcome = await self._run_ticket_flow(
                         "My approval failed on Ethereum. Please inspect this tx hash and tell me what happened: "
                         f"{tx_hash}",
@@ -129,7 +129,7 @@ class LlmTicketFlowTests(LlmE2EBase):
                 "  value_formatted: 650.9147"
             )
 
-        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+        with patch("onchain_tools.core_inspect_onchain", new=fake_inspect_onchain):
             outcome = await self._run_ticket_flow(
                 "Katana tx hash: " + tx_hash,
                 channel_id=9010,
@@ -198,7 +198,7 @@ class LlmTicketFlowTests(LlmE2EBase):
                 "  value_formatted: 650.9147"
             )
 
-        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+        with patch("onchain_tools.core_inspect_onchain", new=fake_inspect_onchain):
             outcome = await self._run_ticket_flow(
                 "i dunno man. look into it",
                 channel_id=9012,
@@ -274,7 +274,7 @@ class LlmTicketFlowTests(LlmE2EBase):
                 "- notable_findings: explicit deposit event decoded\n"
             )
 
-        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+        with patch("onchain_tools.core_inspect_onchain", new=fake_inspect_onchain):
             outcomes = await self._run_ticket_transcript(
                 [
                     "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt",
@@ -334,7 +334,7 @@ class LlmTicketFlowTests(LlmE2EBase):
                 "output_amount: 1872.000000\n"
             )
 
-        with patch("tools_lib.core_inspect_onchain", new=fake_inspect_onchain):
+        with patch("onchain_tools.core_inspect_onchain", new=fake_inspect_onchain):
             outcomes = await self._run_ticket_transcript(
                 [
                     "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt",

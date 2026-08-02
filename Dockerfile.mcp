@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements-mcp.lock \
     && groupadd --gid 10001 ysupport-mcp \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin ysupport-mcp
 
-COPY mcp_server.py tools_lib.py docs_repo_tools.py support_dashboard_tools.py ./
+COPY mcp_server.py vault_search_tools.py docs_repo_tools.py support_dashboard_tools.py ./
 COPY repo_context.py repo_context_build.py chain_access.py yearn_targets.py config.py ./
 COPY v1_vaults.json ./
 COPY yearn_rag/repo_sources.json ./yearn_rag/repo_sources.json

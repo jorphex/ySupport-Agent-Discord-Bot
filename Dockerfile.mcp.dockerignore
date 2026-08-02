@@ -2,7 +2,7 @@
 !Dockerfile.mcp
 !requirements-mcp.lock
 !mcp_server.py
-!tools_lib.py
+!vault_search_tools.py
 !docs_repo_tools.py
 !support_dashboard_tools.py
 !repo_context.py

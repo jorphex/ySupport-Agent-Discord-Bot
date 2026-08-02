@@ -10,8 +10,9 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 import config
+import docs_repo_tools
 import support_dashboard_tools
-import tools_lib
+import vault_search_tools
 
 try:
     mcp_port = int(os.getenv("MCP_PORT", "8000"))
@@ -97,7 +98,7 @@ async def search_documentation(
         Use these excerpts to answer the user's question; they are not a prewritten answer.
     """
     try:
-        return await tools_lib.core_search_docs_context(query)
+        return await docs_repo_tools.core_search_docs_context(query)
     except Exception as e:
         logging.error(f"Error in search_documentation: {e}")
         return f"Error querying documentation: {str(e)}"
@@ -147,7 +148,7 @@ async def search_vaults(
     sort_arg = sort_by if sort_by else None
     
     try:
-        return await tools_lib.core_search_vaults(query, chain_arg, sort_arg)
+        return await vault_search_tools.core_search_vaults(query, chain_arg, sort_arg)
     except Exception as e:
         logging.error(f"Error in search_vaults: {e}")
         return f"Error searching vaults: {str(e)}"
@@ -201,7 +202,7 @@ async def search_repo_context(
         A ranked list of repo artifacts with references such as 'segment:12' that can be passed to fetch_repo_artifacts.
     """
     try:
-        return await tools_lib.core_search_repo_context(query, limit, include_legacy, include_ui)
+        return await docs_repo_tools.core_search_repo_context(query, limit, include_legacy, include_ui)
     except Exception as e:
         logging.error(f"Error in search_repo_context: {e}")
         return f"Error searching repo context: {str(e)}"
@@ -229,7 +230,7 @@ async def fetch_repo_artifacts(
         Exact repo excerpts with file and repo provenance.
     """
     try:
-        return await tools_lib.core_fetch_repo_artifacts(artifact_refs_text)
+        return await docs_repo_tools.core_fetch_repo_artifacts(artifact_refs_text)
     except Exception as e:
         logging.error(f"Error in fetch_repo_artifacts: {e}")
         return f"Error fetching repo artifacts: {str(e)}"
@@ -244,7 +245,7 @@ async def repo_context_status() -> str:
         Repo-context status summary.
     """
     try:
-        return await tools_lib.core_repo_context_status()
+        return await docs_repo_tools.core_repo_context_status()
     except Exception as e:
         logging.error(f"Error in repo_context_status: {e}")
         return f"Error checking repo context status: {str(e)}"

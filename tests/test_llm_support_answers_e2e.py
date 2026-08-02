@@ -72,7 +72,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "That is where supported stYFI positions are shown."
             )
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
             output, _, starting_agent_key = await self._run_support_turn(
                 "Where do I see my stYFI position?"
             )
@@ -96,7 +96,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "Use https://legacy-veyfi.yearn.fi for legacy veYFI lock management."
             )
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
             outcome = await self._run_ticket_flow(
                 "after migrations from veyfi to styfi but where can i check my styfi? "
                 "I went to styfi.yearn.fi and there can't find my styfi balance.",
@@ -134,9 +134,9 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fake_fetch_repo_artifacts(*, artifact_refs_text: str) -> str:
             return ""
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
-            with patch("tools_lib.core_search_repo_context", new=fake_search_repo_context):
-                with patch("tools_lib.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
+            with patch("docs_repo_tools.core_search_repo_context", new=fake_search_repo_context):
+                with patch("docs_repo_tools.core_fetch_repo_artifacts", new=fake_fetch_repo_artifacts):
                     outcome = await self._run_ticket_flow(
                         "Hi, I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. "
                         "Does that mean I can reclaim my lost ETH 1:1? If not, what amount can I recover, "
@@ -167,7 +167,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "Source: Yearn docs, stYFI contract addresses."
             )
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
             outcome = await self._run_ticket_flow(
                 "whats the contract address for styfi? it just launched today",
                 channel_id=9024,
@@ -214,7 +214,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "send that evidence and I can investigate further."
             )
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
             outcome = await self._run_ticket_flow(
                 "hi. can I make Harvests myself?\n"
                 "This. Pool v2\n"
@@ -247,8 +247,8 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fail_search_vaults(*args, **kwargs) -> str:
             raise AssertionError("Vault search should not run for an APY mechanics explanation question.")
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
-            with patch("tools_lib.core_search_vaults", new=fail_search_vaults):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
+            with patch("vault_search_tools.core_search_vaults", new=fail_search_vaults):
                 outcome = await self._run_ticket_flow(
                     "How is the AUSD vault in katana earning 10%+ native APY for almost a month "
                     "if the strategies inside are earning less than 1%?",
@@ -282,8 +282,8 @@ class LlmSupportAnswerTests(LlmE2EBase):
         async def fail_search_vaults(*args, **kwargs) -> str:
             raise AssertionError("Vault search should not run for the closed-1431 value-drop replay.")
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
-            with patch("tools_lib.core_search_vaults", new=fail_search_vaults):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
+            with patch("vault_search_tools.core_search_vaults", new=fail_search_vaults):
                 outcome = await self._run_ticket_flow(
                     "Hi\n"
                     "I staked 0.2 ETH about a week ago on the yCVR pool:\n"
@@ -616,7 +616,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "Critical vulnerability found. This may cause loss of funds."
             )
 
-        with patch("tools_lib.core_fetch_report_artifact", new=fake_fetch_report_artifact):
+        with patch("docs_repo_tools.core_fetch_report_artifact", new=fake_fetch_report_artifact):
             outcome = await self._run_ticket_flow(
                 "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
                 channel_id=9031,
@@ -668,7 +668,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "If you have a specific failed transaction or a stuck action, share that evidence for investigation."
             )
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
             outcome = await self._run_ticket_flow(
                 "Hi. I have vaults cvxcrv. Awards are not distributed. How does this happen? "
                 "How long should I wait? I already asked, I was told that this happens when the rewards "
@@ -697,7 +697,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "resets the stream start time to block.timestamp and re-locks previously vested but unredeemed funds for 14 days."
             )
 
-        with patch("tools_lib.core_fetch_report_artifact", new=fake_fetch_report_artifact):
+        with patch("docs_repo_tools.core_fetch_report_artifact", new=fake_fetch_report_artifact):
             outcome = await self._run_ticket_flow(
                 "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
                 channel_id=9032,
@@ -791,7 +791,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "Use https://legacy.yearn.fi/ to view legacy Yearn positions that may not appear in the newer UI."
             )
 
-        with patch("tools_lib.core_answer_from_docs", new=fake_answer_from_docs):
+        with patch("docs_repo_tools.core_answer_from_docs", new=fake_answer_from_docs):
             outcome = await self._run_ticket_flow(
                 "I opened a ticket before and lost the URL to see all my positions. "
                 "My wallet is 0x23d402C2058052f0B9c24Fb4E17DE8cC1E3a0cb0. "

@@ -8,7 +8,7 @@ import discord
 
 import config
 from handoff import TelegramSentMessage
-import tools_lib
+import yearn_targets
 from state import (
     BotRunContext,
     TicketInvestigationJob,
@@ -158,7 +158,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         boundary_patcher.start()
         self.addCleanup(boundary_patcher.stop)
         summary_patcher = patch(
-            "ysupport.summarize_handoff_summary",
+            "discord_support_runtime.summarize_handoff_summary",
             return_value=None,
         )
         summary_patcher.start()
@@ -166,13 +166,13 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_extract_yearn_vault_url_target_parses_supported_urls(self) -> None:
         self.assertEqual(
-            tools_lib.extract_yearn_vault_url_target(
+            yearn_targets.extract_yearn_vault_url_target(
                 "https://yearn.fi/vaults/1/0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204"
             ),
             ("ethereum", "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204"),
         )
         self.assertEqual(
-            tools_lib.extract_yearn_vault_url_target(
+            yearn_targets.extract_yearn_vault_url_target(
                 "https://legacy.yearn.fi/v3/747474/0x80c34BD3A3569E126e7055831036aa7b212cB159"
             ),
             ("katana", "0x80c34BD3A3569E126e7055831036aa7b212cB159"),
@@ -194,7 +194,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                 ]
             },
         ):
-            resolved = await tools_lib.resolve_yearn_address_target(address, chain_hint="ethereum")
+            resolved = await yearn_targets.resolve_yearn_address_target(address, chain_hint="ethereum")
 
         self.assertIsNotNone(resolved)
         assert resolved is not None
@@ -213,7 +213,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"kind": "erc20_like", "has_code": True, "symbol": "TEST", "name": "Test Contract"},
             ),
         ):
-            resolved = await tools_lib.resolve_yearn_address_target(address, chain_hint="ethereum")
+            resolved = await yearn_targets.resolve_yearn_address_target(address, chain_hint="ethereum")
 
         self.assertIsNotNone(resolved)
         assert resolved is not None
@@ -264,10 +264,10 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
 
         resolved_wallet = "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
         try:
-            with patch("ticket_intake.tools_lib.resolve_ens", return_value=resolved_wallet):
+            with patch("chain_access.resolve_ens_name", return_value=resolved_wallet):
                 with patch(
-                    "ticket_intake.tools_lib.resolve_yearn_address_target",
-                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=resolved_wallet,
                         kind="eoa_or_missing_code",
                         chain=None,
@@ -341,10 +341,10 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("ticket_intake.tools_lib.resolve_ens", return_value=vault_address):
+            with patch("chain_access.resolve_ens_name", return_value=vault_address):
                 with patch(
-                    "ticket_intake.tools_lib.resolve_yearn_address_target",
-                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=vault_address,
                         kind="vault",
                         chain="ethereum",
@@ -419,10 +419,10 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("ticket_intake.tools_lib.resolve_ens", return_value=contract_address):
+            with patch("chain_access.resolve_ens_name", return_value=contract_address):
                 with patch(
-                    "ticket_intake.tools_lib.resolve_yearn_address_target",
-                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=contract_address,
                         kind="contract_unknown",
                         chain="ethereum",
@@ -504,10 +504,10 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("ticket_intake.tools_lib.resolve_ens", return_value=resolved_wallet):
+            with patch("chain_access.resolve_ens_name", return_value=resolved_wallet):
                 with patch(
-                    "ticket_intake.tools_lib.resolve_yearn_address_target",
-                    return_value=tools_lib.ResolvedYearnAddressTarget(
+                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=resolved_wallet,
                         kind="eoa_or_missing_code",
                         chain="ethereum",
@@ -586,8 +586,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("ticket_intake.tools_lib.resolve_yearn_address_target") as mock_resolve_target:
-                mock_resolve_target.return_value = tools_lib.ResolvedYearnAddressTarget(
+            with patch("ticket_intake.yearn_targets.resolve_yearn_address_target") as mock_resolve_target:
+                mock_resolve_target.return_value = yearn_targets.ResolvedYearnAddressTarget(
                     address=vault_address,
                     kind="vault",
                     chain="ethereum",
@@ -716,7 +716,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch("ysupport.send_long_message", new=fake_send_long_message),
                 patch(
-                    "ysupport.send_handoff_notice",
+                    "discord_support_runtime.send_handoff_notice",
                     return_value=TelegramSentMessage(
                         chat_id="123",
                         message_id=456,

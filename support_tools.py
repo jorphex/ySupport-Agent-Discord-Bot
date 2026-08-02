@@ -5,8 +5,11 @@ from typing import Literal, Optional
 from agents import function_tool, RunContextWrapper
 
 import config
-import tools_lib
+import docs_repo_tools
+import onchain_tools
 from state import BotRunContext
+import vault_position_tools
+import vault_search_tools
 
 
 def _extract_artifact_refs(text: str) -> list[str]:
@@ -55,7 +58,7 @@ async def search_vaults_tool(
     Set `recommended_only=True` when you want recommendation-grade results that exclude
     single-strategy / ys- style vaults by default.
     """
-    return await tools_lib.core_search_vaults(query, chain, sort_by, recommended_only)
+    return await vault_search_tools.core_search_vaults(query, chain, sort_by, recommended_only)
 
 
 @function_tool
@@ -66,7 +69,7 @@ async def get_withdrawal_instructions_tool(user_address_or_ens: Optional[str], v
     Provide the vault's address, the chain name (e.g., 'ethereum', 'optimism', 'arbitrum'), and optionally the user's address/ENS.
     Use this when a user asks how to withdraw or reports issues using the Yearn website for a specific vault.
     """
-    return await tools_lib.core_get_withdrawal_instructions(user_address_or_ens, vault_address, chain)
+    return await vault_position_tools.core_get_withdrawal_instructions(user_address_or_ens, vault_address, chain)
 
 
 @function_tool
@@ -74,7 +77,7 @@ async def check_all_deposits_tool(user_address_or_ens: str, token_symbol: Option
     """
     Checks for user deposits in Yearn vaults.
     """
-    return await tools_lib.core_check_all_deposits(user_address_or_ens, token_symbol)
+    return await vault_position_tools.core_check_all_deposits(user_address_or_ens, token_symbol)
 
 
 @function_tool
@@ -105,7 +108,7 @@ async def inspect_onchain_tool(
     - 'tx_investigate': run a fuller transaction investigation with decoded standard events, transfer/approval/deposit summaries, and profiled contracts
     Use this for allowance, approvals, tx receipt/log inspection, and other targeted chain-state checks.
     """
-    return await tools_lib.core_inspect_onchain(
+    return await onchain_tools.core_inspect_onchain(
         chain=chain,
         mode=mode,
         to_address=to_address,
@@ -132,7 +135,7 @@ async def answer_from_docs_tool(
     """
     Answers questions based on Yearn documentation and YIPs.
     """
-    return await tools_lib.core_answer_from_docs(user_query)
+    return await docs_repo_tools.core_answer_from_docs(user_query)
 
 
 @function_tool
@@ -169,7 +172,7 @@ async def search_repo_context_tool(
         )
         return _repo_search_block_message(run_context)
 
-    response = await tools_lib.core_search_repo_context(query, limit, include_legacy, include_ui)
+    response = await docs_repo_tools.core_search_repo_context(query, limit, include_legacy, include_ui)
     run_context.repo_search_calls += 1
     run_context.repo_searches_without_fetch += 1
     run_context.repo_last_search_query = query
@@ -186,7 +189,7 @@ async def fetch_repo_artifacts_tool(
     Fetches exact repo artifacts by reference from the local Yearn repo-context index.
     Provide one or more artifact references such as 'segment:12' or 'fact:34'.
     """
-    response = await tools_lib.core_fetch_repo_artifacts(artifact_refs_text)
+    response = await docs_repo_tools.core_fetch_repo_artifacts(artifact_refs_text)
     run_context = wrapper.context
     requested_refs = _extract_artifact_refs(artifact_refs_text)
     if requested_refs and not response.startswith("No valid repo artifact references were provided."):
@@ -216,7 +219,7 @@ async def pretriage_repo_claim_tool(
     run_context.repo_search_calls += 1
     run_context.repo_fetch_calls += 1
     run_context.repo_searches_without_fetch = 0
-    return await tools_lib.core_pretriage_repo_claim(
+    return await docs_repo_tools.core_pretriage_repo_claim(
         claim_text,
         include_docs=include_docs,
         limit=limit,
@@ -231,7 +234,7 @@ async def repo_context_status_tool() -> str:
     Returns repo-context runtime status, including readiness and freshness.
     Use this when repo results appear unavailable or stale.
     """
-    return await tools_lib.core_repo_context_status()
+    return await docs_repo_tools.core_repo_context_status()
 
 
 @function_tool
@@ -241,4 +244,4 @@ async def fetch_report_artifact_tool(report_url: str, max_chars: int = 12000) ->
     Supported URLs include public gist links, gist raw URLs, github blob links, and raw.githubusercontent.com URLs.
     Use this when a user submits a report link or gist instead of pasting the claim directly.
     """
-    return await tools_lib.core_fetch_report_artifact(report_url, max_chars=max_chars)
+    return await docs_repo_tools.core_fetch_report_artifact(report_url, max_chars=max_chars)

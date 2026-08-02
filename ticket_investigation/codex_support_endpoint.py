@@ -6,14 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
-import os
 from pathlib import Path
 import re
 from typing import Sequence
-from urllib.parse import urlparse
-
-import aiohttp
-
 from codex_support_home import (
     prepare_codex_auth_state,
     prepare_codex_support_home,
@@ -27,12 +22,19 @@ from codex_support_contract import (
     verify_support_turn_result,
 )
 from codex_support_sessions import CodexSupportSessionManager
+from ticket_investigation.codex_support_attachments import (
+    image_attachment_paths,
+    prepare_support_request_attachments,
+)
+from ticket_investigation.codex_support_subprocess import (
+    CodexSupportExecutionOutput,
+    run_codex_support_json_subprocess,
+)
 from ticket_execution.subprocess_utils import (
     build_effective_execution_env,
     run_bounded_subprocess,
     safe_export_workspace_copy,
     validate_allowed_command_prefix,
-    write_execution_artifacts,
 )
 from ticket_execution.workspace import TicketExecutionWorkspace
 from ticket_investigation.executor import TicketExecutionHooks
@@ -48,11 +50,6 @@ DEFAULT_CODEX_EXEC_COMMAND = [
     "--color",
     "never",
 ]
-_ALLOWED_DISCORD_ATTACHMENT_HOSTS = {
-    "cdn.discordapp.com",
-    "media.discordapp.net",
-}
-_MAX_ATTACHMENT_IMAGE_BYTES = 20 * 1024 * 1024
 _SESSION_UUID_RE = re.compile(r"[0-9a-fA-F-]{36}")
 _ROLLOUT_SESSION_ID_RE = re.compile(
     r"(?P<session_id>[0-9a-fA-F-]{36})\.jsonl$"
@@ -87,11 +84,6 @@ class CodexSupportExecutionBundle:
     support_request_path: Path
     response_schema_path: Path
     resumed_session_id: str | None
-
-
-@dataclass
-class CodexSupportExecutionOutput:
-    final_response_text: str
 
 
 class _ConversationExecutionLocks:
@@ -311,7 +303,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         if self.session_manager is not None and conversation_key is not None
                         else None
                     )
-                    await _prepare_support_request_attachments(
+                    await prepare_support_request_attachments(
                         support_request,
                         run_dir=run_dir,
                     )
@@ -488,7 +480,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
             if attempt > 0:
                 self._prepare_support_home()
             try:
-                return await _run_codex_support_json_subprocess(
+                return await run_codex_support_json_subprocess(
                     command=bundle.command,
                     stdin_text=bundle.prompt_text,
                     cwd=self.cwd or str(run_dir),
@@ -614,7 +606,7 @@ def _build_codex_support_execution_bundle(
         reasoning_effort=reasoning_effort,
         response_schema_path=response_schema_path,
         run_dir_path=run_dir_path,
-        image_paths=_image_attachment_paths(support_request),
+        image_paths=image_attachment_paths(support_request),
         resume_session_id=resume_session_id,
     )
     return CodexSupportExecutionBundle(
@@ -625,124 +617,6 @@ def _build_codex_support_execution_bundle(
         response_schema_path=response_schema_path,
         resumed_session_id=resume_session_id,
     )
-
-
-async def _prepare_support_request_attachments(
-    support_request: SupportTurnRequest,
-    *,
-    run_dir: str | Path,
-) -> None:
-    attachments = list(support_request.attachments)
-    if not attachments:
-        return
-    attachments_dir = Path(run_dir) / "attachments"
-    attachments_dir.mkdir(parents=True, exist_ok=True)
-    prepared: list[dict[str, object]] = []
-    for index, attachment in enumerate(attachments, start=1):
-        item = dict(attachment)
-        item["local_path"] = None
-        if not _attachment_is_image(item):
-            prepared.append(item)
-            continue
-        try:
-            local_path = await _download_attachment_image(
-                attachment=item,
-                attachments_dir=attachments_dir,
-                index=index,
-            )
-        except Exception as exc:
-            filename = str(item.get("filename") or f"attachment {index}")
-            raise ValueError(
-                f"Could not prepare image attachment {filename}: {exc}"
-            ) from exc
-        item["is_image"] = True
-        item["local_path"] = str(local_path)
-        prepared.append(item)
-    support_request.attachments = prepared
-
-
-def _image_attachment_paths(support_request: SupportTurnRequest) -> list[Path]:
-    image_paths: list[Path] = []
-    for attachment in support_request.attachments:
-        if not _attachment_is_image(attachment):
-            continue
-        local_path = str(attachment.get("local_path") or "").strip()
-        if not local_path:
-            continue
-        path = Path(local_path)
-        if path.exists():
-            image_paths.append(path)
-    return image_paths
-
-
-def _attachment_is_image(attachment: dict[str, object]) -> bool:
-    if bool(attachment.get("is_image")):
-        return True
-    content_type = str(attachment.get("content_type") or "").lower()
-    if content_type.startswith("image/"):
-        return True
-    filename = str(attachment.get("filename") or "").lower()
-    return filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
-
-
-def _validate_attachment_image_source(attachment: dict[str, object]) -> str:
-    url = str(attachment.get("url") or "").strip()
-    if not url:
-        raise ValueError("Attachment URL is required.")
-    parsed = urlparse(url)
-    if (
-        parsed.scheme.lower() != "https"
-        or (parsed.hostname or "").lower() not in _ALLOWED_DISCORD_ATTACHMENT_HOSTS
-    ):
-        raise ValueError("Attachment URL must use the Discord CDN.")
-    declared_size = attachment.get("size")
-    if isinstance(declared_size, int) and declared_size > _MAX_ATTACHMENT_IMAGE_BYTES:
-        raise ValueError("Attachment image exceeds the 20 MiB safety limit.")
-    return url
-
-
-async def _read_attachment_image_body(response: aiohttp.ClientResponse) -> bytes:
-    content_length = response.content_length
-    if (
-        content_length is not None
-        and content_length > _MAX_ATTACHMENT_IMAGE_BYTES
-    ):
-        raise ValueError("Attachment image exceeds the 20 MiB safety limit.")
-    body = bytearray()
-    async for chunk in response.content.iter_chunked(64 * 1024):
-        body.extend(chunk)
-        if len(body) > _MAX_ATTACHMENT_IMAGE_BYTES:
-            raise ValueError("Attachment image exceeds the 20 MiB safety limit.")
-    return bytes(body)
-
-
-async def _download_attachment_image(
-    *,
-    attachment: dict[str, object],
-    attachments_dir: Path,
-    index: int,
-) -> Path:
-    url = _validate_attachment_image_source(attachment)
-    source_name = str(attachment.get("filename") or "").strip()
-    suffix = Path(source_name).suffix or Path(urlparse(url).path).suffix or ".img"
-    safe_suffix = suffix if suffix.startswith(".") else f".{suffix}"
-    target_path = attachments_dir / f"attachment_{index}{safe_suffix.lower()}"
-    timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            response_host = (response.url.host or "").lower()
-            if response_host not in _ALLOWED_DISCORD_ATTACHMENT_HOSTS:
-                raise ValueError("Attachment redirect left the Discord CDN.")
-            body = await _read_attachment_image_body(response)
-            content_type = (response.headers.get("Content-Type") or "").strip().lower()
-    if not body:
-        raise ValueError("Attachment download returned empty body.")
-    if not content_type.startswith("image/"):
-        raise ValueError("Attachment is not an image.")
-    target_path.write_bytes(body)
-    return target_path
-
 
 def _conversation_key_for_request(
     request: TicketExecutionTransportRequest,
@@ -941,176 +815,6 @@ def _codex_support_transaction_safety_rewrite_prompt(
     )
 
 
-async def _run_codex_support_json_subprocess(
-    *,
-    command: Sequence[str],
-    stdin_text: str,
-    cwd: str | None,
-    env: dict[str, str],
-    timeout_seconds: float,
-    max_output_chars: int,
-    max_error_chars: int,
-    timeout_message: str,
-    empty_stdout_message: str,
-    oversized_stdout_message: str,
-    metadata: dict[str, object],
-    artifact_run_dir: Path | None,
-    progress_callback,
-) -> CodexSupportExecutionOutput:
-    creation_kwargs = (
-        {"creationflags": 0}
-        if os.name == "nt"
-        else {"start_new_session": True}
-    )
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=env,
-        **creation_kwargs,
-    )
-    stdout_lines: list[str] = []
-    stderr_chunks: list[str] = []
-    final_response_text: str | None = None
-
-    async def _feed_stdin() -> None:
-        if process.stdin is None:
-            return
-        process.stdin.write(stdin_text.encode("utf-8"))
-        await process.stdin.drain()
-        process.stdin.close()
-        try:
-            await process.stdin.wait_closed()
-        except Exception:
-            return
-
-    async def _read_stdout() -> None:
-        nonlocal final_response_text
-        if process.stdout is None:
-            return
-
-        async def _handle_line(line: bytes) -> None:
-            nonlocal final_response_text
-            text = line.decode("utf-8", errors="replace").rstrip("\r")
-            if not text:
-                return
-            stdout_lines.append(text)
-            event = _parse_json_event(text)
-            if event is None:
-                return
-            progress_text = _progress_update_from_codex_event(event)
-            if progress_text and progress_callback is not None:
-                await progress_callback(progress_text)
-            response_text = _final_response_from_codex_event(event)
-            if response_text:
-                final_response_text = response_text
-
-        pending = bytearray()
-        while True:
-            chunk = await process.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            pending.extend(chunk)
-            while True:
-                separator_index = pending.find(b"\n")
-                if separator_index < 0:
-                    break
-                line = bytes(pending[:separator_index])
-                del pending[: separator_index + 1]
-                await _handle_line(line)
-        if pending:
-            await _handle_line(bytes(pending))
-
-    async def _read_stderr() -> None:
-        if process.stderr is None:
-            return
-        while True:
-            chunk = await process.stderr.read(4096)
-            if not chunk:
-                break
-            stderr_chunks.append(chunk.decode("utf-8", errors="replace"))
-
-    io_tasks = [
-        asyncio.create_task(_feed_stdin()),
-        asyncio.create_task(_read_stdout()),
-        asyncio.create_task(_read_stderr()),
-    ]
-    io_future = asyncio.gather(*io_tasks)
-    try:
-        await asyncio.wait_for(
-            io_future,
-            timeout=timeout_seconds,
-        )
-        await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
-    except asyncio.TimeoutError as exc:
-        await _terminate_streamed_subprocess(process)
-        write_execution_artifacts(
-            artifact_run_dir,
-            stdout_text="\n".join(stdout_lines),
-            stderr_text="".join(stderr_chunks).strip(),
-            metadata={**metadata, "timed_out": True},
-        )
-        raise RuntimeError(timeout_message) from exc
-    except asyncio.CancelledError:
-        await _terminate_streamed_subprocess(process)
-        raise
-    except Exception:
-        await _terminate_streamed_subprocess(process)
-        raise
-    finally:
-        for task in io_tasks:
-            if not task.done():
-                task.cancel()
-        if not io_future.done():
-            io_future.cancel()
-        try:
-            await io_future
-        except (Exception, asyncio.CancelledError):
-            pass
-
-    stdout_text = "\n".join(stdout_lines).strip()
-    stderr_text = "".join(stderr_chunks).strip()
-    write_execution_artifacts(
-        artifact_run_dir,
-        stdout_text=stdout_text,
-        stderr_text=stderr_text,
-        metadata={**metadata, "returncode": process.returncode, "timed_out": False},
-    )
-    if process.returncode != 0:
-        error_text = stderr_text or "Codex support execution exited without stderr output."
-        raise RuntimeError(error_text[:max_error_chars])
-    if not stdout_text:
-        raise RuntimeError(empty_stdout_message)
-    execution_output = _parse_codex_support_execution_output(stdout_text)
-    if len(execution_output.final_response_text) > max_output_chars:
-        raise RuntimeError(oversized_stdout_message)
-    return execution_output
-
-
-def _parse_codex_support_execution_output(stdout_text: str) -> CodexSupportExecutionOutput:
-    final_response_text: str | None = None
-    for line in stdout_text.splitlines():
-        event = _parse_json_event(line)
-        if event is None:
-            continue
-        response_text = _final_response_from_codex_event(event)
-        if response_text:
-            final_response_text = response_text
-    if final_response_text is None:
-        raise RuntimeError("Codex support execution returned JSON events without a final agent message.")
-    return CodexSupportExecutionOutput(final_response_text=final_response_text)
-
-
-def _parse_json_event(text: str) -> dict[str, object] | None:
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
 def _is_codex_auth_error_text(text: str) -> bool:
     normalized = text.lower()
     return any(
@@ -1123,78 +827,3 @@ def _is_codex_auth_error_text(text: str) -> bool:
             "your access token could not be refreshed",
         )
     )
-
-
-def _final_response_from_codex_event(event: dict[str, object]) -> str | None:
-    if event.get("type") != "item.completed":
-        return None
-    item = event.get("item")
-    if not isinstance(item, dict):
-        return None
-    if item.get("type") != "agent_message":
-        return None
-    text = item.get("text")
-    return text.strip() if isinstance(text, str) and text.strip() else None
-
-
-def _progress_update_from_codex_event(event: dict[str, object]) -> str | None:
-    if event.get("type") != "item.started":
-        return None
-    item = event.get("item")
-    if not isinstance(item, dict):
-        return None
-    item_type = str(item.get("type") or "").strip().lower()
-    if not item_type or item_type in {"agent_message", "todo_list", "file_change"}:
-        return None
-    if item_type == "command_execution":
-        return _progress_from_command_execution(str(item.get("command") or ""))
-    if "web" in item_type or "search" in item_type:
-        return "Checking external references"
-    if "mcp" in item_type or item.get("tool_name") or item.get("server") or item.get("name"):
-        return _progress_from_tool_item(item)
-    return None
-
-
-def _progress_from_command_execution(command: str) -> str | None:
-    normalized = command.lower()
-    if (
-        "notes.md" in normalized
-        or "support_request.json" in normalized
-        or "support_response_schema.json" in normalized
-    ):
-        return None
-    if "http" in normalized or "curl " in normalized or "wget " in normalized:
-        return "Reading linked references"
-    return "Running a local check"
-
-
-def _progress_from_tool_item(item: dict[str, object]) -> str:
-    raw_name = " ".join(
-        str(item.get(key) or "")
-        for key in ("tool_name", "name", "server", "title")
-    ).lower()
-    if "view_image" in raw_name or "image" in raw_name or "attachment" in raw_name:
-        return "Checking screenshots"
-    if "harvest" in raw_name or "report" in raw_name:
-        return "Checking recent harvests"
-    if "search_vaults" in raw_name or "discover" in raw_name or "vault" in raw_name:
-        return "Checking vault state"
-    if "repo" in raw_name or "artifact" in raw_name:
-        return "Checking repo context"
-    if "document" in raw_name or "doc" in raw_name:
-        return "Checking Yearn docs"
-    return "Checking Yearn support data"
-
-
-async def _terminate_streamed_subprocess(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    try:
-        if os.name == "nt":
-            process.kill()
-        else:
-            os.killpg(os.getpgid(process.pid), 9)
-    except ProcessLookupError:
-        pass
-    finally:
-        await process.wait()

@@ -12,7 +12,8 @@ from state import (
     last_wallet_by_channel,
     pending_wallet_confirmation_by_channel,
 )
-import tools_lib
+import chain_access
+import yearn_targets
 
 
 @dataclass
@@ -115,7 +116,7 @@ async def prepare_ticket_turn_input(
     tx_hash_present_in_message = bool(
         known_tx_hashes and any(tx_hash in aggregated_text for tx_hash in known_tx_hashes)
     )
-    vault_url_target = tools_lib.extract_yearn_vault_url_target(aggregated_text)
+    vault_url_target = yearn_targets.extract_yearn_vault_url_target(aggregated_text)
 
     if vault_url_target is not None:
         vault_url_chain, vault_url_address = vault_url_target
@@ -154,7 +155,7 @@ async def prepare_ticket_turn_input(
         extracted_address_or_ens = vault_url_address
     elif is_data_intent:
         extracted_address_or_ens = (
-            tools_lib.extract_address_or_ens(aggregated_text) or aggregated_text
+            yearn_targets.extract_address_or_ens(aggregated_text) or aggregated_text
         )
     elif is_message_primarily_address(aggregated_text) and is_probable_wallet_address(
         aggregated_text
@@ -164,11 +165,11 @@ async def prepare_ticket_turn_input(
     if not extracted_address_or_ens:
         return preparation
 
-    parsed_address = tools_lib.resolve_ens(extracted_address_or_ens)
+    parsed_address = chain_access.resolve_ens_name(extracted_address_or_ens)
     if not parsed_address:
         return preparation
 
-    resolved_target = await tools_lib.resolve_yearn_address_target(
+    resolved_target = await yearn_targets.resolve_yearn_address_target(
         parsed_address,
         chain_hint=investigation_job.evidence.chain,
     )

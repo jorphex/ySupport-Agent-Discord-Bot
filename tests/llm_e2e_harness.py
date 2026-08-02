@@ -18,7 +18,7 @@ from support_agents import (
     yearn_data_agent,
     yearn_docs_qa_agent,
 )
-import tools_lib
+import docs_repo_tools
 from ticket_investigation.executor import (
     LocalTicketInvestigationExecutor,
     TransportTicketInvestigationExecutor,
@@ -85,7 +85,7 @@ async def _close_agents_http_clients() -> None:
         pass
 
     try:
-        await tools_lib.close_shared_clients()
+        await docs_repo_tools.close_shared_clients()
     except Exception:
         pass
 

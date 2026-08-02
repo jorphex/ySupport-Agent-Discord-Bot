@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 import config
 from chain_access import get_web3_instances
-import tools_lib
+import docs_repo_tools
 
 
 class KnowledgeGapCandidate(BaseModel):
@@ -767,10 +767,10 @@ async def analyze_transcript_for_knowledge_gap(
     if not candidate.reportable or candidate.category == "no_action":
         return None
 
-    docs_grounding = await tools_lib.core_answer_from_docs(candidate.grounding_query)
+    docs_grounding = await docs_repo_tools.core_answer_from_docs(candidate.grounding_query)
     repo_grounding = ""
     if _should_fetch_repo_grounding(candidate):
-        repo_grounding = await tools_lib.core_pretriage_repo_claim(
+        repo_grounding = await docs_repo_tools.core_pretriage_repo_claim(
             _build_repo_grounding_query(candidate),
             include_docs=False,
         )

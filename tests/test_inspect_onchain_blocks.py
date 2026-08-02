@@ -3,7 +3,8 @@ import tests as _test_environment  # noqa: F401
 import unittest
 from unittest.mock import patch
 
-import tools_lib
+import chain_access
+import onchain_tools
 
 
 class InspectOnchainBlockIdentifierTests(unittest.IsolatedAsyncioTestCase):
@@ -21,8 +22,12 @@ class InspectOnchainBlockIdentifierTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.eth = _FakeEth()
 
-        with patch.dict(tools_lib.WEB3_INSTANCES, {"ethereum": _FakeWeb3()}, clear=True):
-            result = await tools_lib.core_inspect_onchain(
+        with patch.dict(
+            chain_access.WEB3_INSTANCES,
+            {"ethereum": _FakeWeb3()},
+            clear=True,
+        ):
+            result = await onchain_tools.core_inspect_onchain(
                 chain="ethereum",
                 mode="logs",
                 from_block="latest-50000",
