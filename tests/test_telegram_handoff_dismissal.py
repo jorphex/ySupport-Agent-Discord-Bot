@@ -1,8 +1,6 @@
 import tests as _test_environment  # noqa: F401
 
 import asyncio
-import unittest
-from dataclasses import dataclass
 from unittest.mock import patch
 
 
@@ -29,82 +27,14 @@ from handoff import (
     build_dismissed_handoff_notice,
     build_handoff_notice,
 )
-from support_agents import (
-    TicketTriageDecision,
-)
 from ysupport import (
     TicketBot,
 )
 
-
-@dataclass
-class _FakeResult:
-    final_output: str | None
-    last_agent: object | None
-    _history: list
-    _decision: TicketTriageDecision | None = None
-
-    def final_output_as(self, model_type):
-        if self._decision is None:
-            raise AssertionError("No structured decision configured.")
-        return self._decision
-
-    def to_input_list(self):
-        return self._history
+from tests.ticket_flow_test_support import TicketFlowTestCase
 
 
-class _FakeRunner:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = []
-
-    async def run(self, **kwargs):
-        self.calls.append(kwargs)
-        if not self._results:
-            raise AssertionError("No fake result available for runner call.")
-        return self._results.pop(0)
-
-
-class _FakeInvestigationExecutor:
-    def __init__(self, *, result=None, exc: Exception | None = None):
-        self.result = result
-        self.exc = exc
-        self.calls = []
-
-    async def execute_turn(self, request, hooks=None):
-        self.calls.append({"request": request, "hooks": hooks})
-        if self.exc is not None:
-            raise self.exc
-        return self.result
-
-
-class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        boundary_patcher = patch(
-            "ysupport._outer_support_boundary_result",
-            return_value={
-                "classification": "yearn_support",
-                "tripwire_triggered": False,
-            },
-        )
-        boundary_patcher.start()
-        self.addCleanup(boundary_patcher.stop)
-        runtime_boundary_patcher = patch(
-            "ticket_investigation.runtime.evaluate_support_boundary",
-            return_value={
-                "classification": "yearn_support",
-                "tripwire_triggered": False,
-            },
-        )
-        runtime_boundary_patcher.start()
-        self.addCleanup(runtime_boundary_patcher.stop)
-        summary_patcher = patch(
-            "discord_support_runtime.summarize_handoff_summary",
-            return_value=None,
-        )
-        summary_patcher.start()
-        self.addCleanup(summary_patcher.stop)
-
+class TicketFlowTests(TicketFlowTestCase):
     async def test_telegram_handoff_dismissal_stops_and_clears_ticket_before_delete(
         self,
     ) -> None:
@@ -406,7 +336,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "telegram_handoff_controller.retire_handoff_notice",
                     return_value=False,
                 ) as retire_notice,
-                patch("ysupport.logging.warning") as warning,
+                patch("telegram_handoff_controller.logging.warning") as warning,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
 
@@ -494,7 +424,7 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "telegram_handoff_controller.retire_handoff_notice"
                 ) as retire_notice,
-                patch("ysupport.logging.error") as log_error,
+                patch("telegram_handoff_controller.logging.error") as log_error,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
 

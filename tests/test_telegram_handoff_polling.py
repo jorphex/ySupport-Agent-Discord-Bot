@@ -1,8 +1,6 @@
 import tests as _test_environment  # noqa: F401
 
 import asyncio
-import unittest
-from dataclasses import dataclass
 from unittest.mock import patch
 
 
@@ -20,81 +18,55 @@ from handoff import (
     build_handoff_notice,
     TelegramApiError,
 )
-from support_agents import (
-    TicketTriageDecision,
-)
+from telegram_handoff_controller import TelegramHandoffController
 from ysupport import (
     TicketBot,
 )
 
-
-@dataclass
-class _FakeResult:
-    final_output: str | None
-    last_agent: object | None
-    _history: list
-    _decision: TicketTriageDecision | None = None
-
-    def final_output_as(self, model_type):
-        if self._decision is None:
-            raise AssertionError("No structured decision configured.")
-        return self._decision
-
-    def to_input_list(self):
-        return self._history
+from tests.ticket_flow_test_support import TicketFlowTestCase
 
 
-class _FakeRunner:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = []
+class TicketFlowTests(TicketFlowTestCase):
+    async def test_controller_start_is_config_gated_and_idempotent(self) -> None:
+        class _Bot:
+            def is_closed(self) -> bool:
+                return False
 
-    async def run(self, **kwargs):
-        self.calls.append(kwargs)
-        if not self._results:
-            raise AssertionError("No fake result available for runner call.")
-        return self._results.pop(0)
+        controller = TelegramHandoffController(_Bot())
+        loop_started = asyncio.Event()
 
+        async def reply_loop() -> None:
+            loop_started.set()
+            await asyncio.Event().wait()
 
-class _FakeInvestigationExecutor:
-    def __init__(self, *, result=None, exc: Exception | None = None):
-        self.result = result
-        self.exc = exc
-        self.calls = []
+        with (
+            patch.object(config, "TELEGRAM_BOT_TOKEN", ""),
+            patch.object(config, "TELEGRAM_YSUPPORT_CHAT", ""),
+        ):
+            self.assertFalse(controller.start())
+            self.assertIsNone(controller.task)
 
-    async def execute_turn(self, request, hooks=None):
-        self.calls.append({"request": request, "hooks": hooks})
-        if self.exc is not None:
-            raise self.exc
-        return self.result
+        with (
+            patch.object(config, "TELEGRAM_BOT_TOKEN", "token"),
+            patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
+            patch.object(
+                controller,
+                "_telegram_handoff_reply_loop",
+                new=reply_loop,
+            ),
+        ):
+            self.assertTrue(controller.start())
+            task = controller.task
+            self.assertIsNotNone(task)
+            await loop_started.wait()
+            self.assertTrue(controller.start())
+            self.assertIs(controller.task, task)
+            controller.close()
 
-
-class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        boundary_patcher = patch(
-            "ysupport._outer_support_boundary_result",
-            return_value={
-                "classification": "yearn_support",
-                "tripwire_triggered": False,
-            },
-        )
-        boundary_patcher.start()
-        self.addCleanup(boundary_patcher.stop)
-        runtime_boundary_patcher = patch(
-            "ticket_investigation.runtime.evaluate_support_boundary",
-            return_value={
-                "classification": "yearn_support",
-                "tripwire_triggered": False,
-            },
-        )
-        runtime_boundary_patcher.start()
-        self.addCleanup(runtime_boundary_patcher.stop)
-        summary_patcher = patch(
-            "discord_support_runtime.summarize_handoff_summary",
-            return_value=None,
-        )
-        summary_patcher.start()
-        self.addCleanup(summary_patcher.stop)
+        self.assertIsNone(controller.task)
+        assert task is not None
+        with self.assertRaises(asyncio.CancelledError):
+            await task
 
     async def test_telegram_update_offset_persists_only_after_update_handling(
         self,
@@ -363,9 +335,9 @@ class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
                     "telegram_handoff_controller.fetch_telegram_updates",
                     new=fake_fetch_telegram_updates,
                 ),
-                patch("ysupport.asyncio.sleep", new=fake_sleep),
-                patch("ysupport.logging.warning") as mock_warning,
-                patch("ysupport.logging.error") as mock_error,
+                patch("telegram_handoff_controller.asyncio.sleep", new=fake_sleep),
+                patch("telegram_handoff_controller.logging.warning") as mock_warning,
+                patch("telegram_handoff_controller.logging.error") as mock_error,
             ):
                 with self.assertRaises(asyncio.CancelledError):
                     await bot.telegram_handoffs._telegram_handoff_reply_loop()

@@ -1,10 +1,8 @@
 import tests as _test_environment  # noqa: F401
 
 import asyncio
-import unittest
-from dataclasses import dataclass
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch, PropertyMock
 
 
 import discord
@@ -12,8 +10,10 @@ import discord
 import config
 import state
 from state import (
+    channels_awaiting_initial_button_press,
     TeamHandoffNotice,
     clear_ticket_channel_state,
+    monitored_new_channels,
     pending_tasks,
     stopped_channels,
     team_handoff_notice_by_channel,
@@ -22,9 +22,6 @@ from state import (
 from handoff import (
     build_dismissed_handoff_notice,
     build_handoff_notice,
-)
-from support_agents import (
-    TicketTriageDecision,
 )
 from views import InitialInquiryView, StopBotView
 from discord_support_runtime import (
@@ -37,75 +34,199 @@ from ysupport import (
     _reload_runtime_env_and_config,
     _run_ticket_bot_with_fatal_startup_backoff,
 )
+from ticket_channel_lifecycle import (
+    initialize_ticket_channel,
+    process_synthetic_button_input as process_synthetic_button_lifecycle,
+)
+
+from tests.ticket_flow_test_support import TicketFlowTestCase
 
 
-@dataclass
-class _FakeResult:
-    final_output: str | None
-    last_agent: object | None
-    _history: list
-    _decision: TicketTriageDecision | None = None
+class TicketFlowTests(TicketFlowTestCase):
+    async def test_ticket_channel_initialization_records_owner_and_sends_intake(
+        self,
+    ) -> None:
+        channel_id = 91001
 
-    def final_output_as(self, model_type):
-        if self._decision is None:
-            raise AssertionError("No structured decision configured.")
-        return self._decision
+        class _TextChannel:
+            def __init__(self) -> None:
+                self.id = channel_id
+                self.name = "ticket-91001"
+                self.category = SimpleNamespace(id=92001)
+                self.sent = []
 
-    def to_input_list(self):
-        return self._history
+            async def send(self, content, **kwargs):
+                self.sent.append((content, kwargs))
 
+        class _PendingTask:
+            cancelled = False
 
-class _FakeRunner:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = []
+            def cancel(self) -> None:
+                self.cancelled = True
 
-    async def run(self, **kwargs):
-        self.calls.append(kwargs)
-        if not self._results:
-            raise AssertionError("No fake result available for runner call.")
-        return self._results.pop(0)
+        channel = _TextChannel()
+        old_task = _PendingTask()
+        pending_tasks[channel_id] = old_task
+        try:
+            with (
+                patch("ticket_channel_lifecycle.discord.TextChannel", _TextChannel),
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {92001: "yearn"}),
+                patch(
+                    "ticket_channel_lifecycle.asyncio.sleep",
+                    new=AsyncMock(),
+                ) as sleep,
+                patch(
+                    "ticket_channel_lifecycle._detect_ticket_owner_user_id",
+                    new=AsyncMock(return_value=93001),
+                ) as detect_owner,
+            ):
+                await initialize_ticket_channel(channel)
 
+            self.assertTrue(old_task.cancelled)
+            self.assertNotIn(channel_id, pending_tasks)
+            self.assertIn(channel_id, monitored_new_channels)
+            self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 93001)
+            self.assertIn(channel_id, channels_awaiting_initial_button_press)
+            sleep.assert_awaited_once_with(1.5)
+            detect_owner.assert_awaited_once_with(channel)
+            self.assertEqual(len(channel.sent), 1)
+            welcome, send_kwargs = channel.sent[0]
+            self.assertIn("Welcome to Yearn Support", welcome)
+            self.assertIsInstance(send_kwargs["view"], InitialInquiryView)
+            self.assertTrue(send_kwargs["suppress_embeds"])
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
 
-class _FakeInvestigationExecutor:
-    def __init__(self, *, result=None, exc: Exception | None = None):
-        self.result = result
-        self.exc = exc
-        self.calls = []
+    async def test_ticketbot_channel_handlers_delegate_to_lifecycle_module(
+        self,
+    ) -> None:
+        bot = TicketBot(intents=discord.Intents.none())
+        channel = SimpleNamespace(id=94001)
 
-    async def execute_turn(self, request, hooks=None):
-        self.calls.append({"request": request, "hooks": hooks})
-        if self.exc is not None:
-            raise self.exc
-        return self.result
+        with (
+            patch(
+                "ysupport.initialize_ticket_channel",
+                new=AsyncMock(),
+            ) as initialize,
+            patch(
+                "ysupport.process_synthetic_ticket_button",
+                new=AsyncMock(),
+            ) as process_button,
+        ):
+            await bot.on_guild_channel_create(channel)
+            await bot.process_synthetic_button_input(
+                channel,
+                "I need help with a deposit.",
+                "deposit_issue",
+            )
 
-
-class TicketFlowTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        boundary_patcher = patch(
-            "ysupport._outer_support_boundary_result",
-            return_value={
-                "classification": "yearn_support",
-                "tripwire_triggered": False,
-            },
+        initialize.assert_awaited_once_with(channel)
+        process_button.assert_awaited_once_with(
+            bot,
+            channel,
+            "I need help with a deposit.",
+            "deposit_issue",
         )
-        boundary_patcher.start()
-        self.addCleanup(boundary_patcher.stop)
-        runtime_boundary_patcher = patch(
-            "ticket_investigation.runtime.evaluate_support_boundary",
-            return_value={
-                "classification": "yearn_support",
-                "tripwire_triggered": False,
-            },
+
+    async def test_synthetic_button_lifecycle_cancels_pending_and_runs_turn(
+        self,
+    ) -> None:
+        channel_id = 94501
+        run_context = SimpleNamespace(channel_id=channel_id)
+
+        class _PendingTask:
+            cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+        class _Bot:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def process_ticket_message(self, *args, **kwargs) -> None:
+                self.calls.append((args, kwargs))
+
+        pending_task = _PendingTask()
+        pending_tasks[channel_id] = pending_task
+        bot = _Bot()
+        channel = SimpleNamespace(
+            id=channel_id,
+            category=SimpleNamespace(id=94502),
         )
-        runtime_boundary_patcher.start()
-        self.addCleanup(runtime_boundary_patcher.stop)
-        summary_patcher = patch(
-            "discord_support_runtime.summarize_handoff_summary",
-            return_value=None,
-        )
-        summary_patcher.start()
-        self.addCleanup(summary_patcher.stop)
+        try:
+            with patch(
+                "ticket_channel_lifecycle._build_ticket_run_context",
+                return_value=run_context,
+            ) as build_context:
+                await process_synthetic_button_lifecycle(
+                    bot,
+                    channel,
+                    "I need help with a deposit.",
+                    "deposit_issue",
+                )
+
+            build_context.assert_called_once_with(
+                channel_id=channel_id,
+                category_id=94502,
+                initial_button_intent="deposit_issue",
+            )
+            self.assertTrue(pending_task.cancelled)
+            self.assertEqual(
+                bot.calls,
+                [
+                    (
+                        (channel_id, run_context),
+                        {
+                            "is_button_trigger": True,
+                            "synthetic_user_message_for_log": (
+                                "I need help with a deposit."
+                            ),
+                        },
+                    )
+                ],
+            )
+        finally:
+            pending_tasks.pop(channel_id, None)
+
+    async def test_on_ready_starts_services_and_close_cancels_cleanup(self) -> None:
+        bot = TicketBot(intents=discord.Intents.none())
+        cleanup_started = asyncio.Event()
+
+        async def cleanup_loop() -> None:
+            cleanup_started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(
+                type(bot),
+                "user",
+                new_callable=PropertyMock,
+                return_value=SimpleNamespace(id=95001),
+            ),
+            patch(
+                "ysupport.hydrate_persisted_team_handoff_states",
+                return_value=2,
+            ) as hydrate,
+            patch.object(bot.telegram_handoffs, "start", return_value=True) as start,
+            patch.object(bot.telegram_handoffs, "close") as controller_close,
+            patch.object(bot, "_state_cleanup_loop", new=cleanup_loop),
+            patch.object(discord.Client, "close", new=AsyncMock()) as client_close,
+        ):
+            await bot.on_ready()
+            cleanup_task = bot._state_cleanup_task
+            self.assertIsNotNone(cleanup_task)
+            await cleanup_started.wait()
+            await bot.close()
+
+        hydrate.assert_called_once_with()
+        start.assert_called_once_with()
+        controller_close.assert_called_once_with()
+        client_close.assert_awaited_once_with()
+        self.assertIsNone(bot._state_cleanup_task)
+        assert cleanup_task is not None
+        with self.assertRaises(asyncio.CancelledError):
+            await cleanup_task
 
     async def test_setup_hook_registers_persistent_ticket_views(self) -> None:
         bot = TicketBot(intents=discord.Intents.none())
