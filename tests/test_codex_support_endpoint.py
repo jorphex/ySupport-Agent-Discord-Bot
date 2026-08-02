@@ -32,6 +32,7 @@ from ticket_investigation.codex_support_endpoint import (
     _prepare_support_request_attachments,
     _read_attachment_image_body,
     _codex_support_prompt,
+    _codex_support_transaction_safety_rewrite_prompt,
     _run_codex_support_json_subprocess,
 )
 from ticket_investigation.executor import TicketExecutionHooks
@@ -1368,6 +1369,36 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "Do not stop or request human handoff solely because the user used generic bug-report wording.",
             prompt_text,
         )
+
+    def test_codex_support_prompt_requires_complete_gas_sufficiency_evidence(
+        self,
+    ) -> None:
+        prompt_text = _codex_support_prompt(
+            support_request_path=Path("support_request.json"),
+            response_schema_path=Path("support_response_schema.json"),
+        )
+        rewrite_prompt_text = _codex_support_transaction_safety_rewrite_prompt(
+            response_schema_path=Path("support_response_schema.json"),
+        )
+
+        for rendered_prompt in (prompt_text, rewrite_prompt_text):
+            self.assertIn(
+                "gas limit multiplied by maximum fee per gas, or legacy gas price",
+                rendered_prompt,
+            )
+            self.assertIn("include a conservative buffer", rendered_prompt)
+            self.assertIn(
+                "pending or wallet-queued transactions that may reserve the balance",
+                rendered_prompt,
+            )
+            self.assertIn(
+                "Never claim the wallet definitely has enough gas from its current balance alone.",
+                rendered_prompt,
+            )
+            self.assertIn(
+                "state that sufficiency is conditional and name the missing check",
+                rendered_prompt,
+            )
 
     def test_codex_support_runtime_validation_requires_dedicated_home(self) -> None:
         original_mode = config.TICKET_EXECUTION_ENDPOINT

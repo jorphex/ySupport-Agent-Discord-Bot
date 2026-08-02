@@ -58,6 +58,14 @@ _ROLLOUT_SESSION_ID_RE = re.compile(
     r"(?P<session_id>[0-9a-fA-F-]{36})\.jsonl$"
 )
 _CODEX_SESSION_DELETE_TIMEOUT_SECONDS = 30.0
+_GAS_SUFFICIENCY_INSTRUCTION = (
+    "For any gas-sufficiency conclusion, compare the spendable native-token balance "
+    "with gas limit multiplied by maximum fee per gas, or legacy gas price, include "
+    "a conservative buffer, and account for pending or wallet-queued transactions "
+    "that may reserve the balance. Never claim the wallet definitely has enough gas "
+    "from its current balance alone. If any required fee or queue evidence is unknown, "
+    "state that sufficiency is conditional and name the missing check."
+)
 
 
 @dataclass
@@ -883,6 +891,7 @@ def _codex_support_prompt(
         "Do not expose retrieval metadata or say that YIP status metadata is absent.\n"
         "No file writes.\n"
         "For transaction troubleshooting, remain read-only. You may use transaction hashes, decoded fields, statuses, non-mutating calls or simulations, and official wallet or Yearn UI recovery flows. Never ask for, retrieve, retain, reconstruct, quote, display, submit, broadcast, or recommend manually broadcasting a raw signed transaction. Do not direct the user to a generic third-party transaction broadcaster. Reaching this safety boundary does not by itself justify human handoff.\n"
+        f"{_GAS_SUFFICIENCY_INSTRUCTION}\n"
         "Do not tell the user to go to Discord or open a Discord ticket.\n"
         "If the exact fact is known, give it first.\n"
         "If the user asked multiple questions, answer them in order.\n"
@@ -920,6 +929,7 @@ def _codex_support_transaction_safety_rewrite_prompt(
         "recommend manually broadcasting a raw signed transaction. Do not direct the "
         "user to a generic third-party transaction broadcaster. Do not request human "
         "handoff solely because of this safety boundary. "
+        f"{_GAS_SUFFICIENCY_INSTRUCTION} "
         f"Return only JSON matching {response_schema_path}."
     )
 
