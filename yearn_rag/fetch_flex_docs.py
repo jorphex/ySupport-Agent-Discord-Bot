@@ -10,6 +10,11 @@ from urllib.parse import urlparse
 
 
 LLMS_URL = "https://flexmeow.com/llms.txt"
+FLEX_SOURCE_URLS = (
+    "https://flexmeow.com/docs",
+    "https://flexmeow.com/risks",
+    "https://flexmeow.com/info",
+)
 USER_AGENT = "ysupport-rag/1.0"
 OUTPUT_DIR = Path(__file__).resolve().parent / "flex-docs"
 
@@ -191,37 +196,31 @@ def write_markdown_file(path: Path, content: str) -> bool:
             return False
     except FileNotFoundError:
         pass
-    path.write_text(content, encoding="utf-8")
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    temp_path.replace(path)
     return True
 
 
 def slug_from_url(url: str) -> str:
-    if url == LLMS_URL:
-        return "llms"
     suffix = url.rstrip("/").rsplit("/", 1)[-1]
     return suffix or "index"
 
 
 def build_fetch_targets() -> list[dict[str, str]]:
     llms_text = fetch_text(LLMS_URL)
-    urls = parse_llms_links(llms_text)
-    high_value_urls = [url for url in urls if url in {
-        "https://flexmeow.com/docs",
-        "https://flexmeow.com/risks",
-        "https://flexmeow.com/info",
-    }]
-    targets = [
-        {"url": LLMS_URL, "title": "Flex LLMs Index", "filename": "llms.md"},
+    discovered_urls = set(parse_llms_links(llms_text))
+    missing_urls = set(FLEX_SOURCE_URLS) - discovered_urls
+    if missing_urls:
+        missing = ", ".join(sorted(missing_urls))
+        raise RuntimeError(f"Flex source index is missing required pages: {missing}")
+    return [
+        {
+            "url": url,
+            "filename": f"{slug_from_url(url)}.md",
+        }
+        for url in FLEX_SOURCE_URLS
     ]
-    for url in high_value_urls:
-        targets.append(
-            {
-                "url": url,
-                "title": "",
-                "filename": f"{slug_from_url(url)}.md",
-            }
-        )
-    return targets
 
 
 def convert_html_page(url: str) -> str:
@@ -236,27 +235,21 @@ def convert_html_page(url: str) -> str:
     return render_markdown_document(title=title, source_url=url, body=body)
 
 
-def convert_llms_index(url: str) -> str:
-    llms_text = fetch_text(url).strip()
-    body = llms_text if llms_text else "# Flex\n"
-    return render_markdown_document(
-        title="Flex LLMs Index",
-        source_url=url,
-        body=body,
-    )
-
-
 def fetch_all_targets(targets: Iterable[dict[str, str]]) -> None:
-    for target in targets:
+    target_list = list(targets)
+    for target in target_list:
         url = target["url"]
         output_path = OUTPUT_DIR / target["filename"]
-        if url == LLMS_URL:
-            content = convert_llms_index(url)
-        else:
-            content = convert_html_page(url)
+        content = convert_html_page(url)
         changed = write_markdown_file(output_path, content)
         action = "Saved" if changed else "Unchanged"
         print(f"✅ {action} {url} -> {output_path.name}")
+
+    expected_files = {target["filename"] for target in target_list}
+    for existing_path in OUTPUT_DIR.glob("*.md"):
+        if existing_path.name not in expected_files:
+            existing_path.unlink()
+            print(f"✅ Removed stale Flex source {existing_path.name}.")
 
 
 def _extract_simple_panel_markdown(html_text: str) -> str:

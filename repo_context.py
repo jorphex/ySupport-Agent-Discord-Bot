@@ -11,8 +11,6 @@ import config
 from repo_context_build import (
     REPO_CONTEXT_SCHEMA_VERSION,
     _BUILD_META_KEY_PREFIX,
-    _ensure_schema,
-    _get_build_meta,
     build_repo_context_index,
     load_repo_manifest,
     manifest_hash,
@@ -21,6 +19,8 @@ from repo_context_build import (
 
 
 __all__ = [
+    "MAX_REPO_ARTIFACTS",
+    "MAX_REPO_SEARCH_RESULTS",
     "RepoSearchResult",
     "build_repo_context_index",
     "load_repo_manifest",
@@ -32,6 +32,9 @@ __all__ = [
     "fetch_repo_artifacts",
     "format_repo_artifacts",
 ]
+
+MAX_REPO_SEARCH_RESULTS = 12
+MAX_REPO_ARTIFACTS = 5
 
 
 @dataclass(frozen=True)
@@ -49,8 +52,8 @@ class RepoSearchResult:
     score: float
 
 def _connect(db_path: Path | str | None = None) -> sqlite3.Connection:
-    path = Path(db_path or config.REPO_CONTEXT_DB_PATH)
-    conn = sqlite3.connect(path)
+    path = Path(db_path or config.REPO_CONTEXT_DB_PATH).resolve()
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -93,8 +96,8 @@ def get_repo_context_status(
 
     try:
         with _connect(path) as conn:
-            _ensure_schema(conn)
-            meta = _get_build_meta(conn)
+            rows = conn.execute("SELECT key, value FROM build_meta").fetchall()
+            meta = {row["key"]: row["value"] for row in rows}
     except Exception as exc:
         status["state"] = "error"
         status["reason"] = f"Failed to inspect repo context database: {exc}"
@@ -137,7 +140,14 @@ def get_repo_context_status(
 
     status["fresh"] = is_fresh
 
-    if manifest_hash_value != manifest_hash():
+    try:
+        current_manifest_hash = manifest_hash()
+    except Exception as exc:
+        status["state"] = "error"
+        status["reason"] = f"Failed to inspect repo context manifest: {exc}"
+        return status
+
+    if manifest_hash_value != current_manifest_hash:
         status["state"] = "stale"
         status["reason"] = "Repo context database was built from a different manifest version."
         return status
@@ -170,10 +180,6 @@ def _fts_query(query: str) -> str:
 def _repo_scope(query: str) -> dict[str, Any]:
     lowered = query.lower()
     include_legacy = any(term in lowered for term in ["veyfi", "ve yfi", "legacy", "v1", "migrate", "migration"])
-    wants_ui = any(
-        term in lowered
-        for term in ["button", "browser", "page", "page load", "site", "screen", "cta", "ui", "frontend", "web"]
-    )
     preferred_products = {
         "styfi": ["styfi"],
         "vault": ["vaults"],
@@ -192,7 +198,6 @@ def _repo_scope(query: str) -> dict[str, Any]:
     ]
     return {
         "include_legacy": include_legacy,
-        "include_ui": wants_ui and config.REPO_CONTEXT_INCLUDE_UI,
         "product_filters": list(dict.fromkeys(product_filters)),
     }
 
@@ -320,8 +325,6 @@ def _supplement_repo_rows(
 
     if not scope["include_legacy"]:
         filter_clauses.append("segments.legacy = 0")
-    if not scope["include_ui"]:
-        filter_clauses.append("segments.authority_tag != 'ui_flow'")
     product_filters = scope["product_filters"]
     if product_filters:
         placeholders = ", ".join("?" for _ in product_filters)
@@ -377,7 +380,6 @@ def search_repo_context(
     query: str,
     limit: Optional[int] = None,
     include_legacy: Optional[bool] = None,
-    include_ui: Optional[bool] = None,
     db_path: Path | str | None = None,
 ) -> list[RepoSearchResult]:
     status = get_repo_context_status(db_path=db_path, enabled=True)
@@ -391,9 +393,11 @@ def search_repo_context(
     scope = _repo_scope(query)
     if include_legacy is not None:
         scope["include_legacy"] = include_legacy
-    if include_ui is not None:
-        scope["include_ui"] = include_ui and config.REPO_CONTEXT_INCLUDE_UI
-    result_limit = limit or config.REPO_CONTEXT_TOP_K
+    result_limit = config.REPO_CONTEXT_TOP_K if limit is None else limit
+    if not 1 <= result_limit <= MAX_REPO_SEARCH_RESULTS:
+        raise ValueError(
+            f"Repo search limit must be between 1 and {MAX_REPO_SEARCH_RESULTS}."
+        )
     product_filters = scope["product_filters"]
     hints = _code_query_hints(query)
 
@@ -402,8 +406,6 @@ def search_repo_context(
 
     if not scope["include_legacy"]:
         filter_clauses.append("segments.legacy = 0")
-    if not scope["include_ui"]:
-        filter_clauses.append("segments.authority_tag != 'ui_flow'")
     if product_filters:
         placeholders = ", ".join("?" for _ in product_filters)
         filter_clauses.append(f"segments.product_tag IN ({placeholders})")
@@ -446,8 +448,6 @@ def search_repo_context(
             fact_params: list[Any] = [fts_query]
             if not scope["include_legacy"]:
                 fact_filter_clauses.append("facts.legacy = 0")
-            if not scope["include_ui"]:
-                fact_filter_clauses.append("facts.authority_tag != 'ui_flow'")
             if product_filters:
                 placeholders = ", ".join("?" for _ in product_filters)
                 fact_filter_clauses.append(f"facts.product_tag IN ({placeholders})")
@@ -573,6 +573,10 @@ def fetch_repo_artifacts(
         stripped = artifact_ref.strip()
         if stripped and stripped not in normalized_refs:
             normalized_refs.append(stripped)
+    if len(normalized_refs) > MAX_REPO_ARTIFACTS:
+        raise ValueError(
+            f"At most {MAX_REPO_ARTIFACTS} repo artifacts can be fetched at once."
+        )
 
     artifacts: list[dict[str, Any]] = []
     with _connect(db_path) as conn:

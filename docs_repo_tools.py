@@ -10,6 +10,7 @@ from pinecone import Pinecone
 
 import config
 from repo_context import (
+    MAX_REPO_ARTIFACTS,
     fetch_repo_artifacts,
     format_repo_artifacts,
     format_repo_search_results,
@@ -545,14 +546,12 @@ async def core_search_repo_context(
     query: str,
     limit: Optional[int] = None,
     include_legacy: bool = False,
-    include_ui: bool = False,
 ) -> str:
     logging.info(
-        "[CoreTool:search_repo_context] Query='%s' limit=%s include_legacy=%s include_ui=%s",
+        "[CoreTool:search_repo_context] Query='%s' limit=%s include_legacy=%s",
         query,
         limit,
         include_legacy,
-        include_ui,
     )
     status = get_repo_context_status()
     if status["state"] not in {"ready", "available"}:
@@ -569,9 +568,8 @@ async def core_search_repo_context(
     try:
         results = search_repo_context(
             query,
-            limit=limit or config.REPO_CONTEXT_TOP_K,
+            limit=limit,
             include_legacy=include_legacy,
-            include_ui=include_ui,
         )
         logging.info("[CoreTool:search_repo_context] Returned %s results.", len(results))
         return format_repo_search_results(results)
@@ -597,6 +595,8 @@ async def core_fetch_repo_artifacts(artifact_refs_text: str) -> str:
     artifact_refs = re.findall(r"(?:segment|fact):\d+", artifact_refs_text)
     if not artifact_refs:
         return "No valid repo artifact references were provided. Use references like 'segment:12' or 'fact:34'."
+    if len(dict.fromkeys(artifact_refs)) > MAX_REPO_ARTIFACTS:
+        return f"At most {MAX_REPO_ARTIFACTS} repo artifact references can be fetched at once."
 
     try:
         artifacts = fetch_repo_artifacts(artifact_refs)
@@ -613,15 +613,13 @@ async def core_pretriage_repo_claim(
     include_docs: bool = True,
     limit: Optional[int] = None,
     include_legacy: bool = False,
-    include_ui: bool = False,
 ) -> str:
     logging.info(
-        "[CoreTool:pretriage_repo_claim] claim='%s' include_docs=%s limit=%s include_legacy=%s include_ui=%s",
+        "[CoreTool:pretriage_repo_claim] claim='%s' include_docs=%s limit=%s include_legacy=%s",
         claim_text,
         include_docs,
         limit,
         include_legacy,
-        include_ui,
     )
     sections: list[str] = []
 
@@ -629,7 +627,6 @@ async def core_pretriage_repo_claim(
         claim_text,
         limit=limit,
         include_legacy=include_legacy,
-        include_ui=include_ui,
     )
     sections.append(f"Repo search:\n{repo_search}")
 

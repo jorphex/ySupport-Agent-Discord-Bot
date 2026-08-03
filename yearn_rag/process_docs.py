@@ -26,16 +26,13 @@ DOC_SOURCES = {
     "flex": {
         "source_dir": "flex-docs",
         "output_json": "cleaned_flex_docs.json",
-        "excluded_folders": [
-            "llms.md"
-        ],
+        "excluded_folders": [],
         "base_url": "https://flexmeow.com",
         "route_base_path": "/",
         "source_type": "documentation"
     }
 }
 
-LINK_MAP_OUTPUT = "doc_link_map.json"
 YIP_SOURCE_PATH_RE = re.compile(
     r"^contributing/governance/yips/yip-(\d+)\.(?:md|mdx)$",
     re.IGNORECASE,
@@ -400,6 +397,12 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
     documents = []
     print(f"\n--- Processing documentation source: {source_dir} ---")
 
+    source_path = Path(source_dir)
+    if not source_path.is_dir():
+        raise RuntimeError(f"Documentation source directory is missing: {source_dir}")
+
+    processed_files = 0
+
     for root, dirs, files in os.walk(source_dir):
         dirs.sort()
         files.sort()
@@ -418,6 +421,7 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
                         continue
 
                     post = frontmatter.load(filepath)
+                    processed_files += 1
                     content = post.content
                     raw_metadata = post.metadata
 
@@ -500,9 +504,28 @@ def process_markdown_files(source_dir, excluded_folders, source_type="documentat
                 except YipMetadataError:
                     raise
                 except Exception as e:
-                    print(f"❌ Error processing file {filepath}: {e}. Skipping.")
-                    continue
+                    raise RuntimeError(
+                        f"Error processing documentation file {filepath}: {e}"
+                    ) from e
+    if processed_files == 0 or not documents:
+        raise RuntimeError(
+            f"Documentation source produced no usable chunks: {source_dir}"
+        )
     return documents
+
+
+def write_text_if_changed(path: Path, content: str) -> bool:
+    try:
+        if path.read_text(encoding="utf-8") == content:
+            return False
+    except FileNotFoundError:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    temp_path.replace(path)
+    return True
 
 def process_section(documents, section_content, filename, source_path, doc_title, h2, h3, h4, parent_h2, parent_h3, file_chunk_counter, yip_metadata, source_type, source_url, doc_last_modified):
     """
@@ -583,13 +606,11 @@ def main():
     """
     print("--- Starting All Documentation Processing ---")
 
-    link_map = {}
-
     for source_name, config in DOC_SOURCES.items():
         source_type = config.get("source_type", "documentation")
         base_url = config.get("base_url")
         route_base_path = config.get("route_base_path", "/")
-        processed_docs = process_markdown_files(
+        final_docs = process_markdown_files(
             config["source_dir"],
             config["excluded_folders"],
             source_type=source_type,
@@ -597,61 +618,14 @@ def main():
             route_base_path=route_base_path
         )
 
-        final_docs = processed_docs
-
         output_text = json.dumps(final_docs, indent=2, ensure_ascii=False) + "\n"
         output_path = Path(config["output_json"])
-        try:
-            output_changed = output_path.read_text(encoding="utf-8") != output_text
-        except FileNotFoundError:
-            output_changed = True
-        if output_changed:
-            output_path.write_text(output_text, encoding="utf-8")
+        output_changed = write_text_if_changed(output_path, output_text)
         action = "Saved" if output_changed else "Unchanged"
         print(
             f"✅ {action} {len(final_docs)} total chunks for "
             f"'{source_name}' in {config['output_json']}."
         )
-
-        for doc in final_docs:
-            doc_id = doc.get("doc_id")
-            if not doc_id:
-                continue
-            existing = link_map.get(doc_id)
-            candidate = {
-                "doc_id": doc_id,
-                "doc_title": doc.get("doc_title"),
-                "source_path": doc.get("source_path"),
-                "source_type": doc.get("source_type"),
-                "source_url": doc.get("source_url"),
-                "doc_last_modified": doc.get("doc_last_modified")
-            }
-            if not existing:
-                link_map[doc_id] = candidate
-            else:
-                if not existing.get("source_url") and candidate.get("source_url"):
-                    existing["source_url"] = candidate["source_url"]
-
-    if link_map:
-        link_map_text = (
-            json.dumps(
-                sorted(link_map.values(), key=lambda d: d.get("doc_id", "")),
-                indent=2,
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
-        link_map_path = Path(LINK_MAP_OUTPUT)
-        try:
-            link_map_changed = (
-                link_map_path.read_text(encoding="utf-8") != link_map_text
-            )
-        except FileNotFoundError:
-            link_map_changed = True
-        if link_map_changed:
-            link_map_path.write_text(link_map_text, encoding="utf-8")
-        action = "Saved" if link_map_changed else "Unchanged"
-        print(f"✅ {action} doc link map in {LINK_MAP_OUTPUT}.")
 
 if __name__ == "__main__":
     main()

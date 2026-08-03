@@ -20,6 +20,15 @@ from ticket_execution.status import (
 
 
 class ConfigSummaryTests(unittest.TestCase):
+    def test_mcp_docker_context_is_an_explicit_tracked_allowlist(self) -> None:
+        dockerignore = Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(dockerignore[0], "*")
+        self.assertIn("!Dockerfile.mcp", dockerignore)
+        self.assertIn("!mcp_server.py", dockerignore)
+        self.assertIn("!yearn_rag/repo_sources.json", dockerignore)
+        self.assertNotIn("!.env", dockerignore)
+
     def test_support_dashboard_tls_verification_defaults_on(self) -> None:
         self.assertTrue(config.SUPPORT_DASHBOARD_VERIFY_SSL)
 
@@ -327,7 +336,6 @@ class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
             query: str,
             limit=None,
             include_legacy: bool = False,
-            include_ui: bool = False,
         ) -> str:
             self.assertIn("unstake", query)
             return "Top repo hits:\n- segment:11518\n- segment:11540"

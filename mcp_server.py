@@ -11,6 +11,7 @@ from pydantic import Field
 
 import config
 import docs_repo_tools
+from repo_context import MAX_REPO_SEARCH_RESULTS
 import support_dashboard_tools
 import vault_search_tools
 
@@ -79,7 +80,9 @@ async def search_documentation(
                 "A clear, specific Yearn question or topic. Include the subject and key terms. "
                 "Examples: 'What is veYFI and how does it work?', 'veYFI contract address', "
                 "'How does a Yearn V3 strategy report work?'"
-            )
+            ),
+            min_length=1,
+            max_length=2000,
         ),
     ],
 ) -> str:
@@ -161,9 +164,11 @@ async def search_repo_context(
         Field(
             description=(
                 "A Yearn protocol, contract, router, periphery, migration, or bug-claim query. "
-                "Examples: 'VaultV3 _redeem accounting', 'stYFI cooldown contract', "
+                "Examples: 'VaultV3 _redeem accounting', 'stYFI unstake stream', "
                 "'ERC4626 router withdraw flow', 'veYFI migration behavior'."
-            )
+            ),
+            min_length=1,
+            max_length=2000,
         ),
     ],
     limit: Annotated[
@@ -172,6 +177,7 @@ async def search_repo_context(
             default=config.REPO_CONTEXT_TOP_K,
             description="Maximum number of repo artifacts to return. Defaults to the configured repo-context top-k.",
             ge=1,
+            le=MAX_REPO_SEARCH_RESULTS,
         ),
     ] = config.REPO_CONTEXT_TOP_K,
     include_legacy: Annotated[
@@ -179,13 +185,6 @@ async def search_repo_context(
         Field(
             default=False,
             description="Include legacy repos such as veYFI and vaults-v1 when searching migration or stale-claim context.",
-        ),
-    ] = False,
-    include_ui: Annotated[
-        bool,
-        Field(
-            default=False,
-            description="Include UI/frontend repo context when investigating navigation or website-flow issues.",
         ),
     ] = False,
 ) -> str:
@@ -196,13 +195,12 @@ async def search_repo_context(
         query: Contract-aware Yearn query for protocol behavior, migrations, or bug triage.
         limit: Maximum number of search results to return.
         include_legacy: Whether to include legacy repos such as veYFI and vaults-v1.
-        include_ui: Whether to include UI/frontend repo context.
 
     Returns:
         A ranked list of repo artifacts with references such as 'segment:12' that can be passed to fetch_repo_artifacts.
     """
     try:
-        return await docs_repo_tools.core_search_repo_context(query, limit, include_legacy, include_ui)
+        return await docs_repo_tools.core_search_repo_context(query, limit, include_legacy)
     except Exception as e:
         logging.error(f"Error in search_repo_context: {e}")
         return f"Error searching repo context: {str(e)}"
@@ -216,7 +214,9 @@ async def fetch_repo_artifacts(
             description=(
                 "One or more repo artifact references returned by search_repo_context, such as "
                 "'segment:12', 'fact:34', or 'segment:12, segment:18'."
-            )
+            ),
+            min_length=1,
+            max_length=512,
         ),
     ],
 ) -> str:

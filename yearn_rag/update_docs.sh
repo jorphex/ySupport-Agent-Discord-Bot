@@ -5,9 +5,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+LOCK_DIR="$SCRIPT_DIR/../.cache/docs_ingestion"
+mkdir -p "$LOCK_DIR"
+exec 9>"$LOCK_DIR/update_docs.lock"
+if ! flock -n 9; then
+    echo "Documentation refresh is already running; skipping this invocation."
+    exit 0
+fi
+
 echo "Pulling latest Yearn docs..."
 cd yearn-devdocs
-git pull origin master
+git pull --ff-only origin master
 cd ..
 
 echo "Fetching Flex docs..."

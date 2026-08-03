@@ -33,13 +33,6 @@ def main() -> None:
         default=str(config.REPO_CONTEXT_DB_PATH),
         help="SQLite database path for the repo-context index.",
     )
-    parser.add_argument(
-        "--repo",
-        action="append",
-        dest="repos",
-        default=None,
-        help="Optional repo name/full_name to build. Repeat to limit to a subset.",
-    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -47,7 +40,6 @@ def main() -> None:
         manifest_path=args.manifest,
         cache_dir=args.cache_dir,
         db_path=args.db_path,
-        repo_names=args.repos,
     )
     print(json.dumps(summary, indent=2))
 

@@ -338,25 +338,6 @@
       ]
     },
     {
-      "repo": "app-veYFI",
-      "ref": null,
-      "product_tag": "legacy",
-      "authority_tag": "ui_flow",
-      "legacy": true,
-      "include": [
-        "README.md",
-        "docs/**/*.md",
-        "src/**/*.json",
-        "src/**/*.md"
-      ],
-      "exclude": [
-        "**/test/**",
-        "**/tests/**",
-        "**/node_modules/**",
-        "**/dist/**"
-      ]
-    },
-    {
       "repo": "yearn-vaults-v1",
       "ref": null,
       "product_tag": "legacy",

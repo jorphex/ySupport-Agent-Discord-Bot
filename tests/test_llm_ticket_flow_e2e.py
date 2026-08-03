@@ -47,7 +47,7 @@ class LlmTicketFlowTests(LlmE2EBase):
                 "reason: allowance too low for the attempted approval flow"
             )
 
-        async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None, include_ui=None) -> str:
+        async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None) -> str:
             repo_queries.append(query)
             return (
                 "Repo search results\n"

@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from yearn_rag import embed_and_store
+from yearn_rag import fetch_flex_docs
 from yearn_rag.fetch_flex_docs import write_markdown_file
 
 
@@ -258,3 +259,95 @@ class DocsIngestionTests(unittest.TestCase):
         self.assertFalse(write_markdown_file(path, "same content"))
 
         self.assertEqual(path.stat().st_mtime_ns, original_mtime)
+
+    def test_flex_index_is_discovery_only_not_a_stored_source(self) -> None:
+        llms_text = "\n".join(
+            [
+                "[Docs](https://flexmeow.com/docs)",
+                "[Risks](https://flexmeow.com/risks)",
+                "[Info](https://flexmeow.com/info)",
+            ]
+        )
+        with patch.object(fetch_flex_docs, "fetch_text", return_value=llms_text):
+            targets = fetch_flex_docs.build_fetch_targets()
+
+        self.assertEqual(
+            {target["filename"] for target in targets},
+            {"docs.md", "risks.md", "info.md"},
+        )
+        self.assertNotIn(fetch_flex_docs.LLMS_URL, {target["url"] for target in targets})
+
+    def test_flex_index_must_include_every_required_source(self) -> None:
+        with (
+            patch.object(
+                fetch_flex_docs,
+                "fetch_text",
+                return_value="[Docs](https://flexmeow.com/docs)",
+            ),
+            self.assertRaisesRegex(RuntimeError, "missing required pages"),
+        ):
+            fetch_flex_docs.build_fetch_targets()
+
+    def test_refresh_entrypoint_prevents_overlapping_runs(self) -> None:
+        script = (
+            embed_and_store.BASE_DIR / "yearn_rag" / "update_docs.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('exec 9>"$LOCK_DIR/update_docs.lock"', script)
+        self.assertIn("flock -n 9", script)
+        self.assertIn("git pull --ff-only origin master", script)
+
+    def test_flex_refresh_removes_sources_no_longer_in_the_target_set(self) -> None:
+        output_dir = self.root / "flex-docs"
+        output_dir.mkdir()
+        stale_path = output_dir / "stale.md"
+        stale_path.write_text("stale", encoding="utf-8")
+
+        with (
+            patch.object(fetch_flex_docs, "OUTPUT_DIR", output_dir),
+            patch.object(
+                fetch_flex_docs,
+                "convert_html_page",
+                return_value="current",
+            ),
+        ):
+            fetch_flex_docs.fetch_all_targets(
+                [
+                    {
+                        "url": "https://flexmeow.com/docs",
+                        "filename": "docs.md",
+                    }
+                ]
+            )
+
+        self.assertFalse(stale_path.exists())
+        self.assertEqual(
+            (output_dir / "docs.md").read_text(encoding="utf-8"),
+            "current",
+        )
+
+    def test_failed_flex_refresh_does_not_prune_existing_sources(self) -> None:
+        output_dir = self.root / "flex-docs"
+        output_dir.mkdir()
+        stale_path = output_dir / "stale.md"
+        stale_path.write_text("stale", encoding="utf-8")
+
+        with (
+            patch.object(fetch_flex_docs, "OUTPUT_DIR", output_dir),
+            patch.object(
+                fetch_flex_docs,
+                "convert_html_page",
+                side_effect=RuntimeError("fetch failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "fetch failed"),
+        ):
+            fetch_flex_docs.fetch_all_targets(
+                [
+                    {
+                        "url": "https://flexmeow.com/docs",
+                        "filename": "docs.md",
+                    }
+                ]
+            )
+
+        self.assertTrue(stale_path.exists())

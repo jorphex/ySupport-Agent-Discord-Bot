@@ -16,7 +16,7 @@ import requests
 
 import config
 
-REPO_CONTEXT_SCHEMA_VERSION = 2
+REPO_CONTEXT_SCHEMA_VERSION = 3
 _BUILD_META_KEY_PREFIX = "repo_context"
 
 _MARKDOWN_SECTION_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
@@ -147,6 +147,22 @@ def _cleanup_obsolete_repo_cache_dirs(cache_dir: Path, repo_name: str, keep_ref:
             shutil.rmtree(child)
 
 
+def _cleanup_unconfigured_repo_cache_dirs(
+    cache_dir: Path,
+    configured_repo_names: set[str],
+) -> None:
+    configured_prefixes = {
+        f"{repo_name.replace('/', '__')}@"
+        for repo_name in configured_repo_names
+    }
+    for child in cache_dir.iterdir():
+        if not child.is_dir() or "@" not in child.name or any(
+            child.name.startswith(prefix) for prefix in configured_prefixes
+        ):
+            continue
+        shutil.rmtree(child)
+
+
 def _detect_language(path: str) -> str:
     suffix = Path(path).suffix.lower()
     if suffix == ".sol":
@@ -258,6 +274,12 @@ def _normalize_whitespace(value: str) -> str:
 
 def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _stable_row_id(kind: str, *parts: str) -> int:
+    payload = "\0".join((kind, *parts)).encode("utf-8")
+    row_id = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+    return (row_id & ((1 << 63) - 1)) or 1
 
 
 def _collect_signature(lines: list[str], start_idx: int, *, max_lines: int = 12) -> str:
@@ -536,14 +558,28 @@ def _clear_repo_rows(conn: sqlite3.Connection, repo_name: str) -> None:
     conn.execute("DELETE FROM facts_fts WHERE repo_name = ?", (repo_name,))
 
 
+def _clear_unconfigured_repo_rows(
+    conn: sqlite3.Connection,
+    configured_repo_names: set[str],
+) -> None:
+    existing_repo_names = {
+        str(row[0])
+        for row in conn.execute("SELECT DISTINCT repo_name FROM files").fetchall()
+    }
+    for repo_name in existing_repo_names - configured_repo_names:
+        _clear_repo_rows(conn, repo_name)
+
+
 def _insert_repo_file(conn: sqlite3.Connection, repo_file: RepoFile) -> tuple[int, int, int]:
-    cursor = conn.execute(
+    file_id = _stable_row_id("file", repo_file.repo_name, repo_file.path)
+    conn.execute(
         """
         INSERT INTO files (
-            repo_name, repo_ref, path, language, product_tag, authority_tag, legacy, content_hash, content
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, repo_name, repo_ref, path, language, product_tag, authority_tag, legacy, content_hash, content
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            file_id,
             repo_file.repo_name,
             repo_file.repo_ref,
             repo_file.path,
@@ -555,25 +591,37 @@ def _insert_repo_file(conn: sqlite3.Connection, repo_file: RepoFile) -> tuple[in
             repo_file.content,
         ),
     )
-    file_id = int(cursor.lastrowid)
 
     segments, facts = _iter_repo_segments(repo_file)
     segment_count = 0
     fact_count = 0
+    segment_occurrences: dict[tuple[str, str], int] = {}
 
     for segment_type, title, snippet in segments:
         normalized_snippet = snippet.strip()
         if not normalized_snippet:
             continue
 
-        segment_cursor = conn.execute(
+        segment_identity = (segment_type, title)
+        segment_occurrence = segment_occurrences.get(segment_identity, 0)
+        segment_occurrences[segment_identity] = segment_occurrence + 1
+        segment_id = _stable_row_id(
+            "segment",
+            repo_file.repo_name,
+            repo_file.path,
+            segment_type,
+            title,
+            str(segment_occurrence),
+        )
+        conn.execute(
             """
             INSERT INTO segments (
-                file_id, repo_name, repo_ref, path, language, product_tag, authority_tag, legacy,
+                id, file_id, repo_name, repo_ref, path, language, product_tag, authority_tag, legacy,
                 segment_type, title, snippet
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                segment_id,
                 file_id,
                 repo_file.repo_name,
                 repo_file.repo_ref,
@@ -594,7 +642,7 @@ def _insert_repo_file(conn: sqlite3.Connection, repo_file: RepoFile) -> tuple[in
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(segment_cursor.lastrowid),
+                segment_id,
                 repo_file.repo_name,
                 repo_file.path,
                 repo_file.product_tag,
@@ -606,18 +654,31 @@ def _insert_repo_file(conn: sqlite3.Connection, repo_file: RepoFile) -> tuple[in
         )
         segment_count += 1
 
+    fact_occurrences: dict[tuple[str, str], int] = {}
     for fact_key, fact_value, fact_type in facts:
         normalized_value = _normalize_whitespace(fact_value)
         if not normalized_value:
             continue
 
-        fact_cursor = conn.execute(
+        fact_identity = (fact_type, fact_key)
+        fact_occurrence = fact_occurrences.get(fact_identity, 0)
+        fact_occurrences[fact_identity] = fact_occurrence + 1
+        fact_id = _stable_row_id(
+            "fact",
+            repo_file.repo_name,
+            repo_file.path,
+            fact_type,
+            fact_key,
+            str(fact_occurrence),
+        )
+        conn.execute(
             """
             INSERT INTO facts (
-                file_id, repo_name, repo_ref, path, product_tag, authority_tag, legacy, fact_key, fact_value, fact_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, file_id, repo_name, repo_ref, path, product_tag, authority_tag, legacy, fact_key, fact_value, fact_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                fact_id,
                 file_id,
                 repo_file.repo_name,
                 repo_file.repo_ref,
@@ -637,7 +698,7 @@ def _insert_repo_file(conn: sqlite3.Connection, repo_file: RepoFile) -> tuple[in
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(fact_cursor.lastrowid),
+                fact_id,
                 repo_file.repo_name,
                 repo_file.path,
                 repo_file.product_tag,
@@ -656,26 +717,15 @@ def build_repo_context_index(
     manifest_path: Path | str | None = None,
     cache_dir: Path | str | None = None,
     db_path: Path | str | None = None,
-    repo_names: Optional[Iterable[str]] = None,
 ) -> dict[str, Any]:
-    manifest_sources = load_repo_manifest(manifest_path)
-    selected_repos = {name for name in repo_names or []}
-
-    if selected_repos:
-        sources = [
-            source for source in manifest_sources
-            if source.repo in selected_repos or source.full_name in selected_repos
-        ]
-        if not sources:
-            requested = ", ".join(sorted(selected_repos))
-            raise ValueError(f"No repos matched the requested filter: {requested}")
-    else:
-        sources = manifest_sources
+    sources = load_repo_manifest(manifest_path)
 
     cache_root = Path(cache_dir or config.REPO_CONTEXT_CACHE_DIR)
     db_file = Path(db_path or config.REPO_CONTEXT_DB_PATH)
     cache_root.mkdir(parents=True, exist_ok=True)
     db_file.parent.mkdir(parents=True, exist_ok=True)
+    configured_repo_names = {source.full_name for source in sources}
+    _cleanup_unconfigured_repo_cache_dirs(cache_root, configured_repo_names)
 
     built_at = datetime.now(timezone.utc).isoformat()
     manifest_path_str = str(Path(manifest_path or config.REPO_CONTEXT_MANIFEST_PATH))
@@ -688,6 +738,10 @@ def build_repo_context_index(
     with requests.Session() as session, sqlite3.connect(db_file) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_schema(conn)
+        _clear_unconfigured_repo_rows(
+            conn,
+            configured_repo_names,
+        )
         for source in sources:
             repo_ref = _resolve_default_branch(session, source)
             logging.info("Building repo context for %s @ %s", source.full_name, repo_ref)
@@ -698,6 +752,11 @@ def build_repo_context_index(
                 repo_ref=repo_ref,
                 cache_dir=cache_root,
             )
+            if not repo_files:
+                raise RuntimeError(
+                    f"Repo context source {source.full_name} matched no files; "
+                    "refusing to publish an incomplete index."
+                )
 
             _clear_repo_rows(conn, source.full_name)
 

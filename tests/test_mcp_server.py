@@ -41,6 +41,21 @@ class StaticBearerTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MCPToolContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_docs_and_repo_tools_enforce_bounded_inputs(self) -> None:
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        docs = tools["search_documentation"].inputSchema["properties"]
+        repo = tools["search_repo_context"].inputSchema["properties"]
+        artifacts = tools["fetch_repo_artifacts"].inputSchema["properties"]
+
+        self.assertEqual(docs["query"]["maxLength"], 2000)
+        self.assertEqual(
+            set(repo),
+            {"query", "limit", "include_legacy"},
+        )
+        self.assertEqual(repo["query"]["maxLength"], 2000)
+        self.assertEqual(repo["limit"]["maximum"], 12)
+        self.assertEqual(artifacts["artifact_refs_text"]["maxLength"], 512)
+
     async def test_dashboard_tool_schemas_match_current_api_contract(self) -> None:
         tools = {tool.name: tool for tool in await mcp.list_tools()}
         discover = tools["support_dashboard_discover"].inputSchema["properties"]

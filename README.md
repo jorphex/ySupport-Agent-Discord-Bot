@@ -25,6 +25,10 @@ Documentation ingestion:
 - successful source fingerprints are stored under `.cache/docs_ingestion/`
 - unchanged sources skip OpenAI embeddings and Pinecone writes only after the
   live namespace count and exact vector IDs are verified
+- refresh runs are single-instance and abort on any missing or unreadable source
+  instead of publishing a partial corpus
+- repo-context builds cover the complete manifest and use stable artifact
+  references across unchanged daily rebuilds
 - set `DOCS_INGESTION_FORCE_REFRESH=1` for an explicit full repair
 - refreshes upsert current vectors before removing stale IDs, so a provider
   failure does not empty the live namespace
@@ -61,7 +65,10 @@ docker compose -f compose.mcp.yaml ps
 repo-context SQLite database read-only, and does not pass Discord or Telegram
 credentials into MCP. HTTP requests without the configured bearer token are
 rejected before tool execution. Rebuild after dependency or MCP source changes;
-Compose retains the prior image locally for rollback.
+Compose retains the prior image locally for rollback. The tracked
+`.dockerignore` is an allowlist containing only the files copied by
+`Dockerfile.mcp`, so local credentials, caches, tests, and evidence assets never
+enter the build context.
 
 Important:
 - do not point `TICKET_EXECUTION_CODEX_HOME` at your normal `~/.codex`

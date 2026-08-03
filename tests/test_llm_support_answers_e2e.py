@@ -128,7 +128,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
                 "recovery-vault tradeoffs are not documented there."
             )
 
-        async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None, include_ui=None) -> str:
+        async def fake_search_repo_context(*, query: str, limit: int = 5, include_legacy=None) -> str:
             return ""
 
         async def fake_fetch_repo_artifacts(*, artifact_refs_text: str) -> str:

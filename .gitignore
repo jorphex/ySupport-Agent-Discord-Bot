@@ -9,7 +9,6 @@ __pycache__/
 *.bak
 *.tmp
 *~
-.dockerignore
 AGENTS.md
 NOTES.md
 plan.md
@@ -21,7 +20,6 @@ OPERATOR_MAINTAINER_REFERENCE.md
 /yearn_rag/cleaned_flex_docs.json
 /yearn_rag/flex-docs/
 /yearn_rag/update_docs.log
-/yearn_rag/doc_link_map.json
 /.cache/repo_context/
 /.cache/docs_ingestion/
 .tmp_replay/

@@ -144,7 +144,6 @@ async def search_repo_context_tool(
     query: str,
     limit: Optional[int] = None,
     include_legacy: bool = False,
-    include_ui: bool = False,
 ) -> str:
     """
     Searches the local Yearn repo-context index for contract, spec, deployment, or security artifacts.
@@ -172,7 +171,11 @@ async def search_repo_context_tool(
         )
         return _repo_search_block_message(run_context)
 
-    response = await docs_repo_tools.core_search_repo_context(query, limit, include_legacy, include_ui)
+    response = await docs_repo_tools.core_search_repo_context(
+        query,
+        limit,
+        include_legacy,
+    )
     run_context.repo_search_calls += 1
     run_context.repo_searches_without_fetch += 1
     run_context.repo_last_search_query = query
@@ -206,7 +209,6 @@ async def pretriage_repo_claim_tool(
     include_docs: bool = True,
     limit: Optional[int] = None,
     include_legacy: bool = False,
-    include_ui: bool = False,
 ) -> str:
     """
     Runs one bounded repo/docs pre-triage pass for a Yearn contract or protocol claim.
@@ -224,7 +226,6 @@ async def pretriage_repo_claim_tool(
         include_docs=include_docs,
         limit=limit,
         include_legacy=include_legacy,
-        include_ui=include_ui,
     )
 
 

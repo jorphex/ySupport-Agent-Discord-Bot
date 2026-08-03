@@ -28,13 +28,6 @@ def main() -> None:
         help="Rebuild the repo-context index before verification.",
     )
     parser.add_argument(
-        "--repo",
-        action="append",
-        dest="repos",
-        default=None,
-        help="Optional repo name/full_name filter for build mode. Repeat to limit to a subset.",
-    )
-    parser.add_argument(
         "--query",
         action="append",
         dest="queries",
@@ -48,7 +41,6 @@ def main() -> None:
             manifest_path=config.REPO_CONTEXT_MANIFEST_PATH,
             cache_dir=config.REPO_CONTEXT_CACHE_DIR,
             db_path=config.REPO_CONTEXT_DB_PATH,
-            repo_names=args.repos,
         )
 
     status = get_repo_context_status(enabled=True, require_fresh=True)
@@ -63,7 +55,7 @@ def main() -> None:
 
     queries = args.queries or []
     for query in queries:
-        results = search_repo_context(query, limit=3, include_legacy=True, include_ui=False)
+        results = search_repo_context(query, limit=3, include_legacy=True)
         query_summary: dict[str, object] = {
             "query": query,
             "result_count": len(results),

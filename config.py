@@ -141,7 +141,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 # --- Pinecone ---
 # Allow per-env overrides without code changes.
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
-YEARN_PINECONE_NAMESPACE = os.getenv("YEARN_PINECONE_NAMESPACE")
 
 # --- Discord ---
 # IDs can be overridden via env to keep repo clean of internal identifiers.
@@ -441,7 +440,6 @@ REPO_CONTEXT_DB_PATH = Path(
 )
 REPO_CONTEXT_TOP_K = _env_int("REPO_CONTEXT_TOP_K", 6)
 REPO_CONTEXT_MAX_SNIPPET_CHARS = _env_int("REPO_CONTEXT_MAX_SNIPPET_CHARS", 1800)
-REPO_CONTEXT_INCLUDE_UI = _env_bool("REPO_CONTEXT_INCLUDE_UI", default=False)
 REPO_CONTEXT_MAX_AGE_HOURS = _env_int("REPO_CONTEXT_MAX_AGE_HOURS", 168)
 REPO_CONTEXT_REQUIRE_FRESH = _env_bool("REPO_CONTEXT_REQUIRE_FRESH", default=True)
 REPO_CONTEXT_MAX_SEARCH_CALLS_PER_RUN = _env_int(

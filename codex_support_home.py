@@ -337,7 +337,6 @@ def _choose_ysupport_stdio_launcher(
                 "PINECONE_API_KEY",
                 "ALCHEMY_KEY",
                 "PINECONE_INDEX_NAME",
-                "YEARN_PINECONE_NAMESPACE",
             ],
             "env": {
                 "MCP_TRANSPORT": "stdio",

@@ -178,7 +178,6 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             include_docs: bool = True,
             limit=None,
             include_legacy=False,
-            include_ui=False,
         ) -> str:
             repo_queries.append(claim_text)
             return "Repo grounding"
@@ -264,7 +263,6 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             include_docs: bool = True,
             limit=None,
             include_legacy=False,
-            include_ui=False,
         ) -> str:
             repo_queries.append(claim_text)
             return "Repo grounding"
@@ -620,7 +618,6 @@ class KnowledgeGapWorkerTests(unittest.IsolatedAsyncioTestCase):
             include_docs: bool = True,
             limit=None,
             include_legacy=False,
-            include_ui=False,
         ) -> str:
             return "Repo grounding"
 
