@@ -38,6 +38,7 @@ def build_session_manager() -> CodexSupportSessionManager:
     return CodexSupportSessionManager(
         config.TICKET_EXECUTION_CODEX_SESSION_DIR,
         max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+        create_root=False,
     )
 
 
@@ -47,10 +48,25 @@ def main(argv: list[str] | None = None) -> int:
     manager = build_session_manager()
 
     if args.command == "summary":
-        print(json.dumps(manager.summary(), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                manager.summary(prune_expired=False),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "inspect":
-        print(json.dumps(manager.inspect(args.conversation_key), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                manager.inspect(
+                    args.conversation_key,
+                    prune_expired=False,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "reset":
         manager.reset(args.conversation_key)

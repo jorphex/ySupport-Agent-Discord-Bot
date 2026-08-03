@@ -51,7 +51,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
             },
             workflow_name="tests.endpoint.codex_support_smoke",
-            wants_bug_review_status=False,
             smoke_mode="ping",
         )
 
@@ -110,7 +109,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": None, "chain": "base", "tx_hashes": []},
             },
             workflow_name="tests.endpoint.codex_support_exec",
-            wants_bug_review_status=False,
         )
 
         with mock.patch(
@@ -159,7 +157,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
             },
             workflow_name="tests.endpoint.codex_support_exec",
-            wants_bug_review_status=False,
         )
 
         with mock.patch(
@@ -223,7 +220,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
                 },
                 workflow_name="tests.endpoint.codex_support_exec",
-                wants_bug_review_status=False,
             )
 
             with mock.patch(
@@ -305,7 +301,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
                 },
                 workflow_name="tests.endpoint.codex_support_exec",
-                wants_bug_review_status=False,
             )
 
             with mock.patch(
@@ -380,7 +375,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
                 },
                 workflow_name="tests.endpoint.codex_support_exec",
-                wants_bug_review_status=False,
             )
 
             with mock.patch(
@@ -452,7 +446,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
             },
             workflow_name="tests.endpoint.codex_support_exec",
-            wants_bug_review_status=False,
         )
         request_two = TicketExecutionTransportRequest(
             aggregated_text="second",
@@ -470,7 +463,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
             },
             workflow_name="tests.endpoint.codex_support_exec",
-            wants_bug_review_status=False,
         )
 
         with mock.patch(

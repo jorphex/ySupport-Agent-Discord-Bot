@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from agents import TResponseInputItem
 
@@ -24,7 +24,6 @@ class TicketTurnRequest:
     investigation_job: TicketInvestigationJob
     workflow_name: str
     precomputed_boundary: dict[str, Any] | None = None
-    send_bug_review_status: Callable[[], Awaitable[None]] | None = None
     attachments: list[dict[str, Any]] = field(default_factory=list)
     turn_source: str = "user"
     turn_instruction: str | None = None

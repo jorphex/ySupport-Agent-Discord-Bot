@@ -2,7 +2,6 @@ import asyncio
 import sys
 
 from agents import set_default_openai_key
-from dotenv import load_dotenv
 
 import config
 from ticket_execution.runtime_factory import build_local_ticket_execution_json_endpoint
@@ -14,7 +13,6 @@ async def execute_request_json(request_json: str) -> str:
 
 
 async def _main() -> int:
-    load_dotenv()
     set_default_openai_key(config.OPENAI_API_KEY)
 
     request_json = sys.stdin.read()

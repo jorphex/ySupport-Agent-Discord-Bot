@@ -392,9 +392,6 @@ class TicketInvestigationRuntime:
 
             agent_key = routed_agent_key
 
-        if agent_key == "bug" and request.send_bug_review_status is not None:
-            await request.send_bug_review_status()
-
         specialist_input = _build_specialist_turn_input(request)
         result: RunResult = await self.runner.run(
             starting_agent=_resolve_agent(agent_key),

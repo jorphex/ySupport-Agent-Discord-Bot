@@ -109,7 +109,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                             },
                         },
                         workflow_name="tests.endpoint.codex_support_exec",
-                        wants_bug_review_status=False,
                     )
 
                     response_json = await endpoint.execute_json_turn(
@@ -542,7 +541,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "evidence": {"wallet": None, "chain": "base", "tx_hashes": []},
                 },
                 workflow_name="tests.endpoint.codex_support_exec",
-                wants_bug_review_status=False,
             )
 
             with mock.patch(

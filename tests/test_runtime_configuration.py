@@ -14,6 +14,7 @@ from unittest.mock import patch
 import config
 import docs_repo_tools
 from ticket_execution.status import (
+    _build_codex_session_summary,
     build_ticket_execution_status,
     main as ticket_execution_status_main,
 )
@@ -393,6 +394,20 @@ class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TicketExecutionStatusTests(unittest.TestCase):
+    def test_missing_session_directory_is_reported_without_creation(self) -> None:
+        original_session_dir = config.TICKET_EXECUTION_CODEX_SESSION_DIR
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                missing_path = Path(temp_dir) / "missing-sessions"
+                config.TICKET_EXECUTION_CODEX_SESSION_DIR = str(missing_path)
+
+                summary = _build_codex_session_summary()
+
+                self.assertEqual(summary["active_sessions"], 0)
+                self.assertFalse(missing_path.exists())
+        finally:
+            config.TICKET_EXECUTION_CODEX_SESSION_DIR = original_session_dir
+
     def test_build_ticket_execution_status_reports_repo_context_and_valid_config(
         self,
     ) -> None:
@@ -413,7 +428,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertIn("repo_context", status)
         self.assertTrue(status["ticket_execution"]["validation_ok"])
         self.assertTrue(status["runtime_environment"]["validation_ok"])
-        self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
+        self.assertNotIn("endpoint_build_ok", status["ticket_execution"])
         self.assertEqual(
             status["ticket_execution"]["sandbox_policy"]["workspace_mode"],
             "temporary_per_turn",
@@ -468,7 +483,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
                 return_value={"state": "disabled", "fresh": False},
             ):
                 with redirect_stdout(captured):
-                    exit_code = ticket_execution_status_main()
+                    exit_code = ticket_execution_status_main([])
         finally:
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
@@ -477,7 +492,6 @@ class TicketExecutionStatusTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         payload = json.loads(captured.getvalue())
         self.assertFalse(payload["ticket_execution"]["validation_ok"])
-        self.assertFalse(payload["ticket_execution"]["endpoint_build_ok"])
         self.assertIn(
             "requires TICKET_EXECUTION_CODEX_HOME",
             payload["ticket_execution"]["validation_error"],
@@ -497,7 +511,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
                 return_value={"state": "disabled", "fresh": False},
             ):
                 with redirect_stdout(captured):
-                    exit_code = ticket_execution_status_main()
+                    exit_code = ticket_execution_status_main([])
         finally:
             config.DISCORD_BOT_TOKEN = original_token
             config.YEARN_TICKET_CATEGORY_ID = original_category
@@ -538,11 +552,6 @@ class TicketExecutionStatusTests(unittest.TestCase):
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
 
         self.assertTrue(status["ticket_execution"]["validation_ok"])
-        self.assertTrue(status["ticket_execution"]["endpoint_build_ok"])
-        self.assertEqual(
-            status["ticket_execution"]["endpoint_class"],
-            "FailoverTicketExecutionJsonEndpoint",
-        )
         primary_probe = status["ticket_execution"]["primary_command_probe"]
         self.assertIsNotNone(primary_probe)
         assert primary_probe is not None

@@ -15,6 +15,7 @@ from ticket_investigation.codex_support_endpoint import (
 )
 from ticket_investigation.executor import (
     TicketExecutionHooks,
+    TicketExecutionNonFallbackError,
     TicketInvestigationExecutor,
 )
 from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
@@ -50,14 +51,9 @@ class ExecutorBackedTicketExecutionJsonEndpoint:
                 endpoint_mode="local",
             ).to_json()
         hydrated_request = transport_request.to_turn_request()
-        hydrated_hooks = None
-        if transport_request.wants_bug_review_status and hooks is not None:
-            hydrated_hooks = TicketExecutionHooks(
-                send_bug_review_status=hooks.send_bug_review_status,
-            )
         result = await self.delegate.execute_turn(
             hydrated_request,
-            hooks=hydrated_hooks,
+            hooks=hooks,
         )
         return TicketExecutionTransportResult.from_execution_parts(
             result.flow_outcome,
@@ -95,19 +91,21 @@ class FailoverTicketExecutionJsonEndpoint:
         request_json: str,
         hooks: TicketExecutionHooks | None = None,
     ) -> str:
-        effective_hooks = _one_shot_hooks(hooks)
+        TicketExecutionTransportRequest.from_json(request_json)
         try:
             response_json = await self.primary.execute_json_turn(
                 request_json,
-                hooks=effective_hooks,
+                hooks=hooks,
             )
             TicketExecutionTransportResult.from_json(response_json)
             return response_json
+        except TicketExecutionNonFallbackError:
+            raise
         except Exception:
             try:
                 response_json = await self.fallback.execute_json_turn(
                     request_json,
-                    hooks=effective_hooks,
+                    hooks=hooks,
                 )
                 TicketExecutionTransportResult.from_json(response_json)
                 return response_json
@@ -339,7 +337,7 @@ def _build_single_ticket_execution_json_endpoint(
 def _subprocess_command() -> Sequence[str]:
     if config.TICKET_EXECUTION_SUBPROCESS_COMMAND:
         return config.TICKET_EXECUTION_SUBPROCESS_COMMAND
-    return [sys.executable, "-m", "ticket_investigation_worker_cli"]
+    return [sys.executable, "-m", "ticket_investigation.worker_cli"]
 
 
 def _codex_command() -> Sequence[str]:
@@ -414,25 +412,3 @@ def _codex_env() -> dict[str, str]:
     if config.TICKET_EXECUTION_CODEX_HOME:
         env["CODEX_HOME"] = config.TICKET_EXECUTION_CODEX_HOME
     return env
-
-
-def _one_shot_hooks(hooks: TicketExecutionHooks | None) -> TicketExecutionHooks | None:
-    if hooks is None or hooks.send_bug_review_status is None:
-        return hooks
-    sender = _OneShotHookSender(hooks.send_bug_review_status)
-    return TicketExecutionHooks(
-        send_bug_review_status=sender.send,
-        send_progress_update=hooks.send_progress_update,
-    )
-
-
-class _OneShotHookSender:
-    def __init__(self, delegate):
-        self.delegate = delegate
-        self.has_sent = False
-
-    async def send(self) -> None:
-        if self.has_sent:
-            return
-        self.has_sent = True
-        await self.delegate()

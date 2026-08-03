@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import os
@@ -101,23 +102,58 @@ async def run_bounded_subprocess(
         env=env,
         **creation_kwargs,
     )
+    process_group_id = _capture_process_group_id(process)
+    stdout_capture = _BoundedStreamCapture(max_output_chars, fail_on_limit=True)
+    stderr_capture = _BoundedStreamCapture(max_error_chars, fail_on_limit=False)
+    tasks = {
+        asyncio.create_task(_write_stdin(process, stdin_text)),
+        asyncio.create_task(stdout_capture.read(process.stdout)),
+        asyncio.create_task(stderr_capture.read(process.stderr)),
+        asyncio.create_task(process.wait()),
+    }
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(stdin_text.encode("utf-8")),
+        done, pending = await asyncio.wait(
+            tasks,
             timeout=timeout_seconds,
+            return_when=asyncio.FIRST_EXCEPTION,
         )
-    except asyncio.TimeoutError as exc:
-        await _terminate_subprocess(process)
+        for task in done:
+            task.result()
+        if pending:
+            raise _SubprocessTimedOut()
+    except _SubprocessTimedOut as exc:
+        await _terminate_subprocess(process, process_group_id)
+        await _finish_tasks(tasks)
         write_execution_artifacts(
             artifact_run_dir,
-            stdout_text="",
-            stderr_text="",
+            stdout_text=stdout_capture.text,
+            stderr_text=stderr_capture.text,
             metadata={**metadata, "timed_out": True},
         )
         raise RuntimeError(timeout_message) from exc
+    except _StreamLimitExceeded as exc:
+        await _terminate_subprocess(process, process_group_id)
+        tasks.add(asyncio.create_task(_drain_stream(process.stdout)))
+        await _finish_tasks(tasks)
+        write_execution_artifacts(
+            artifact_run_dir,
+            stdout_text=stdout_capture.text,
+            stderr_text=stderr_capture.text,
+            metadata={
+                **metadata,
+                "returncode": process.returncode,
+                "timed_out": False,
+                "stdout_limit_exceeded": True,
+            },
+        )
+        raise RuntimeError(oversized_stdout_message) from exc
+    except BaseException:
+        await _terminate_subprocess(process, process_group_id)
+        await _finish_tasks(tasks)
+        raise
 
-    stdout_text = stdout.decode("utf-8", errors="replace").strip()
-    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+    stdout_text = stdout_capture.text.strip()
+    stderr_text = stderr_capture.text.strip()
     write_execution_artifacts(
         artifact_run_dir,
         stdout_text=stdout_text,
@@ -130,9 +166,75 @@ async def run_bounded_subprocess(
         raise RuntimeError(error_text[:max_error_chars])
     if not stdout_text:
         raise RuntimeError(empty_stdout_message)
-    if len(stdout_text) > max_output_chars:
-        raise RuntimeError(oversized_stdout_message)
     return stdout_text
+
+
+class _StreamLimitExceeded(Exception):
+    pass
+
+
+class _SubprocessTimedOut(Exception):
+    pass
+
+
+class _BoundedStreamCapture:
+    def __init__(self, max_chars: int, *, fail_on_limit: bool) -> None:
+        self.max_chars = max_chars
+        self.fail_on_limit = fail_on_limit
+        self._parts: list[str] = []
+        self._captured_chars = 0
+
+    @property
+    def text(self) -> str:
+        return "".join(self._parts)
+
+    async def read(self, stream: asyncio.StreamReader | None) -> None:
+        if stream is None:
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        while chunk := await stream.read(64 * 1024):
+            self._capture(decoder.decode(chunk))
+        self._capture(decoder.decode(b"", final=True))
+
+    def _capture(self, text: str) -> None:
+        if not text:
+            return
+        remaining = self.max_chars - self._captured_chars
+        if remaining > 0:
+            retained = text[:remaining]
+            self._parts.append(retained)
+            self._captured_chars += len(retained)
+        if len(text) > remaining and self.fail_on_limit:
+            raise _StreamLimitExceeded()
+
+
+async def _write_stdin(
+    process: asyncio.subprocess.Process,
+    stdin_text: str,
+) -> None:
+    if process.stdin is None:
+        return
+    try:
+        process.stdin.write(stdin_text.encode("utf-8"))
+        await process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        process.stdin.close()
+
+
+async def _drain_stream(stream: asyncio.StreamReader | None) -> None:
+    if stream is None:
+        return
+    while await stream.read(64 * 1024):
+        pass
+
+
+async def _finish_tasks(tasks: set[asyncio.Task[Any]]) -> None:
+    _done, pending = await asyncio.wait(tasks, timeout=1)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _subprocess_creation_kwargs() -> dict[str, Any]:
@@ -145,15 +247,27 @@ def _subprocess_creation_kwargs() -> dict[str, Any]:
     }
 
 
-async def _terminate_subprocess(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
+def _capture_process_group_id(process: asyncio.subprocess.Process) -> int | None:
+    if os.name == "nt":
+        return None
+    try:
+        return os.getpgid(process.pid)
+    except ProcessLookupError:
+        return process.pid
+
+
+async def _terminate_subprocess(
+    process: asyncio.subprocess.Process,
+    process_group_id: int | None,
+) -> None:
     try:
         if os.name == "nt":
-            process.kill()
+            if process.returncode is None:
+                process.kill()
         else:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            os.killpg(process_group_id or process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
     finally:
-        await process.wait()
+        if process.returncode is None:
+            await process.wait()

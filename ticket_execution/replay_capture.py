@@ -10,7 +10,6 @@ from ticket_transcript_fetch import (
     TranscriptMessage,
     extract_channel_id,
     fetch_channel_messages,
-    fetch_channel_metadata,
     normalize_message,
 )
 
@@ -61,10 +60,6 @@ def build_first_turn_transport_request(
 
     target_index = _resolve_target_index(messages, target_message_id)
     start_index, end_index = _expand_ticket_user_block(messages, target_index)
-    if any(message.author_name == "ySupport" and message.content == "Got it — updating based on your latest message." for message in messages[:start_index]):
-        raise ValueError(
-            "Target message is not a first-turn user block; later turns need captured transport state."
-        )
     if any(message.author_name != "Ticket Tool" and _message_role(message) == "user" for message in messages[:start_index]):
         raise ValueError(
             "Target message is not the first user turn in the ticket; later-turn replay is not supported here."
@@ -116,7 +111,6 @@ def build_first_turn_transport_request(
             },
         },
         workflow_name=f"ticket_replay.first_turn.{channel_id}",
-        wants_bug_review_status=False,
     )
 
 
@@ -216,7 +210,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         channel_id = extract_channel_id(args.channel)
-        fetch_channel_metadata(channel_id)
         messages = [
             normalize_message(message)
             for message in fetch_channel_messages(channel_id, limit=args.limit)

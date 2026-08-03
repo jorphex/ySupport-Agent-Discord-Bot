@@ -26,6 +26,7 @@ from ticket_investigation.executor import (
     LoopbackTransportTicketInvestigationExecutor,
     TicketExecutionTransport,
     TicketExecutionHooks,
+    TicketExecutionNonFallbackError,
     TransportTicketInvestigationExecutor,
 )
 from ticket_investigation.transport import (
@@ -65,6 +66,27 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(run_dir.exists())
 
+    def test_ticket_execution_workspace_removes_partial_export_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            workspace = TicketExecutionWorkspace(
+                artifact_dir=artifact_dir,
+                prefix="test-failed-ticket-export-",
+            )
+            with workspace as run_dir:
+                (run_dir / "sensitive.txt").write_text(
+                    "temporary",
+                    encoding="utf-8",
+                )
+                with patch.object(
+                    workspace,
+                    "_make_read_only",
+                    side_effect=OSError("chmod failed"),
+                ):
+                    with self.assertRaises(OSError):
+                        workspace.export_copy()
+
+            self.assertEqual(os.listdir(artifact_dir), [])
+
     async def test_executor_backed_json_endpoint_short_circuits_smoke_request(self) -> None:
         class _ExplodingExecutor:
             async def execute_turn(self, request, hooks=None):
@@ -87,7 +109,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     "evidence": {"tx_hashes": []},
                 },
                 workflow_name="tests.endpoint.smoke",
-                wants_bug_review_status=False,
                 smoke_mode="ping",
             ).to_json()
         )
@@ -98,12 +119,9 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow_outcome.raw_final_reply, "ticket_execution_smoke_ok:local")
         self.assertEqual(updated_job.channel_id, 104)
 
-    async def test_local_executor_injects_hooks_into_request(self) -> None:
+    async def test_local_executor_copies_job_before_worker_mutates_it(self) -> None:
         worker = _FakeWorker(requests=[])
         executor = LocalTicketInvestigationExecutor(worker)
-
-        async def fake_send_bug_review_status() -> None:
-            return None
 
         request = TicketTurnRequest(
             aggregated_text="help",
@@ -113,16 +131,9 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             investigation_job=TicketInvestigationJob(channel_id=92),
             workflow_name="tests.executor",
         )
-        result = await executor.execute_turn(
-            request,
-            hooks=TicketExecutionHooks(
-                send_bug_review_status=fake_send_bug_review_status,
-            ),
-        )
+        result = await executor.execute_turn(request)
 
         self.assertEqual(len(worker.requests), 1)
-        self.assertIs(worker.requests[0].send_bug_review_status, fake_send_bug_review_status)
-        self.assertIsNone(request.send_bug_review_status)
         self.assertEqual(request.investigation_job.mode, "idle")
         self.assertIsNone(request.investigation_job.current_specialty)
         self.assertEqual(result.updated_job.mode, "investigating")
@@ -172,7 +183,7 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     updated_job,
                 )
 
-        async def fake_send_bug_review_status() -> None:
+        async def fake_send_progress_update(_message: str) -> None:
             return None
 
         transport: TicketExecutionTransport = _FakeTransport(requests=[], hooks=[])
@@ -189,69 +200,18 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         result = await executor.execute_turn(
             request,
             hooks=TicketExecutionHooks(
-                send_bug_review_status=fake_send_bug_review_status,
+                send_progress_update=fake_send_progress_update,
             ),
         )
 
         self.assertEqual(len(transport.requests), 1)
-        self.assertFalse(transport.requests[0].wants_bug_review_status)
-        self.assertIs(transport.hooks[0].send_bug_review_status, fake_send_bug_review_status)
+        self.assertIs(
+            transport.hooks[0].send_progress_update,
+            fake_send_progress_update,
+        )
         self.assertEqual(result.flow_outcome.raw_final_reply, "transport-ok")
         self.assertEqual(result.updated_job.current_specialty, "bug")
         self.assertEqual(result.updated_job.mode, "investigating")
-
-    async def test_transport_executor_requests_bug_review_status_for_report_like_issue(self) -> None:
-        class _FakeTransport:
-            def __init__(self, requests, hooks):
-                self.requests = requests
-                self.hooks = hooks
-
-            async def execute_transport_turn(self, request, hooks=None):
-                self.requests.append(request)
-                self.hooks.append(hooks)
-                updated_job = TicketInvestigationJob(channel_id=196)
-                updated_job.begin_investigating()
-                updated_job.complete_specialist_turn("bug")
-                return TicketExecutionTransportResult.from_execution_parts(
-                    TicketAgentFlowOutcome(
-                        raw_final_reply="transport-ok",
-                        conversation_history=[],
-                        completed_agent_key="bug",
-                        requires_human_handoff=False,
-                    ),
-                    updated_job,
-                )
-
-        async def fake_send_bug_review_status() -> None:
-            return None
-
-        transport: TicketExecutionTransport = _FakeTransport(requests=[], hooks=[])
-        executor = TransportTicketInvestigationExecutor(transport)
-        request = TicketTurnRequest(
-            aggregated_text="Request for Review of Report # 73981 https://gist.github.com/example/abcdef",
-            input_list=[{"role": "user", "content": "Request for Review of Report # 73981 https://gist.github.com/example/abcdef"}],
-            current_history=[],
-            run_context=BotRunContext(
-                channel_id=196,
-                project_context="yearn",
-                initial_button_intent="investigate_issue",
-            ),
-            investigation_job=TicketInvestigationJob(channel_id=196),
-            workflow_name="tests.executor.transport.report",
-        )
-        request.investigation_job.begin_collecting("investigate_issue")
-
-        result = await executor.execute_turn(
-            request,
-            hooks=TicketExecutionHooks(
-                send_bug_review_status=fake_send_bug_review_status,
-            ),
-        )
-
-        self.assertEqual(len(transport.requests), 1)
-        self.assertTrue(transport.requests[0].wants_bug_review_status)
-        self.assertIs(transport.hooks[0].send_bug_review_status, fake_send_bug_review_status)
-        self.assertEqual(result.flow_outcome.raw_final_reply, "transport-ok")
 
     async def test_loopback_transport_rehydrates_request_for_delegate(self) -> None:
         worker = _FakeWorker(requests=[])
@@ -273,7 +233,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.transport.loopback",
-            wants_bug_review_status=False,
         )
 
         result = await transport.execute_transport_turn(request)
@@ -304,7 +263,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.endpoint.json",
-            wants_bug_review_status=False,
         )
 
         response_json = await endpoint.execute_json_turn(request.to_json())
@@ -360,7 +318,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.endpoint.transport",
-            wants_bug_review_status=False,
         )
 
         result = await transport.execute_transport_turn(request)
@@ -413,7 +370,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": None, "chain": "katana", "tx_hashes": []},
             },
             workflow_name="tests.endpoint.subprocess",
-            wants_bug_review_status=False,
         )
 
         response_json = await endpoint.execute_json_turn(request.to_json())
@@ -425,70 +381,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_job.channel_id, 99)
         self.assertEqual(updated_job.current_specialty, "docs")
         self.assertEqual(updated_job.evidence.chain, "katana")
-
-    async def test_subprocess_json_endpoint_sends_bug_review_hook_before_spawn(self) -> None:
-        hook_calls: list[str] = []
-
-        async def fake_send_bug_review_status() -> None:
-            hook_calls.append("sent")
-
-        endpoint = SubprocessTicketExecutionJsonEndpoint(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import json,sys; "
-                    "request=json.loads(sys.stdin.read()); "
-                    "response={"
-                    "'flow_outcome':{"
-                    "'raw_final_reply':'hook-ok',"
-                    "'conversation_history':[],"
-                    "'completed_agent_key':'bug',"
-                    "'requires_human_handoff':False"
-                    "},"
-                    "'updated_job':{"
-                    "'channel_id':request['investigation_job']['channel_id'],"
-                    "'mode':'investigating',"
-                    "'current_specialty':'bug',"
-                    "'last_specialty':'bug',"
-                    "'evidence':request['investigation_job'].get('evidence',{})"
-                    "}"
-                    "}; "
-                    "sys.stdout.write(json.dumps(response))"
-                ),
-            ]
-        )
-        request = TicketExecutionTransportRequest(
-            aggregated_text="help",
-            input_list=[],
-            current_history=[],
-            run_context={
-                "channel_id": 100,
-                "project_context": "yearn",
-                "repo_last_search_artifact_refs": [],
-            },
-            investigation_job={
-                "channel_id": 100,
-                "mode": "idle",
-                "evidence": {"tx_hashes": []},
-            },
-            workflow_name="tests.endpoint.subprocess_hook",
-            wants_bug_review_status=True,
-        )
-
-        response_json = await endpoint.execute_json_turn(
-            request.to_json(),
-            hooks=TicketExecutionHooks(
-                send_bug_review_status=fake_send_bug_review_status,
-            ),
-        )
-        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
-            response_json
-        ).to_execution_parts()
-
-        self.assertEqual(hook_calls, ["sent"])
-        self.assertEqual(flow_outcome.raw_final_reply, "hook-ok")
-        self.assertEqual(updated_job.current_specialty, "bug")
 
     def test_subprocess_json_endpoint_rejects_disallowed_command(self) -> None:
         with self.assertRaises(ValueError):
@@ -502,12 +394,18 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             [
                 sys.executable,
                 "-c",
-                "import sys; sys.stdout.write('x' * 50)",
+                (
+                    "import sys; "
+                    "exec(\"while True:\\n sys.stdout.write('x' * 4096); "
+                    "sys.stdout.flush()\")"
+                ),
             ],
             max_output_chars=10,
+            timeout_seconds=5,
         )
 
-        with self.assertRaises(RuntimeError):
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, "too much stdout"):
             await endpoint.execute_json_turn(
                 TicketExecutionTransportRequest(
                     aggregated_text="help",
@@ -524,9 +422,9 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                         "evidence": {"tx_hashes": []},
                     },
                     workflow_name="tests.endpoint.subprocess_oversized",
-                    wants_bug_review_status=False,
                 ).to_json()
             )
+        self.assertLess(time.monotonic() - started, 2)
 
     async def test_run_bounded_subprocess_kills_spawned_child_processes_on_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -579,6 +477,99 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             else:
                 self.fail("Timed-out subprocess left a spawned child process running.")
 
+    async def test_run_bounded_subprocess_kills_descendant_after_leader_exits(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            child_pid_path = os.path.join(temp_dir, "child_pid.txt")
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib, subprocess, sys; "
+                    "child = subprocess.Popen([sys.executable, '-c', "
+                    "'import time; time.sleep(60)']); "
+                    f"pathlib.Path({child_pid_path!r}).write_text("
+                    "str(child.pid), encoding='utf-8')"
+                ),
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                await run_bounded_subprocess(
+                    command=command,
+                    stdin_text="",
+                    cwd=None,
+                    env=dict(os.environ),
+                    timeout_seconds=0.2,
+                    max_output_chars=1000,
+                    max_error_chars=1000,
+                    timeout_message="timed out",
+                    empty_stdout_message="empty",
+                    oversized_stdout_message="oversized",
+                    metadata={},
+                    artifact_run_dir=None,
+                )
+
+            with open(child_pid_path, encoding="utf-8") as handle:
+                child_pid = int(handle.read().strip())
+            await self._assert_process_exits(child_pid)
+
+    async def test_run_bounded_subprocess_kills_descendants_on_cancellation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            child_pid_path = os.path.join(temp_dir, "child_pid.txt")
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib, subprocess, sys, time; "
+                    "child = subprocess.Popen([sys.executable, '-c', "
+                    "'import time; time.sleep(60)']); "
+                    f"pathlib.Path({child_pid_path!r}).write_text("
+                    "str(child.pid), encoding='utf-8'); "
+                    "time.sleep(60)"
+                ),
+            ]
+            task = asyncio.create_task(
+                run_bounded_subprocess(
+                    command=command,
+                    stdin_text="",
+                    cwd=None,
+                    env=dict(os.environ),
+                    timeout_seconds=30,
+                    max_output_chars=1000,
+                    max_error_chars=1000,
+                    timeout_message="timed out",
+                    empty_stdout_message="empty",
+                    oversized_stdout_message="oversized",
+                    metadata={},
+                    artifact_run_dir=None,
+                )
+            )
+            deadline = time.monotonic() + 5
+            while not os.path.exists(child_pid_path):
+                if time.monotonic() >= deadline:
+                    self.fail("Subprocess did not write its child PID.")
+                await asyncio.sleep(0.01)
+            with open(child_pid_path, encoding="utf-8") as handle:
+                child_pid = int(handle.read().strip())
+
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await self._assert_process_exits(child_pid)
+
+    async def _assert_process_exits(self, pid: int) -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            await asyncio.sleep(0.05)
+        self.fail(f"Subprocess left descendant {pid} running.")
+
     async def test_subprocess_json_endpoint_uses_explicit_env_without_parent_inheritance(self) -> None:
         original_blocked = os.environ.get("BLOCKED_TEST_ENV")
         os.environ["BLOCKED_TEST_ENV"] = "blocked"
@@ -627,7 +618,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                         "evidence": {"tx_hashes": []},
                     },
                     workflow_name="tests.endpoint.subprocess_env",
-                    wants_bug_review_status=False,
                 ).to_json()
             )
         finally:
@@ -686,7 +676,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                         "evidence": {"tx_hashes": []},
                     },
                     workflow_name="tests.endpoint.subprocess_cwd",
-                    wants_bug_review_status=False,
                 ).to_json()
             )
 
@@ -740,7 +729,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                     "evidence": {"tx_hashes": []},
                 },
                 workflow_name="tests.endpoint.subprocess_artifacts",
-                wants_bug_review_status=False,
             )
 
             response_json = await endpoint.execute_json_turn(request.to_json())
@@ -811,7 +799,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                         "evidence": {"tx_hashes": []},
                     },
                     workflow_name="tests.endpoint.subprocess_run_dir",
-                    wants_bug_review_status=False,
                 ).to_json()
             )
 
@@ -832,20 +819,13 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 os.stat(os.path.join(exported_dir, "marker.txt")).st_mode & stat.S_IWUSR
             )
 
-    async def test_failover_json_endpoint_uses_fallback_and_deduplicates_hook(self) -> None:
-        hook_calls: list[str] = []
-
-        async def fake_send_bug_review_status() -> None:
-            hook_calls.append("sent")
-
+    async def test_failover_json_endpoint_uses_fallback_after_runtime_failure(self) -> None:
         class _FailingJsonEndpoint:
             async def execute_json_turn(
                 self,
                 request_json: str,
                 hooks: TicketExecutionHooks | None = None,
             ) -> str:
-                if hooks is not None and hooks.send_bug_review_status is not None:
-                    await hooks.send_bug_review_status()
                 raise RuntimeError("primary failed")
 
         class _FallbackJsonEndpoint:
@@ -854,8 +834,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 request_json: str,
                 hooks: TicketExecutionHooks | None = None,
             ) -> str:
-                if hooks is not None and hooks.send_bug_review_status is not None:
-                    await hooks.send_bug_review_status()
                 request = TicketExecutionTransportRequest.from_json(request_json)
                 response = {
                     "flow_outcome": {
@@ -894,20 +872,13 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.endpoint.failover",
-            wants_bug_review_status=True,
         )
 
-        response_json = await endpoint.execute_json_turn(
-            request.to_json(),
-            hooks=TicketExecutionHooks(
-                send_bug_review_status=fake_send_bug_review_status,
-            ),
-        )
+        response_json = await endpoint.execute_json_turn(request.to_json())
 
         flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
             response_json
         ).to_execution_parts()
-        self.assertEqual(hook_calls, ["sent"])
         self.assertEqual(flow_outcome.raw_final_reply, "fallback-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
 
@@ -967,7 +938,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.endpoint.failover_malformed_primary",
-            wants_bug_review_status=False,
         )
 
         response_json = await endpoint.execute_json_turn(request.to_json())
@@ -977,6 +947,43 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).to_execution_parts()
         self.assertEqual(flow_outcome.raw_final_reply, "fallback-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
+
+    async def test_failover_does_not_bypass_non_fallback_failure(self) -> None:
+        fallback_called = False
+
+        class _PolicyFailureEndpoint:
+            async def execute_json_turn(self, request_json: str, hooks=None) -> str:
+                raise TicketExecutionNonFallbackError("unsafe primary result")
+
+        class _FallbackEndpoint:
+            async def execute_json_turn(self, request_json: str, hooks=None) -> str:
+                nonlocal fallback_called
+                fallback_called = True
+                raise AssertionError("Policy failures must not reach fallback.")
+
+        endpoint = FailoverTicketExecutionJsonEndpoint(
+            _PolicyFailureEndpoint(),
+            _FallbackEndpoint(),
+        )
+        request = TicketExecutionTransportRequest(
+            aggregated_text="help",
+            input_list=[],
+            current_history=[],
+            run_context={"channel_id": 210, "project_context": "yearn"},
+            investigation_job={
+                "channel_id": 210,
+                "mode": "idle",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.endpoint.failover_policy",
+        )
+
+        with self.assertRaisesRegex(
+            TicketExecutionNonFallbackError,
+            "unsafe primary result",
+        ):
+            await endpoint.execute_json_turn(request.to_json())
+        self.assertFalse(fallback_called)
 
     async def test_subprocess_json_endpoint_returns_success_even_if_export_copy_fails(self) -> None:
         endpoint = SubprocessTicketExecutionJsonEndpoint(
@@ -1021,7 +1028,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.endpoint.subprocess_export_failure",
-            wants_bug_review_status=False,
         )
 
         with self.assertLogs("ticket_investigation.subprocess_endpoint", level="WARNING") as logs:
@@ -1036,8 +1042,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).to_execution_parts()
         self.assertEqual(flow_outcome.raw_final_reply, "subprocess-export-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
-        self.assertTrue(any("Failed to export ticket execution subprocess workspace copy" in line for line in logs.output))
-
         self.assertTrue(
             any(
                 "Failed to export ticket execution subprocess workspace copy" in line

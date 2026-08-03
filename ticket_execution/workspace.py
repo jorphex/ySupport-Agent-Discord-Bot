@@ -37,9 +37,17 @@ class TicketExecutionWorkspace:
 
         export_root = Path(self.artifact_dir)
         export_root.mkdir(parents=True, exist_ok=True)
-        export_dir = export_root / f"run-{uuid.uuid4().hex}"
-        shutil.copytree(self.run_dir, export_dir)
-        self._make_read_only(export_dir)
+        run_id = uuid.uuid4().hex
+        export_dir = export_root / f"run-{run_id}"
+        staging_dir = export_root / f".run-{run_id}.tmp"
+        try:
+            shutil.copytree(self.run_dir, staging_dir)
+            self._make_read_only(staging_dir)
+            staging_dir.replace(export_dir)
+        except Exception:
+            self._remove_export_tree(staging_dir)
+            self._remove_export_tree(export_dir)
+            raise
         self._exported_run_dir = export_dir
         return export_dir
 
@@ -54,3 +62,15 @@ class TicketExecutionWorkspace:
                 )
                 path.chmod(0o444 | executable_bits)
         export_dir.chmod(0o555)
+
+    @staticmethod
+    def _remove_export_tree(path: Path) -> None:
+        if not path.exists():
+            return
+        path.chmod(0o755)
+        for child in path.rglob("*"):
+            if child.is_dir():
+                child.chmod(0o755)
+            else:
+                child.chmod(0o644)
+        shutil.rmtree(path)

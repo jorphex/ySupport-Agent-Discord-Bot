@@ -262,9 +262,6 @@ class CodexSupportTicketExecutionJsonEndpoint:
         hooks: TicketExecutionHooks | None = None,
     ) -> str:
         request = TicketExecutionTransportRequest.from_json(request_json)
-        if request.wants_bug_review_status and hooks is not None:
-            if hooks.send_bug_review_status is not None:
-                await hooks.send_bug_review_status()
         if request.smoke_mode:
             return build_smoke_transport_result(
                 request,

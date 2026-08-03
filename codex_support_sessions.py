@@ -43,16 +43,23 @@ class CodexSupportSessionManager:
         root_dir: str | Path,
         *,
         max_age_hours: int | None = None,
+        create_root: bool = True,
     ) -> None:
         self.root_dir = Path(root_dir)
-        self.root_dir.mkdir(parents=True, exist_ok=True)
+        if create_root:
+            self.root_dir.mkdir(parents=True, exist_ok=True)
         self.max_age = (
             timedelta(hours=max_age_hours)
             if max_age_hours is not None and max_age_hours > 0
             else None
         )
 
-    def load(self, conversation_key: str) -> CodexSupportSessionRecord | None:
+    def load(
+        self,
+        conversation_key: str,
+        *,
+        prune_expired: bool = True,
+    ) -> CodexSupportSessionRecord | None:
         path = self._record_path(conversation_key)
         if not path.exists():
             return None
@@ -60,18 +67,24 @@ class CodexSupportSessionManager:
         if record is None:
             return None
         if self._is_expired(record):
-            self.reset(conversation_key)
+            if prune_expired:
+                self.reset(conversation_key)
             return None
         return record
 
-    def list_records(self) -> list[CodexSupportSessionRecord]:
+    def list_records(
+        self,
+        *,
+        prune_expired: bool = True,
+    ) -> list[CodexSupportSessionRecord]:
         records: list[CodexSupportSessionRecord] = []
         for path in sorted(self.root_dir.glob("*.json")):
             record = self._read_record(path)
             if record is None:
                 continue
             if self._is_expired(record):
-                path.unlink(missing_ok=True)
+                if prune_expired:
+                    path.unlink(missing_ok=True)
                 continue
             records.append(record)
         return records
@@ -171,16 +184,21 @@ class CodexSupportSessionManager:
         path = self._record_path(conversation_key)
         path.unlink(missing_ok=True)
 
-    def inspect(self, conversation_key: str) -> dict[str, Any]:
-        record = self.load(conversation_key)
+    def inspect(
+        self,
+        conversation_key: str,
+        *,
+        prune_expired: bool = True,
+    ) -> dict[str, Any]:
+        record = self.load(conversation_key, prune_expired=prune_expired)
         return {
             "conversation_key": conversation_key,
             "active": record is not None,
             "record": asdict(record) if record is not None else None,
         }
 
-    def summary(self) -> dict[str, Any]:
-        records = self.list_records()
+    def summary(self, *, prune_expired: bool = True) -> dict[str, Any]:
+        records = self.list_records(prune_expired=prune_expired)
         return {
             "root_dir": str(self.root_dir),
             "active_sessions": len(records),

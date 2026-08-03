@@ -45,7 +45,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": ["0xabc"]},
             },
             workflow_name="tests.support_request",
-            wants_bug_review_status=False,
         )
 
         support_request = SupportTurnRequest.from_ticket_execution_request(request)
@@ -115,7 +114,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.internal_team_request",
-            wants_bug_review_status=False,
         )
 
         support_request = SupportTurnRequest.from_ticket_execution_request(request)
@@ -150,7 +148,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.internal_team_history",
-            wants_bug_review_status=False,
         )
         result = SupportTurnResult(
             answer="The swap has already been queued and is pending signatures.",
@@ -196,7 +193,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {"wallet": "0xB8B9E3097c8b1DDdF9C5ea9d48A7eBeaF09D67d2"},
             },
             workflow_name="tests.deposit_flow",
-            wants_bug_review_status=False,
         )
 
         support_request = SupportTurnRequest.from_ticket_execution_request(request)
@@ -250,7 +246,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": {},
             },
             workflow_name="tests.image_support",
-            wants_bug_review_status=False,
         )
 
         support_request = SupportTurnRequest.from_ticket_execution_request(request)

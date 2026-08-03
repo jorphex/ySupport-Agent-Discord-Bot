@@ -72,7 +72,6 @@ def _request(*, channel_id: int, requested_intent: str) -> TicketExecutionTransp
             },
         },
         workflow_name="tests.canary",
-        wants_bug_review_status=False,
     )
 
 

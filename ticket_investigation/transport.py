@@ -25,7 +25,6 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "run_context",
         "investigation_job",
         "workflow_name",
-        "wants_bug_review_status",
     ],
     "properties": {
         "aggregated_text": {"type": "string"},
@@ -37,7 +36,6 @@ TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA: dict[str, Any] = {
         "run_context": {"type": "object"},
         "investigation_job": {"type": "object"},
         "workflow_name": {"type": "string"},
-        "wants_bug_review_status": {"type": "boolean"},
         "precomputed_boundary": {"type": ["object", "null"]},
         "smoke_mode": {"type": ["string", "null"]},
     },
@@ -208,8 +206,7 @@ def build_smoke_transport_request() -> "TicketExecutionTransportRequest":
                 "withdrawal_target_vault": None,
             },
         },
-        workflow_name="ticket_execution_status.smoke_probe",
-        wants_bug_review_status=False,
+        workflow_name="ticket_execution.status.smoke_probe",
         precomputed_boundary=None,
         smoke_mode="ping",
     )
@@ -225,7 +222,6 @@ class TicketExecutionTransportRequest:
     workflow_name: str
     turn_source: str = "user"
     turn_instruction: str | None = None
-    wants_bug_review_status: bool = False
     precomputed_boundary: dict[str, Any] | None = None
     smoke_mode: str | None = None
     attachments: list[dict[str, Any]] = field(default_factory=list)
@@ -241,7 +237,6 @@ class TicketExecutionTransportRequest:
             "run_context": dict(self.run_context),
             "investigation_job": dict(self.investigation_job),
             "workflow_name": self.workflow_name,
-            "wants_bug_review_status": self.wants_bug_review_status,
             "precomputed_boundary": (
                 dict(self.precomputed_boundary)
                 if self.precomputed_boundary is not None
@@ -265,7 +260,6 @@ class TicketExecutionTransportRequest:
             run_context=dict(payload.get("run_context", {})),
             investigation_job=dict(payload.get("investigation_job", {})),
             workflow_name=payload["workflow_name"],
-            wants_bug_review_status=payload.get("wants_bug_review_status", False),
             precomputed_boundary=(
                 dict(payload["precomputed_boundary"])
                 if payload.get("precomputed_boundary") is not None
@@ -285,8 +279,6 @@ class TicketExecutionTransportRequest:
     def from_turn_request(
         cls,
         request: TicketTurnRequest,
-        *,
-        wants_bug_review_status: bool = False,
     ) -> "TicketExecutionTransportRequest":
         return cls(
             aggregated_text=request.aggregated_text,
@@ -298,7 +290,6 @@ class TicketExecutionTransportRequest:
             run_context=serialize_run_context(request.run_context),
             investigation_job=serialize_investigation_job(request.investigation_job),
             workflow_name=request.workflow_name,
-            wants_bug_review_status=wants_bug_review_status,
             precomputed_boundary=(
                 dict(request.precomputed_boundary)
                 if request.precomputed_boundary is not None

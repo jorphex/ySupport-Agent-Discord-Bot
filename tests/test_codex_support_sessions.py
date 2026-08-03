@@ -138,7 +138,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
                 "evidence": {},
             },
             workflow_name="tests.session_key",
-            wants_bug_review_status=False,
         )
 
         self.assertEqual(
@@ -166,7 +165,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
                 "evidence": {},
             },
             workflow_name="tests.public_session_key",
-            wants_bug_review_status=False,
         )
 
         self.assertEqual(
@@ -183,7 +181,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             run_context={"is_public_trigger": True},
             investigation_job={"evidence": {}},
             workflow_name="tests.unkeyed",
-            wants_bug_review_status=False,
         )
 
         self.assertIsNone(manager.conversation_key_for_request(request))

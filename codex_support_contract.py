@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from ticket_investigation.transport import TicketExecutionTransportRequest, TicketExecutionTransportResult
+from ticket_investigation.executor import TicketExecutionNonFallbackError
 
 _MAX_RECENT_TRANSCRIPT_ITEMS = 12
 _FORBIDDEN_DISCORD_REDIRECT_PATTERNS = (
@@ -251,7 +252,11 @@ class SupportTurnResult:
         )
 
 
-class SignedTransactionSafetyViolation(ValueError):
+class SupportTurnPolicyViolation(TicketExecutionNonFallbackError):
+    """Raised when a parsed support result violates an enforced policy."""
+
+
+class SignedTransactionSafetyViolation(SupportTurnPolicyViolation):
     """Raised when a support response exposes a transaction-sized hex payload."""
 
 
@@ -291,7 +296,7 @@ def verify_support_turn_result(
         None,
     )
     if forbidden_pattern is not None:
-        raise ValueError(
+        raise SupportTurnPolicyViolation(
             f"Support result contains a forbidden Discord redirect pattern: {forbidden_pattern}"
         )
 
@@ -300,7 +305,7 @@ def verify_support_turn_result(
         tool for tool in result.used_tools if not _is_allowed_reported_tool(tool, allowed_tools)
     ]
     if unexpected_tools:
-        raise ValueError(
+        raise SupportTurnPolicyViolation(
             "Support result reported tools that were not allowed for this run: "
             + ", ".join(unexpected_tools)
         )

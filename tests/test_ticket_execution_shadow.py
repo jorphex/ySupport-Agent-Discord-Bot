@@ -88,7 +88,6 @@ class ShadowTicketExecutionEndpointTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
             workflow_name="tests.shadow",
-            wants_bug_review_status=False,
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             primary = _StaticEndpoint(_transport_result_json("primary"))
@@ -144,7 +143,6 @@ class ShadowTicketExecutionEndpointTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
             workflow_name="tests.shadow",
-            wants_bug_review_status=False,
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             endpoint = ShadowTicketExecutionJsonEndpoint(

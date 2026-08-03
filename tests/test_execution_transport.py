@@ -64,7 +64,7 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
 
         self.assertIsInstance(endpoint, SubprocessTicketExecutionJsonEndpoint)
         self.assertEqual(
-            endpoint.command[1:], ["-m", "ticket_investigation_worker_cli"]
+            endpoint.command[1:], ["-m", "ticket_investigation.worker_cli"]
         )
 
     def test_build_endpoint_allows_configured_subprocess_prefix(self) -> None:
@@ -188,7 +188,6 @@ class TicketTransportTests(unittest.TestCase):
                 "run_context",
                 "investigation_job",
                 "workflow_name",
-                "wants_bug_review_status",
             ],
         )
         self.assertEqual(
@@ -221,13 +220,9 @@ class TicketTransportTests(unittest.TestCase):
             "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
         )
 
-        transport = TicketExecutionTransportRequest.from_turn_request(
-            request,
-            wants_bug_review_status=True,
-        )
+        transport = TicketExecutionTransportRequest.from_turn_request(request)
         hydrated = transport.to_turn_request()
 
-        self.assertTrue(transport.wants_bug_review_status)
         self.assertEqual(hydrated.run_context.channel_id, 94)
         self.assertEqual(
             hydrated.run_context.initial_button_intent, "investigate_issue"
@@ -269,10 +264,7 @@ class TicketTransportTests(unittest.TestCase):
         )
         request.investigation_job.begin_collecting("investigate_issue")
         request.investigation_job.remember_chain("katana")
-        transport = TicketExecutionTransportRequest.from_turn_request(
-            request,
-            wants_bug_review_status=True,
-        )
+        transport = TicketExecutionTransportRequest.from_turn_request(request)
 
         hydrated = TicketExecutionTransportRequest.from_json(
             transport.to_json()
@@ -310,7 +302,6 @@ class TicketTransportTests(unittest.TestCase):
                 "evidence": {"tx_hashes": []},
             },
             workflow_name="tests.transport.smoke",
-            wants_bug_review_status=False,
             smoke_mode="ping",
         )
 

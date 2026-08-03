@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from codex_support_contract import SupportTurnRequest
+from ticket_investigation.executor import TicketExecutionNonFallbackError
 
 
 _ALLOWED_DISCORD_ATTACHMENT_HOSTS = {
@@ -13,6 +14,10 @@ _ALLOWED_DISCORD_ATTACHMENT_HOSTS = {
     "media.discordapp.net",
 }
 _MAX_ATTACHMENT_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+class AttachmentPreparationError(TicketExecutionNonFallbackError):
+    """Raised when required user evidence cannot be grounded safely."""
 
 
 async def prepare_support_request_attachments(
@@ -40,7 +45,7 @@ async def prepare_support_request_attachments(
             )
         except Exception as exc:
             filename = str(item.get("filename") or f"attachment {index}")
-            raise ValueError(
+            raise AttachmentPreparationError(
                 f"Could not prepare image attachment {filename}: {exc}"
             ) from exc
         item["is_image"] = True

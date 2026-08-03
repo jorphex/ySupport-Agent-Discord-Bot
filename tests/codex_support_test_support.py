@@ -55,5 +55,4 @@ def transaction_safety_transport_request(
             "evidence": {"wallet": None, "chain": "katana", "tx_hashes": []},
         },
         workflow_name="tests.endpoint.codex_support_exec",
-        wants_bug_review_status=False,
     )

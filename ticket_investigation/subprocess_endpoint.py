@@ -58,10 +58,7 @@ class SubprocessTicketExecutionJsonEndpoint:
         request_json: str,
         hooks: TicketExecutionHooks | None = None,
     ) -> str:
-        request = TicketExecutionTransportRequest.from_json(request_json)
-        if request.wants_bug_review_status and hooks is not None:
-            if hooks.send_bug_review_status is not None:
-                await hooks.send_bug_review_status()
+        TicketExecutionTransportRequest.from_json(request_json)
 
         workspace = TicketExecutionWorkspace(
             artifact_dir=self.artifact_dir or None,

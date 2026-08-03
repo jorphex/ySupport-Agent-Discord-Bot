@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from contextlib import contextmanager
 import json
+from pathlib import Path
 import sys
 from typing import Iterator
 
@@ -44,9 +45,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Pretty-print the result JSON.",
     )
     parser.add_argument(
+        "--session-dir",
+        help=(
+            "Optional isolated Codex session directory for replay continuity. "
+            "Replays are ephemeral by default."
+        ),
+    )
+    parser.add_argument(
         "--fresh-session",
         action="store_true",
-        help="Reset any persisted Codex support session for this request before replaying it.",
+        help="Reset this request in the explicit --session-dir before replaying it.",
     )
     return parser
 
@@ -62,18 +70,22 @@ def load_request_json(request_path: str | None) -> str:
 def temporary_ticket_execution_modes(
     mode: str | None,
     fallback_mode: str | None,
+    session_dir: str | None,
 ) -> Iterator[None]:
     original_mode = config.TICKET_EXECUTION_ENDPOINT
     original_fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+    original_session_dir = config.TICKET_EXECUTION_CODEX_SESSION_DIR
     try:
         if mode is not None:
             config.TICKET_EXECUTION_ENDPOINT = mode
         if fallback_mode is not None:
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = fallback_mode
+        config.TICKET_EXECUTION_CODEX_SESSION_DIR = session_dir
         yield
     finally:
         config.TICKET_EXECUTION_ENDPOINT = original_mode
         config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback_mode
+        config.TICKET_EXECUTION_CODEX_SESSION_DIR = original_session_dir
 
 
 async def execute_request_json(
@@ -82,16 +94,30 @@ async def execute_request_json(
     mode: str | None = None,
     fallback_mode: str | None = None,
     fresh_session: bool = False,
+    session_dir: str | None = None,
 ) -> str:
+    _validate_replay_session_dir(session_dir)
     if fresh_session:
-        _reset_replay_session(request_json)
-    with temporary_ticket_execution_modes(mode, fallback_mode):
+        if not session_dir:
+            raise ValueError("fresh_session requires an explicit replay session_dir.")
+        _reset_replay_session(request_json, session_dir=session_dir)
+    with temporary_ticket_execution_modes(mode, fallback_mode, session_dir):
         delegate = _build_replay_delegate(
             primary_mode=config.TICKET_EXECUTION_ENDPOINT,
             fallback_mode=config.TICKET_EXECUTION_FALLBACK_ENDPOINT,
         )
         endpoint = build_ticket_execution_json_endpoint(delegate)
         return await endpoint.execute_json_turn(request_json)
+
+
+def _validate_replay_session_dir(session_dir: str | None) -> None:
+    production_session_dir = config.TICKET_EXECUTION_CODEX_SESSION_DIR
+    if not session_dir or not production_session_dir:
+        return
+    if Path(session_dir).expanduser().resolve() == Path(
+        production_session_dir
+    ).expanduser().resolve():
+        raise ValueError("Replay session_dir must not be the configured live session directory.")
 
 
 def _build_replay_delegate(*, primary_mode: str, fallback_mode: str) -> object:
@@ -105,10 +131,10 @@ class _NoopExecutor:
         raise AssertionError("Replay delegate should not execute for non-local backends.")
 
 
-def _reset_replay_session(request_json: str) -> None:
+def _reset_replay_session(request_json: str, *, session_dir: str) -> None:
     request = TicketExecutionTransportRequest.from_json(request_json)
     manager = CodexSupportSessionManager(
-        config.TICKET_EXECUTION_CODEX_SESSION_DIR,
+        session_dir,
         max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
     )
     conversation_key = manager.conversation_key_for_request(request)
@@ -120,9 +146,12 @@ async def _main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    from dotenv import load_dotenv
-
-    load_dotenv()
+    if args.fresh_session and not args.session_dir:
+        parser.error("--fresh-session requires --session-dir.")
+    try:
+        _validate_replay_session_dir(args.session_dir)
+    except ValueError as exc:
+        parser.error(str(exc))
     effective_mode = args.mode or config.TICKET_EXECUTION_ENDPOINT
     effective_fallback_mode = "" if args.no_fallback else (
         args.fallback_mode
@@ -144,6 +173,7 @@ async def _main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         fallback_mode=effective_fallback_mode if args.no_fallback or args.fallback_mode is not None else None,
         fresh_session=args.fresh_session,
+        session_dir=args.session_dir,
     )
     if args.pretty:
         sys.stdout.write(json.dumps(json.loads(response_json), indent=2, sort_keys=True))

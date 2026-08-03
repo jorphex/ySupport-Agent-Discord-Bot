@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -27,7 +28,6 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
         validation_ok = False
         validation_error = str(exc)
 
-    endpoint_build = _probe_endpoint_build()
     uses_codex = "codex_support_exec" in config.ticket_execution_endpoint_modes()
     status = {
         "runtime_environment": {
@@ -56,9 +56,6 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
             "warnings": config.ticket_execution_runtime_warnings(),
             "validation_ok": validation_ok,
             "validation_error": validation_error,
-            "endpoint_build_ok": endpoint_build["ok"],
-            "endpoint_build_error": endpoint_build["error"],
-            "endpoint_class": endpoint_build["endpoint_class"],
             "primary_command_probe": _probe_command(config.TICKET_EXECUTION_ENDPOINT),
             "fallback_command_probe": _probe_command(
                 config.TICKET_EXECUTION_FALLBACK_ENDPOINT
@@ -79,8 +76,15 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
     return status
 
 
-def main() -> int:
-    include_smoke_probe = "--smoke" in sys.argv[1:]
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Report ticket execution readiness.")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Build the configured endpoint and execute its smoke probe.",
+    )
+    args = parser.parse_args(argv or [])
+    include_smoke_probe = args.smoke
     status = build_ticket_execution_status(include_smoke_probe=include_smoke_probe)
     print(json.dumps(status, indent=2, sort_keys=True))
     exit_ok = (
@@ -130,37 +134,14 @@ def _build_codex_session_summary() -> dict[str, Any] | None:
     if not session_dir:
         return None
     manager = CodexSupportSessionManager(
-        session_dir,
+        Path(session_dir),
         max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+        create_root=False,
     )
-    summary = manager.summary()
+    summary = manager.summary(prune_expired=False)
     return {
         "root_dir": summary["root_dir"],
         "active_sessions": summary["active_sessions"],
-    }
-
-
-def _probe_endpoint_build() -> dict[str, Any]:
-    try:
-        from ticket_investigation.json_endpoint import build_ticket_execution_json_endpoint
-
-        endpoint = build_ticket_execution_json_endpoint(_StatusExecutor())
-    except ModuleNotFoundError as exc:
-        return {
-            "ok": None,
-            "error": f"Endpoint build probe unavailable: {exc}",
-            "endpoint_class": None,
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "endpoint_class": None,
-        }
-    return {
-        "ok": True,
-        "error": None,
-        "endpoint_class": endpoint.__class__.__name__,
     }
 
 
@@ -207,25 +188,12 @@ class _StatusExecutor:
 
 
 def _resolve_base_command(mode: str) -> list[str] | None:
-    try:
-        from ticket_investigation.json_endpoint import (
-            resolve_ticket_execution_base_command,
-        )
-    except ModuleNotFoundError:
-        if mode == "subprocess":
-            return [sys.executable, "-m", "ticket_investigation_worker_cli"]
-        if mode == "codex_support_exec":
-            return [
-                "codex",
-                "exec",
-                "--skip-git-repo-check",
-                "--color",
-                "never",
-                "--ephemeral",
-            ]
-        return None
+    from ticket_investigation.json_endpoint import (
+        resolve_ticket_execution_base_command,
+    )
+
     return resolve_ticket_execution_base_command(mode)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
