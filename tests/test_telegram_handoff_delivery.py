@@ -19,6 +19,7 @@ from state import (
     conversation_threads,
     get_or_create_ticket_investigation_job,
     last_bot_reply_ts_by_channel,
+    pending_attachments_by_channel,
     pending_tasks,
     stopped_channels,
     team_handoff_notice_by_channel,
@@ -152,6 +153,7 @@ class TicketFlowTests(TicketFlowTestCase):
                 ),
                 conversation_history=conversation_threads[channel_id]
                 + [{"role": "assistant", "content": "Delivered update."}],
+                input_history=conversation_threads[channel_id],
             )
 
         async def fake_send_long_message(channel, message, **kwargs):
@@ -228,6 +230,7 @@ class TicketFlowTests(TicketFlowTestCase):
                         "content": "The transaction is queued.",
                     }
                 ],
+                input_history=previous_history,
             )
 
         try:
@@ -306,6 +309,73 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
+    async def test_delivered_team_reply_requires_durable_close_state(self) -> None:
+        channel_id = 303
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        previous_history = [{"role": "user", "content": "initial issue"}]
+        conversation_threads[channel_id] = previous_history
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            status="pending_delivery",
+            pending_reply_text="Tell the user the transaction is queued.",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        get_or_create_ticket_investigation_job(channel_id).mark_escalated_to_human()
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+
+        async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
+            return InternalInstructionTurnResult(
+                reply="The transaction is queued.",
+                conversation_history=previous_history
+                + [
+                    {
+                        "role": "assistant",
+                        "content": "The transaction is queued.",
+                    }
+                ],
+                input_history=previous_history,
+            )
+
+        async def fake_send_long_message(channel, message, **kwargs) -> None:
+            await channel.send(message, **kwargs)
+
+        try:
+            with (
+                patch(
+                    "telegram_handoff_controller.edit_handoff_notice",
+                    return_value=True,
+                ) as edit_notice,
+                patch(
+                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    new=fake_internal_turn,
+                ),
+                patch(
+                    "telegram_handoff_controller.send_long_message",
+                    new=fake_send_long_message,
+                ),
+                patch("state.persist_ticket_state", return_value=False),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "could not persist its state",
+                ):
+                    await bot.telegram_handoffs._deliver_telegram_handoff_reply(
+                        channel_id=channel_id,
+                        notice=notice,
+                        team_reply_text="Tell the user the transaction is queued.",
+                    )
+
+            self.assertEqual(fake_channel.sent_messages, ["The transaction is queued."])
+            self.assertEqual(notice.status, "delivered_pending_close")
+            self.assertIn(channel_id, team_handoff_notice_by_channel)
+            edit_notice.assert_awaited_once()
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
     async def test_discord_stop_during_telegram_reply_prevents_late_delivery(
         self,
     ) -> None:
@@ -352,6 +422,162 @@ class TicketFlowTests(TicketFlowTestCase):
             send_message.assert_not_awaited()
             reset_session.assert_called_once_with(channel_id)
             self.assertIn(channel_id, stopped_channels)
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_discord_stop_during_team_update_send_does_not_restore_state(
+        self,
+    ) -> None:
+        channel_id = 300
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        previous_history = [{"role": "user", "content": "initial issue"}]
+        conversation_threads[channel_id] = previous_history
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            status="pending_delivery",
+            pending_reply_text="Tell the user this is resolved.",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        get_or_create_ticket_investigation_job(channel_id).mark_escalated_to_human()
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+
+        async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
+            return InternalInstructionTurnResult(
+                reply="This is resolved.",
+                conversation_history=previous_history
+                + [{"role": "assistant", "content": "This is resolved."}],
+                input_history=previous_history,
+            )
+
+        async def stop_during_send(channel, message, **kwargs) -> None:
+            await channel.send(message, **kwargs)
+            self.assertTrue(state.stop_ticket_channel(channel_id))
+
+        try:
+            with (
+                patch(
+                    "telegram_handoff_controller.edit_handoff_notice",
+                    return_value=True,
+                ),
+                patch(
+                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    new=fake_internal_turn,
+                ),
+                patch(
+                    "telegram_handoff_controller.send_long_message",
+                    new=stop_during_send,
+                ),
+                patch(
+                    "telegram_handoff_controller.reset_ticket_codex_session",
+                ) as reset_session,
+            ):
+                delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
+                    channel_id=channel_id,
+                    notice=notice,
+                    team_reply_text="Tell the user this is resolved.",
+                )
+
+            self.assertFalse(delivered)
+            self.assertEqual(fake_channel.sent_messages, ["This is resolved."])
+            self.assertIn(channel_id, stopped_channels)
+            self.assertNotIn(channel_id, conversation_threads)
+            self.assertNotIn(channel_id, ticket_investigation_jobs)
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            reset_session.assert_called_once_with(channel_id)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_followup_during_team_update_delivery_is_preserved(self) -> None:
+        channel_id = 301
+        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel.category = SimpleNamespace(id=1)
+        previous_history = [{"role": "user", "content": "initial issue"}]
+        conversation_threads[channel_id] = list(previous_history)
+        original_attachment = {"url": "https://cdn.example/original.png"}
+        late_attachment = {"url": "https://cdn.example/late.png"}
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            status="pending_delivery",
+            pending_reply_text="Tell the user the transaction is queued.",
+            followup_attachments=[original_attachment],
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        get_or_create_ticket_investigation_job(channel_id).mark_escalated_to_human()
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: fake_channel
+
+        async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
+            self.assertEqual(kwargs["attachments"], [original_attachment])
+            return InternalInstructionTurnResult(
+                reply="The transaction is queued.",
+                conversation_history=previous_history
+                + [
+                    {
+                        "role": "assistant",
+                        "content": "The transaction is queued.",
+                    }
+                ],
+                input_history=previous_history,
+            )
+
+        async def followup_during_send(channel, message, **kwargs) -> None:
+            conversation_threads[channel_id].append(
+                {"role": "user", "content": "I also attached the latest error."}
+            )
+            notice.followup_attachments.append(late_attachment)
+            await channel.send(message, **kwargs)
+
+        try:
+            with (
+                patch(
+                    "telegram_handoff_controller.edit_handoff_notice",
+                    return_value=True,
+                ),
+                patch(
+                    "telegram_handoff_controller._refresh_discord_attachment_urls",
+                    side_effect=lambda _channel, attachments: attachments,
+                ),
+                patch(
+                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    new=fake_internal_turn,
+                ),
+                patch(
+                    "telegram_handoff_controller.send_long_message",
+                    new=followup_during_send,
+                ),
+            ):
+                delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
+                    channel_id=channel_id,
+                    notice=notice,
+                    team_reply_text="Tell the user the transaction is queued.",
+                )
+
+            self.assertTrue(delivered)
+            self.assertEqual(
+                conversation_threads[channel_id],
+                previous_history
+                + [
+                    {
+                        "role": "assistant",
+                        "content": "The transaction is queued.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "I also attached the latest error.",
+                    },
+                ],
+            )
+            self.assertEqual(
+                pending_attachments_by_channel[channel_id],
+                [late_attachment],
+            )
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)

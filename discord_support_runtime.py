@@ -543,6 +543,7 @@ async def _run_internal_instruction_turn(
         return InternalInstructionTurnResult(
             reply=_render_support_reply(worker_result.flow_outcome.raw_final_reply),
             conversation_history=worker_result.flow_outcome.conversation_history,
+            input_history=current_history,
         )
     finally:
         await progress_reporter.close()
@@ -552,6 +553,7 @@ async def _run_internal_instruction_turn(
 class InternalInstructionTurnResult:
     reply: str
     conversation_history: List[TResponseInputItem]
+    input_history: List[TResponseInputItem]
 
 
 async def _execute_ticket_turn(

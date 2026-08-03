@@ -265,6 +265,94 @@ class TicketFlowTests(TicketFlowTestCase):
             clear_ticket_channel_state(channel_id, delete_persisted=True)
             await bot.close()
 
+    async def test_team_reply_is_not_accepted_until_pending_state_persists(
+        self,
+    ) -> None:
+        channel_id = 302
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        bot = TicketBot(intents=discord.Intents.none())
+        update = {
+            "message": {
+                "message_id": 999,
+                "chat": {"id": "123"},
+                "text": "Tell the user the transaction is queued.",
+                "reply_to_message": {"message_id": 456},
+            }
+        }
+
+        try:
+            with (
+                patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
+                patch("state.persist_ticket_state", return_value=False),
+                patch.object(
+                    bot.telegram_handoffs,
+                    "_deliver_telegram_handoff_reply",
+                ) as deliver_reply,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Could not persist the accepted Telegram handoff reply",
+                ):
+                    await bot.telegram_handoffs._handle_telegram_handoff_update(update)
+
+            deliver_reply.assert_not_awaited()
+            self.assertEqual(notice.status, "open")
+            self.assertIsNone(notice.pending_reply_text)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+            await bot.close()
+
+    async def test_delivered_reply_is_persisted_before_recovery_closes_notice(
+        self,
+    ) -> None:
+        channel_id = 303
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            status="delivered_pending_close",
+            pending_reply_text="Tell the user the transaction is queued.",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        bot = TicketBot(intents=discord.Intents.none())
+
+        try:
+            with (
+                patch(
+                    "telegram_handoff_controller.persist_ticket_state",
+                    side_effect=[False, True],
+                ),
+                patch.object(
+                    bot.telegram_handoffs,
+                    "_finalize_telegram_handoff_notice_close",
+                ) as finalize_notice,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Could not persist the delivered Telegram handoff state",
+                ):
+                    await (
+                        bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
+                    )
+
+                finalize_notice.assert_not_awaited()
+                self.assertEqual(bot.telegram_handoffs._telegram_recovery_attempts, set())
+
+                await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
+
+            finalize_notice.assert_awaited_once_with(
+                channel_id=channel_id,
+                notice=notice,
+            )
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+            await bot.close()
+
     async def test_telegram_api_transport_failure_raises_typed_error(self) -> None:
         with (
             patch.object(config, "TELEGRAM_BOT_TOKEN", "test-token"),

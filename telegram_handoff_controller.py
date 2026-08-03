@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from discord_support_runtime import (
     _build_ticket_run_context,
+    _dedupe_attachment_payloads,
     _find_team_handoff_notice,
     _refresh_discord_attachment_urls,
     _run_internal_instruction_turn,
@@ -38,6 +39,7 @@ from state import (
     load_telegram_update_offset,
     mark_team_handoff_notice_delivered,
     mark_team_handoff_notice_pending_delivery,
+    pending_attachments_by_channel,
     persist_telegram_update_offset,
     persist_ticket_state,
     reset_ticket_codex_session,
@@ -135,6 +137,10 @@ class TelegramHandoffController:
                     )
                 continue
             if notice.status == "delivered_pending_close":
+                if not persist_ticket_state(channel_id):
+                    raise RuntimeError(
+                        "Could not persist the delivered Telegram handoff state."
+                    )
                 self._telegram_recovery_attempts.add(recovery_key)
                 await self._finalize_telegram_handoff_notice_close(
                     channel_id=channel_id,
@@ -195,10 +201,13 @@ class TelegramHandoffController:
         if not isinstance(telegram_message_id, int):
             return
 
-        mark_team_handoff_notice_pending_delivery(
+        if not mark_team_handoff_notice_pending_delivery(
             matched_channel_id,
             reply_text=text,
-        )
+        ):
+            raise RuntimeError(
+                "Could not persist the accepted Telegram handoff reply."
+            )
         await self._deliver_telegram_handoff_reply(
             channel_id=matched_channel_id,
             notice=matched_notice,
@@ -342,9 +351,10 @@ class TelegramHandoffController:
         try:
             async with channel.typing():
                 try:
+                    handoff_attachments = list(notice.followup_attachments)
                     attachments = await _refresh_discord_attachment_urls(
                         channel,
-                        list(notice.followup_attachments),
+                        handoff_attachments,
                     )
                     if channel_id in stopped_channels:
                         return False
@@ -380,10 +390,40 @@ class TelegramHandoffController:
             )
             return False
 
-        conversation_threads[channel_id] = turn_result.conversation_history
+        if channel_id in stopped_channels:
+            reset_ticket_codex_session(channel_id)
+            return False
+
+        input_history = turn_result.input_history
+        live_history = conversation_threads.get(channel_id, [])
+        late_history = (
+            list(live_history[len(input_history) :])
+            if live_history[: len(input_history)] == input_history
+            else []
+        )
+        late_attachments = (
+            list(notice.followup_attachments[len(handoff_attachments) :])
+            if notice.followup_attachments[: len(handoff_attachments)]
+            == handoff_attachments
+            else []
+        )
+
+        conversation_threads[channel_id] = (
+            turn_result.conversation_history + late_history
+        )
+        if late_attachments:
+            pending_attachments_by_channel[channel_id] = (
+                _dedupe_attachment_payloads(
+                    pending_attachments_by_channel.get(channel_id, [])
+                    + late_attachments
+                )
+            )
         investigation_job.mark_waiting_for_user()
         last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-        mark_team_handoff_notice_delivered(channel_id)
+        if not mark_team_handoff_notice_delivered(channel_id):
+            raise RuntimeError(
+                "Delivered the Telegram handoff reply, but could not persist its state."
+            )
         if not await self._finalize_telegram_handoff_notice_close(
             channel_id=channel_id,
             notice=notice,

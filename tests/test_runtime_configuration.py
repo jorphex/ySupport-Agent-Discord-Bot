@@ -21,6 +21,10 @@ from ticket_execution.status import (
 
 
 class ConfigSummaryTests(unittest.TestCase):
+    def test_telegram_summary_uses_the_5_6_cost_efficient_role(self) -> None:
+        self.assertEqual(config.TELEGRAM_HANDOFF_SUMMARY_MODEL, "gpt-5.6-terra")
+        self.assertEqual(config.TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT, "low")
+
     def test_mcp_docker_context_is_an_explicit_tracked_allowlist(self) -> None:
         dockerignore = Path(".dockerignore").read_text(encoding="utf-8").splitlines()
 

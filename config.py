@@ -141,8 +141,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_YSUPPORT_CHAT = os.getenv("TELEGRAM_YSUPPORT_CHAT", "").strip()
 TELEGRAM_HANDOFF_SUMMARY_MODEL = os.getenv(
     "TELEGRAM_HANDOFF_SUMMARY_MODEL",
-    "gpt-5.4-mini",
-).strip() or "gpt-5.4-mini"
+    "gpt-5.6-terra",
+).strip() or "gpt-5.6-terra"
 TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT = os.getenv(
     "TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT",
     "low",

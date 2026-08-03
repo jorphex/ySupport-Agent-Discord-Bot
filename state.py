@@ -478,21 +478,27 @@ def mark_team_handoff_notice_pending_delivery(
     channel_id: int,
     *,
     reply_text: str,
-) -> None:
+) -> bool:
     notice = team_handoff_notice_by_channel.get(channel_id)
     if notice is None:
-        return
+        return False
+    previous_status = notice.status
+    previous_reply_text = notice.pending_reply_text
     notice.status = "pending_delivery"
     notice.pending_reply_text = reply_text
-    persist_ticket_state(channel_id)
+    if persist_ticket_state(channel_id):
+        return True
+    notice.status = previous_status
+    notice.pending_reply_text = previous_reply_text
+    return False
 
 
-def mark_team_handoff_notice_delivered(channel_id: int) -> None:
+def mark_team_handoff_notice_delivered(channel_id: int) -> bool:
     notice = team_handoff_notice_by_channel.get(channel_id)
     if notice is None:
-        return
+        return False
     notice.status = "delivered_pending_close"
-    persist_ticket_state(channel_id)
+    return persist_ticket_state(channel_id)
 
 
 def is_ticket_waiting_for_team(channel_id: int) -> bool:
