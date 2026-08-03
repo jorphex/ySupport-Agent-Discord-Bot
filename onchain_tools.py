@@ -472,7 +472,11 @@ async def core_inspect_onchain(
                     "function": function_signature or function_name,
                     "args": args,
                     "result": result,
-                    "block_identifier": parsed_block_identifier or "latest",
+                    "block_identifier": (
+                        parsed_block_identifier
+                        if parsed_block_identifier is not None
+                        else "latest"
+                    ),
                 },
             )
 
@@ -615,17 +619,23 @@ async def core_inspect_onchain(
             latest_block = await asyncio.to_thread(
                 lambda: web3_instance.eth.block_number
             )
+            parsed_from_block = _parse_block_identifier_with_latest(
+                from_block,
+                latest_block=latest_block,
+            )
+            parsed_to_block = _parse_block_identifier_with_latest(
+                to_block,
+                latest_block=latest_block,
+            )
             filter_params: dict[str, Any] = {
-                "fromBlock": _parse_block_identifier_with_latest(
-                    from_block,
-                    latest_block=latest_block,
-                )
-                or "latest",
-                "toBlock": _parse_block_identifier_with_latest(
-                    to_block,
-                    latest_block=latest_block,
-                )
-                or "latest",
+                "fromBlock": (
+                    parsed_from_block
+                    if parsed_from_block is not None
+                    else "latest"
+                ),
+                "toBlock": (
+                    parsed_to_block if parsed_to_block is not None else "latest"
+                ),
             }
             if parsed_topics:
                 filter_params["topics"] = parsed_topics

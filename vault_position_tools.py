@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -29,20 +30,41 @@ except Exception as exc:
     V1_VAULTS = []
 
 
+@dataclass(frozen=True)
+class DepositScanResult:
+    text: str
+    found: bool
+    complete: bool
+
+
+@dataclass(frozen=True)
+class _VaultBalanceResult:
+    vault_info: Dict
+    wallet_balance: int = 0
+    staked_balance: int = 0
+    complete: bool = True
+
+
+def _format_token_balance(value: float) -> str:
+    if 0 < abs(value) < 0.000001:
+        return f"{value:.3e}"
+    return f"{value:,.6f}"
+
+
 async def _fetch_vault_and_gauge_balances(
     vault_info: Dict,
     web3_instance: Web3,
     user_checksum_addr: str,
     semaphore: asyncio.Semaphore,
-) -> Dict:
+) -> _VaultBalanceResult:
     """
     Fetches a user's balance from a vault AND its associated staking gauge concurrently.
-    Returns a dictionary with vault info and balances.
+    Returns the known balances plus whether every applicable balance call completed.
     """
     async with semaphore:
         vault_addr_str = vault_info.get("address")
         if not vault_addr_str:
-            return {"vault_info": vault_info, "error": "Missing vault address"}
+            return _VaultBalanceResult(vault_info=vault_info, complete=False)
 
         try:
             vault_checksum_addr = Web3.to_checksum_address(vault_addr_str)
@@ -55,44 +77,52 @@ async def _fetch_vault_and_gauge_balances(
                 vault_contract.functions.balanceOf(user_checksum_addr).call
             )
 
+            complete = True
             gauge_balance_coro = None
+            gauge_contract = None
             staking_info = vault_info.get("staking")
-            if (
-                staking_info
-                and staking_info.get("available")
-                and Web3.is_address(staking_info.get("address"))
-            ):
+            if staking_info and staking_info.get("available"):
                 gauge_addr_str = staking_info.get("address")
-                gauge_checksum_addr = Web3.to_checksum_address(gauge_addr_str)
-                gauge_contract = web3_instance.eth.contract(
-                    address=gauge_checksum_addr, abi=config.GAUGE_ABI
-                )
-                gauge_balance_coro = asyncio.to_thread(
-                    gauge_contract.functions.balanceOf(user_checksum_addr).call
-                )
+                if Web3.is_address(gauge_addr_str):
+                    gauge_checksum_addr = Web3.to_checksum_address(gauge_addr_str)
+                    gauge_contract = web3_instance.eth.contract(
+                        address=gauge_checksum_addr, abi=config.GAUGE_ABI
+                    )
+                    gauge_balance_coro = asyncio.to_thread(
+                        gauge_contract.functions.balanceOf(user_checksum_addr).call
+                    )
+                else:
+                    complete = False
+                    logging.warning(
+                        "Invalid staking gauge address for vault %s: %s",
+                        vault_addr_str,
+                        gauge_addr_str,
+                    )
 
             # --- Run wallet and gauge balance checks in parallel ---
-            if gauge_balance_coro:
+            if gauge_balance_coro is not None:
                 results = await asyncio.gather(
                     wallet_balance_coro, gauge_balance_coro, return_exceptions=True
                 )
-                wallet_balance = (
-                    results[0] if not isinstance(results[0], Exception) else 0
-                )
-                gauge_token_balance = (
-                    results[1] if not isinstance(results[1], Exception) else 0
-                )
                 if isinstance(results[0], Exception):
+                    wallet_balance = 0
+                    complete = False
                     logging.warning(
                         f"Error fetching wallet balance for {vault_addr_str}: {results[0]}"
                     )
+                else:
+                    wallet_balance = int(results[0])
                 if isinstance(results[1], Exception):
+                    gauge_token_balance = 0
+                    complete = False
                     logging.warning(
                         f"Error fetching gauge balance for {gauge_addr_str}: {results[1]}"
                     )
+                else:
+                    gauge_token_balance = int(results[1])
             else:
                 # Only run the wallet balance check if no gauge
-                wallet_balance = await wallet_balance_coro
+                wallet_balance = int(await wallet_balance_coro)
                 gauge_token_balance = 0
 
             logging.debug(
@@ -102,40 +132,45 @@ async def _fetch_vault_and_gauge_balances(
             # --- If staked, perform the final conversion call ---
             staked_balance_in_yvtoken = 0
             if gauge_token_balance > 0:
-                # This is a final, conditional call. It's acceptable to await it here
-                # as the two main calls have already completed.
-                staked_balance_in_yvtoken = await asyncio.to_thread(
-                    gauge_contract.functions.convertToAssets(gauge_token_balance).call
-                )
-                logging.debug(
-                    f"Vault {vault_addr_str}: Staked balance (in yvToken) is {staked_balance_in_yvtoken}"
-                )
+                try:
+                    staked_balance_in_yvtoken = int(
+                        await asyncio.to_thread(
+                            gauge_contract.functions.convertToAssets(
+                                gauge_token_balance
+                            ).call
+                        )
+                    )
+                    logging.debug(
+                        f"Vault {vault_addr_str}: Staked balance (in yvToken) is {staked_balance_in_yvtoken}"
+                    )
+                except Exception as exc:
+                    complete = False
+                    logging.warning(
+                        "Error converting gauge balance for %s: %s",
+                        gauge_addr_str,
+                        exc,
+                    )
 
-            return {
-                "vault_info": vault_info,
-                "wallet_balance": wallet_balance,
-                "staked_balance": staked_balance_in_yvtoken,
-                "error": None,
-            }
+            return _VaultBalanceResult(
+                vault_info=vault_info,
+                wallet_balance=wallet_balance,
+                staked_balance=staked_balance_in_yvtoken,
+                complete=complete,
+            )
 
         except Exception as e:
             logging.error(
                 f"Critical error in balance fetching logic for vault {vault_addr_str}: {e}",
                 exc_info=True,
             )
-            return {
-                "vault_info": vault_info,
-                "wallet_balance": 0,
-                "staked_balance": 0,
-                "error": str(e),
-            }
+            return _VaultBalanceResult(vault_info=vault_info, complete=False)
 
 
 async def query_active_deposits_logic(
     resolved_address: str,
     chain: Optional[str] = None,
     token_symbol: Optional[str] = None,
-) -> str:
+) -> DepositScanResult:
     logging.info(
         f"[Logic:query_active_deposits] Checking Active for {resolved_address}, Chain: {chain}, Token: {token_symbol}"
     )
@@ -143,11 +178,13 @@ async def query_active_deposits_logic(
     chains_to_check = []
     web3_instances = ensure_web3_instances()
     if chain:
-        chain_lower = chain.lower()
+        chain_lower = chain.strip().lower()
         if chain_lower in web3_instances:
             chains_to_check.append(chain_lower)
         else:
-            return f"Unsupported chain: {chain}."
+            return DepositScanResult(
+                text=f"Unsupported chain: {chain}.", found=False, complete=False
+            )
     else:
         chains_to_check = [c for c in web3_instances.keys() if c != "berachain"]
 
@@ -163,7 +200,11 @@ async def query_active_deposits_logic(
             logging.error(
                 "[Logic:query_active_deposits] Unexpected yDaemon response format."
             )
-            return "Error: Received unexpected data format from vault API."
+            return DepositScanResult(
+                text="Error: Received unexpected data format from vault API.",
+                found=False,
+                complete=False,
+            )
         logging.info(
             f"[Logic:query_active_deposits] Successfully fetched {len(all_vaults_data)} vault definitions from yDaemon."
         )
@@ -171,12 +212,17 @@ async def query_active_deposits_logic(
         logging.error(
             f"[Logic:query_active_deposits] Failed to fetch vault list from yDaemon: {e}"
         )
-        return f"Error: Could not fetch the list of active vaults: {e}"
+        return DepositScanResult(
+            text=f"Error: Could not fetch the list of active vaults: {e}",
+            found=False,
+            complete=False,
+        )
 
     user_checksum_addr = Web3.to_checksum_address(resolved_address)
 
     all_results = []
     total_deposits_found = 0
+    incomplete_checks = 0
     for chain_name in chains_to_check:
         web3_instance = web3_instances.get(chain_name)
         if not web3_instance:
@@ -217,16 +263,17 @@ async def query_active_deposits_logic(
 
         chain_deposits = []
         for result in balance_results:
-            if isinstance(result, Exception) or result.get("error"):
+            if isinstance(result, Exception):
+                incomplete_checks += 1
                 continue
+            if not result.complete:
+                incomplete_checks += 1
 
-            total_balance = result.get("wallet_balance", 0) + result.get(
-                "staked_balance", 0
-            )
+            total_balance = result.wallet_balance + result.staked_balance
 
             if total_balance > 0:
+                vault_info = result.vault_info
                 try:
-                    vault_info = result["vault_info"]
                     decimals = int(vault_info.get("decimals", 18))
                     total_display_balance = total_balance / (10**decimals)
                     vault_address = Web3.to_checksum_address(vault_info.get("address"))
@@ -236,21 +283,25 @@ async def query_active_deposits_logic(
                     deposit_lines = [
                         f"**Vault:** [{vault_name}]({vault_url}) (Symbol: {vault_symbol})",
                         f"  Address: `{vault_address}`",
-                        f"  Total Position: **{total_display_balance:,.6f} {vault_symbol}**",
+                        f"  Total Position: **{_format_token_balance(total_display_balance)} {vault_symbol}**",
                     ]
-                    staked_balance = result.get("staked_balance", 0)
+                    staked_balance = result.staked_balance
                     if staked_balance > 0:
-                        wallet_balance = result.get("wallet_balance", 0)
+                        wallet_balance = result.wallet_balance
                         wallet_display = wallet_balance / (10**decimals)
                         staked_display = staked_balance / (10**decimals)
                         if wallet_balance > 0:
-                            breakdown = f"(Breakdown: {wallet_display:,.6f} liquid + {staked_display:,.6f} staked)"
+                            breakdown = (
+                                f"(Breakdown: {_format_token_balance(wallet_display)} liquid + "
+                                f"{_format_token_balance(staked_display)} staked)"
+                            )
                         else:
                             breakdown = "(Staked in gauge)"
                         deposit_lines.append(f"    {breakdown}")
                     chain_deposits.append("\n".join(deposit_lines))
                     total_deposits_found += 1
                 except Exception as e:
+                    incomplete_checks += 1
                     logging.error(
                         f"Error processing deposit for vault {vault_info.get('address')} on {chain_name}: {e}"
                     )
@@ -260,42 +311,71 @@ async def query_active_deposits_logic(
                 f"**{chain_name.capitalize()} Active Deposits:**\n"
                 + "\n\n".join(chain_deposits)
             )
-        elif chain:
-            all_results.append(
-                f"No active deposits found on {chain.capitalize()} for this address"
-                + (f" matching token '{token_symbol}'." if token_symbol else ".")
-            )
-
     if total_deposits_found > 0:
-        return "\n\n---\n\n".join(all_results)
-    elif not chain:
-        return (
+        result_text = "\n\n---\n\n".join(all_results)
+        if incomplete_checks:
+            result_text += (
+                f"\n\nWarning: {incomplete_checks} active vault balance check(s) "
+                "failed, so the positions above may be incomplete."
+            )
+        return DepositScanResult(
+            text=result_text,
+            found=True,
+            complete=incomplete_checks == 0,
+        )
+    if incomplete_checks:
+        return DepositScanResult(
+            text=(
+                f"Active vault balance checks were incomplete because {incomplete_checks} "
+                "check(s) failed. No confident no-deposit conclusion can be made for "
+                "this address."
+            ),
+            found=False,
+            complete=False,
+        )
+    if not chain:
+        result_text = (
             "No active vault deposits found for that address on any supported Yearn chain"
             + (f" matching token '{token_symbol}'." if token_symbol else ".")
         )
     else:
-        return (
-            "".join(all_results) if all_results else "No active vault deposits found."
+        result_text = (
+            f"No active deposits found on {chain.capitalize()} for this address"
+            + (f" matching token '{token_symbol}'." if token_symbol else ".")
         )
+    return DepositScanResult(text=result_text, found=False, complete=True)
 
 
 async def query_v1_deposits_logic(
     resolved_address: str, token_symbol: Optional[str] = None
-) -> str:
+) -> DepositScanResult:
     logging.info(
         f"[Logic:query_v1_deposits] Checking V1 for {resolved_address}, Token: {token_symbol}"
     )
     if not V1_VAULTS:
-        return "V1 vault data is not loaded."
+        return DepositScanResult(
+            text="V1 vault data is not loaded; deprecated vault deposits could not be checked.",
+            found=False,
+            complete=False,
+        )
     web3_eth = get_web3_instance("ethereum")
     if web3_eth is None:
-        return "Ethereum connection unavailable."
+        return DepositScanResult(
+            text="Ethereum connection unavailable; deprecated V1 vault deposits could not be checked.",
+            found=False,
+            complete=False,
+        )
     try:
         user_checksum_addr = Web3.to_checksum_address(resolved_address)
     except ValueError:
-        return f"Invalid Ethereum address format: {resolved_address}"
+        return DepositScanResult(
+            text=f"Invalid Ethereum address format: {resolved_address}",
+            found=False,
+            complete=False,
+        )
 
     found_deposits = []
+    incomplete_checks = 0
     for vault in V1_VAULTS:
         if token_symbol and token_symbol.lower() not in vault.get("symbol", "").lower():
             continue
@@ -321,22 +401,46 @@ async def query_v1_deposits_logic(
                 )
                 instr = (
                     f"**Vault:** [{vault_name}]({etherscan_link}) (Symbol: {vault_symbol})\n"
-                    f"  Deposit Found: {display_balance:.6f} tokens.\n"
+                    f"  Deposit Found: {_format_token_balance(display_balance)} tokens.\n"
                     f"  *Withdrawal:* Go to Etherscan link -> 'Contract' tab -> 'Write Contract' -> Connect Wallet -> Use the {instruction_verb} function."
                 )
                 found_deposits.append(instr)
         except Exception as e:
+            incomplete_checks += 1
             logging.error(
                 f"[Logic:query_v1_deposits] Error checking V1 vault {vault.get('address')} for {user_checksum_addr}: {e}"
             )
 
     if found_deposits:
-        return (
+        result_text = (
             "**Deprecated V1 Vault Deposits Found (Ethereum Only):**\n\n"
             + "\n\n".join(found_deposits)
         )
-    else:
-        return "No deposits found in deprecated V1 vaults for this address."
+        if incomplete_checks:
+            result_text += (
+                f"\n\nWarning: {incomplete_checks} deprecated V1 vault balance "
+                "check(s) failed, so the positions above may be incomplete."
+            )
+        return DepositScanResult(
+            text=result_text,
+            found=True,
+            complete=incomplete_checks == 0,
+        )
+    if incomplete_checks:
+        return DepositScanResult(
+            text=(
+                f"Deprecated V1 vault balance checks were incomplete because {incomplete_checks} "
+                "check(s) failed. No confident no-deposit conclusion can be made for "
+                "these vaults."
+            ),
+            found=False,
+            complete=False,
+        )
+    return DepositScanResult(
+        text="No deposits found in deprecated V1 vaults for this address.",
+        found=False,
+        complete=True,
+    )
 
 
 async def core_check_all_deposits(
@@ -364,28 +468,26 @@ async def core_check_all_deposits(
 
     v1_results, active_results = await asyncio.gather(v1_task, active_task)
 
-    # Combine results
-    final_output = []
-    v1_found = "No deposits found in deprecated V1 vaults" not in v1_results
-    active_found = "No active vault deposits found" not in active_results
-
-    if v1_found:
-        final_output.append(v1_results)
-    if active_found:
-        final_output.append(active_results)
-
-    if not v1_found and not active_found:
-        # If neither found anything, return a single message
+    if (
+        v1_results.complete
+        and active_results.complete
+        and not v1_results.found
+        and not active_results.found
+    ):
         return (
             f"No deposits found in any active or deprecated Yearn vaults for address {resolved_address}"
             + (f" matching token '{token_symbol}'." if token_symbol else ".")
         )
-    elif not v1_found:
-        # Only active found, maybe add a note about V1
-        final_output.append("(No deposits found in deprecated V1 vaults)")
-    elif not active_found:
-        # Only V1 found, maybe add a note about active
-        final_output.append("(No deposits found in active V2/V3 vaults)")
+
+    final_output = []
+    for result, empty_note in (
+        (v1_results, "(No deposits found in deprecated V1 vaults)"),
+        (active_results, "(No deposits found in active V2/V3 vaults)"),
+    ):
+        if result.found or not result.complete:
+            final_output.append(result.text)
+        else:
+            final_output.append(empty_note)
 
     combined_result = "\n\n---\n\n".join(final_output)
     logging.info(

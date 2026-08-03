@@ -267,7 +267,7 @@ def extract_address_or_ens(text: str) -> str | None:
     if address_match:
         return address_match.group(1)
     ens_match = re.search(
-        r"\b([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.eth)\b",
+        r"\b([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.eth)\b",
         text,
         re.IGNORECASE,
     )

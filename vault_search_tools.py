@@ -215,6 +215,16 @@ async def core_search_vaults(
 
     # Use config for max results if defined, else default
     MAX_RESULTS = getattr(config, "MAX_RESULTS_TO_SHOW", 5)
+    query_chain_id = None
+    if chain:
+        chain_lower = chain.strip().lower()
+        query_chain_id = config.CHAIN_NAME_TO_ID.get(chain_lower)
+        if query_chain_id is None:
+            supported_chains = ", ".join(config.CHAIN_NAME_TO_ID)
+            return (
+                f"Unsupported chain: '{chain}'. Supported chains: "
+                f"{supported_chains}."
+            )
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -230,20 +240,20 @@ async def core_search_vaults(
                 f"Error: An unexpected error occurred while fetching vault data: {e}."
             )
 
+        if not isinstance(all_vaults_data_list, list):
+            logging.error("[Tool:search_vaults] Unexpected yDaemon response format.")
+            return "Error: Received unexpected data format from vault API."
+
         # --- Filtering ---
         filtered_vaults = all_vaults_data_list
 
-        if chain:
-            chain_lower = chain.lower()
-            query_chain_id = config.CHAIN_NAME_TO_ID.get(chain_lower)
-            if query_chain_id:
-                filtered_vaults = [
-                    v for v in filtered_vaults if v.get("chainID") == query_chain_id
-                ]
+        if query_chain_id is not None:
+            filtered_vaults = [
+                v for v in filtered_vaults if v.get("chainID") == query_chain_id
+            ]
 
         query_lower = query.lower().strip()
         matched_vaults = []
-        recommendation_fallback_vaults = []
         is_address_query = Web3.is_address(query_lower)
         match_all_vaults = query_lower in {"all", "*"}
 
@@ -251,6 +261,8 @@ async def core_search_vaults(
             symbol = (v_data.get("symbol") or "").lower()
             kind = (v_data.get("kind") or "").lower()
             strategies = v_data.get("strategies") or []
+            if (v_data.get("info") or {}).get("isRetired"):
+                return False
             if symbol.startswith("ys"):
                 return False
             if "single strategy" in kind:
@@ -261,7 +273,7 @@ async def core_search_vaults(
 
         def _recommendation_sort_key(v_data: dict) -> tuple[float, float, float, float]:
             info_obj = v_data.get("info", {})
-            featuring_score = float(v_data.get("featuringScore") or 0.0)
+            featuring_score = _safe_float(v_data.get("featuringScore"), 0.0) or 0.0
             risk_level = info_obj.get("riskLevel")
             try:
                 risk_score = -float(risk_level)
@@ -304,11 +316,9 @@ async def core_search_vaults(
                 fallback_apr = (
                     forward_apr_data.get("netAPR") if forward_apr_data else None
                 )
-                apr_value = 0.0
-                if primary_apr is not None:
-                    apr_value = float(primary_apr)
-                elif fallback_apr is not None:
-                    apr_value = float(fallback_apr)
+                apr_value = _safe_float(primary_apr, None)
+                if apr_value is None:
+                    apr_value = _safe_float(fallback_apr, 0.0) or 0.0
                 v_data["_computedAPY"] = apr_value * 100
                 try:
                     v_data["_computedTVL_USD"] = float(
@@ -316,15 +326,13 @@ async def core_search_vaults(
                     )
                 except (ValueError, TypeError):
                     v_data["_computedTVL_USD"] = 0.0
-                recommendation_fallback_vaults.append(v_data)
                 if recommended_only and not _is_recommendable_vault(v_data):
                     continue
                 matched_vaults.append(v_data)
 
-        if recommended_only and not matched_vaults:
-            matched_vaults = recommendation_fallback_vaults
-
         if not matched_vaults:
+            if recommended_only:
+                return "No recommendation-grade active Yearn vaults found matching your criteria."
             return "No active Yearn vaults found matching your criteria."
 
         # --- Sorting ---

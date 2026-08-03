@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import aiohttp
 
@@ -47,8 +47,7 @@ def _json_block(title: str, payload: dict[str, Any]) -> str:
 async def core_support_dashboard_discover(
     *,
     chain_id: int | None = None,
-    category: str | None = None,
-    token_symbol: str | None = None,
+    market: str = "all",
     universe: str = "core",
     sort_by: str = "tvl",
     limit: int = 10,
@@ -57,8 +56,7 @@ async def core_support_dashboard_discover(
         "/api/discover",
         {
             "chain_id": chain_id,
-            "category": category,
-            "token_symbol": token_symbol,
+            "market": market,
             "universe": universe,
             "sort_by": sort_by,
             "limit": limit,
@@ -69,19 +67,12 @@ async def core_support_dashboard_discover(
         {
             "vault_address": row.get("vault_address"),
             "chain_id": row.get("chain_id"),
-            "name": row.get("name"),
             "symbol": row.get("symbol"),
-            "token_symbol": row.get("token_symbol"),
-            "category": row.get("category"),
             "tvl_usd": row.get("tvl_usd"),
             "est_apy": row.get("est_apy"),
-            "safe_apy_30d": row.get("safe_apy_30d"),
             "realized_apy_30d": row.get("realized_apy_30d"),
-            "strategies_count": row.get("strategies_count"),
-            "last_point_time": row.get("last_point_time"),
-            "regime": row.get("regime"),
-            "is_retired": row.get("is_retired"),
-            "migration_available": row.get("migration_available"),
+            "momentum_7d_30d": row.get("momentum_7d_30d"),
+            "market": row.get("market"),
         }
         for row in rows[:limit]
     ]
@@ -90,6 +81,7 @@ async def core_support_dashboard_discover(
         {
             "source": "/api/discover",
             "filters": payload.get("filters"),
+            "realized_apy_policy": payload.get("realized_apy_policy"),
             "pagination": payload.get("pagination"),
             "summary": payload.get("summary"),
             "coverage": payload.get("coverage"),
@@ -106,7 +98,7 @@ async def core_support_dashboard_harvests(
     limit: int = 20,
 ) -> str:
     payload = await _fetch_dashboard_json(
-        "/api/harvests",
+        "/api/reports",
         {
             "days": days,
             "chain_id": chain_id,
@@ -134,14 +126,17 @@ async def core_support_dashboard_harvests(
     return _json_block(
         "Support dashboard harvest history",
         {
-            "source": "/api/harvests",
-            "generated_at_utc": payload.get("generated_at_utc"),
-            "scope": payload.get("scope"),
-            "filters": payload.get("filters"),
+            "source": "/api/reports",
+            "filters": {
+                "days": days,
+                "chain_id": chain_id,
+                "vault_address": vault_address,
+                "limit": limit,
+            },
+            "event": payload.get("event"),
             "trailing_24h": payload.get("trailing_24h"),
-            "chain_rollups": payload.get("chain_rollups"),
+            "available_chains": payload.get("available_chains"),
             "recent": compact_recent,
-            "last_run": payload.get("last_run"),
         },
     )
 
@@ -167,13 +162,12 @@ async def core_support_dashboard_changes(
         "Support dashboard recent changes",
         {
             "source": "/api/changes",
-            "filters": payload.get("filters"),
+            "window": payload.get("window"),
+            "realized_apy_policy": payload.get("realized_apy_policy"),
             "summary": payload.get("summary"),
             "freshness": payload.get("freshness"),
             "risers": (movers.get("risers") or [])[:limit],
             "fallers": (movers.get("fallers") or [])[:limit],
-            "largest_abs_delta": (movers.get("largest_abs_delta") or [])[:limit],
-            "stale": (payload.get("stale") or [])[:limit],
         },
     )
 
@@ -183,10 +177,16 @@ async def core_support_dashboard_token_venues(
     token_symbol: str,
     universe: str = "core",
 ) -> str:
+    normalized_symbol = token_symbol.strip()
+    if not normalized_symbol:
+        raise ValueError("A token symbol is required for dashboard venue lookup.")
+    symbol_path = quote(normalized_symbol, safe="")
+    source_path = f"/api/assets/{symbol_path}/vaults"
     payload = await _fetch_dashboard_json(
-        f"/api/assets/{token_symbol}/venues",
+        source_path,
         {
             "universe": universe,
+            "limit": 25,
         },
     )
     rows = payload.get("rows") or []
@@ -194,23 +194,22 @@ async def core_support_dashboard_token_venues(
         {
             "vault_address": row.get("vault_address"),
             "chain_id": row.get("chain_id"),
-            "name": row.get("name"),
             "symbol": row.get("symbol"),
-            "category": row.get("category"),
             "tvl_usd": row.get("tvl_usd"),
             "est_apy": row.get("est_apy"),
-            "safe_apy_30d": row.get("safe_apy_30d"),
             "realized_apy_30d": row.get("realized_apy_30d"),
-            "regime": row.get("regime"),
-            "last_point_time": row.get("last_point_time"),
+            "momentum_7d_30d": row.get("momentum_7d_30d"),
         }
         for row in rows
     ]
     return _json_block(
-        f"Support dashboard venues for {token_symbol}",
+        f"Support dashboard venues for {normalized_symbol}",
         {
-            "source": f"/api/assets/{token_symbol}/venues",
+            "source": source_path,
+            "token_symbol": payload.get("token_symbol"),
+            "identity": payload.get("identity"),
             "filters": payload.get("filters"),
+            "realized_apy_policy": payload.get("realized_apy_policy"),
             "summary": payload.get("summary"),
             "rows": compact_rows,
         },
@@ -221,14 +220,12 @@ async def core_support_dashboard_styfi(
     *,
     days: int = 30,
     epoch_limit: int = 12,
-    chain_id: int = 1,
 ) -> str:
     payload = await _fetch_dashboard_json(
         "/api/styfi",
         {
             "days": days,
             "epoch_limit": epoch_limit,
-            "chain_id": chain_id,
         },
     )
     series = payload.get("series") or {}

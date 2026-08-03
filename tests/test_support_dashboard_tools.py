@@ -8,6 +8,53 @@ import support_dashboard_tools
 
 
 class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_fetch_uses_configured_tls_verification(self) -> None:
+        class _Response:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self) -> None:
+                return None
+
+            async def json(self):
+                return {}
+
+        class _Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, _url):
+                return _Response()
+
+        with (
+            mock.patch.object(
+                support_dashboard_tools.config,
+                "SUPPORT_DASHBOARD_BASE_URL",
+                "https://dashboard.example",
+            ),
+            mock.patch.object(
+                support_dashboard_tools.config,
+                "SUPPORT_DASHBOARD_VERIFY_SSL",
+                True,
+            ),
+            mock.patch(
+                "support_dashboard_tools.aiohttp.TCPConnector"
+            ) as connector_mock,
+            mock.patch(
+                "support_dashboard_tools.aiohttp.ClientSession",
+                return_value=_Session(),
+            ),
+        ):
+            await support_dashboard_tools._fetch_dashboard_json("/api/test", {})
+
+        connector_mock.assert_called_once_with(ssl=True)
+
     async def test_dashboard_tools_require_base_url(self) -> None:
         with mock.patch.object(
             support_dashboard_tools.config,
@@ -17,16 +64,14 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await support_dashboard_tools.core_support_dashboard_discover(
                     chain_id=1,
-                    token_symbol="USDC",
+                    market="stablecoins",
                 )
 
     async def test_core_support_dashboard_harvests_formats_recent_rows(self) -> None:
         payload = {
-            "generated_at_utc": "2026-04-20T14:27:45+00:00",
-            "scope": {"level": "vault"},
-            "filters": {"chain_id": 1, "vault_address": "0xvault"},
-            "trailing_24h": {"harvest_count": 2},
-            "chain_rollups": [{"chain_id": 1, "last_harvest_at": "2026-04-20T08:18:23+00:00"}],
+            "event": "StrategyReported",
+            "trailing_24h": {"report_count": 2},
+            "available_chains": [{"chain_id": 1, "chain_label": "Ethereum"}],
             "recent": [
                 {
                     "block_time": "2026-04-20T08:18:23+00:00",
@@ -42,12 +87,11 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                     "refund_assets": "0",
                 }
             ],
-            "last_run": {"status": "success"},
         }
         with mock.patch(
             "support_dashboard_tools._fetch_dashboard_json",
             new=mock.AsyncMock(return_value=payload),
-        ):
+        ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_harvests(
                 days=7,
                 chain_id=1,
@@ -55,14 +99,24 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 limit=5,
             )
 
+        fetch_mock.assert_awaited_once_with(
+            "/api/reports",
+            {
+                "days": 7,
+                "chain_id": 1,
+                "vault_address": "0xvault",
+                "limit": 5,
+            },
+        )
         parsed = json.loads(result.split("\n", 1)[1])
-        self.assertEqual(parsed["source"], "/api/harvests")
+        self.assertEqual(parsed["source"], "/api/reports")
         self.assertEqual(parsed["filters"]["vault_address"], "0xvault")
+        self.assertEqual(parsed["event"], "StrategyReported")
         self.assertEqual(parsed["recent"][0]["strategy_address"], "0xstrategy")
 
     async def test_core_support_dashboard_discover_compacts_rows(self) -> None:
         payload = {
-            "filters": {"chain_id": 1, "token_symbol": "USDC"},
+            "filters": {"chain_id": 1, "market": "stablecoins"},
             "pagination": {"limit": 2, "total": 1},
             "summary": {"vaults": 1},
             "coverage": {"coverage_ratio": 1.0},
@@ -70,32 +124,35 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "vault_address": "0xvault",
                     "chain_id": 1,
-                    "name": "USDC-1 yVault",
                     "symbol": "yvUSDC-1",
-                    "token_symbol": "USDC",
-                    "category": "Stablecoin",
                     "tvl_usd": 123.0,
                     "est_apy": 0.02,
-                    "safe_apy_30d": 0.03,
                     "realized_apy_30d": 0.03,
-                    "strategies_count": 7,
-                    "last_point_time": "2026-04-20T00:00:00Z",
-                    "regime": "stable",
-                    "is_retired": False,
-                    "migration_available": False,
+                    "momentum_7d_30d": 0.001,
+                    "market": "stablecoins",
                 }
             ],
         }
         with mock.patch(
             "support_dashboard_tools._fetch_dashboard_json",
             new=mock.AsyncMock(return_value=payload),
-        ):
+        ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_discover(
                 chain_id=1,
-                token_symbol="USDC",
+                market="stablecoins",
                 limit=2,
             )
 
+        fetch_mock.assert_awaited_once_with(
+            "/api/discover",
+            {
+                "chain_id": 1,
+                "market": "stablecoins",
+                "universe": "core",
+                "sort_by": "tvl",
+                "limit": 2,
+            },
+        )
         parsed = json.loads(result.split("\n", 1)[1])
         self.assertEqual(parsed["source"], "/api/discover")
         self.assertEqual(parsed["rows"][0]["symbol"], "yvUSDC-1")
@@ -103,20 +160,16 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_core_support_dashboard_token_venues_uses_symbol_path(self) -> None:
         payload = {
             "filters": {"universe": "core"},
-            "summary": {"venues": 2},
+            "summary": {"vaults": 2},
             "rows": [
                 {
                     "vault_address": "0x1",
                     "chain_id": 1,
-                    "name": "USDC-1 yVault",
                     "symbol": "yvUSDC-1",
-                    "category": "Stablecoin",
                     "tvl_usd": 100.0,
                     "est_apy": 0.01,
-                    "safe_apy_30d": 0.02,
                     "realized_apy_30d": 0.02,
-                    "regime": "stable",
-                    "last_point_time": "2026-04-20T00:00:00Z",
+                    "momentum_7d_30d": 0.001,
                 }
             ],
         }
@@ -129,10 +182,37 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 universe="core",
             )
 
-        fetch_mock.assert_awaited_once()
+        fetch_mock.assert_awaited_once_with(
+            "/api/assets/USDC/vaults",
+            {"universe": "core", "limit": 25},
+        )
         parsed = json.loads(result.split("\n", 1)[1])
-        self.assertEqual(parsed["source"], "/api/assets/USDC/venues")
-        self.assertEqual(parsed["summary"]["venues"], 2)
+        self.assertEqual(parsed["source"], "/api/assets/USDC/vaults")
+        self.assertEqual(parsed["summary"]["vaults"], 2)
+
+    async def test_core_support_dashboard_token_venues_escapes_symbol_path(self) -> None:
+        with mock.patch(
+            "support_dashboard_tools._fetch_dashboard_json",
+            new=mock.AsyncMock(return_value={"rows": []}),
+        ) as fetch_mock:
+            result = await support_dashboard_tools.core_support_dashboard_token_venues(
+                token_symbol=" ../US DC ",
+            )
+
+        fetch_mock.assert_awaited_once_with(
+            "/api/assets/..%2FUS%20DC/vaults",
+            {"universe": "core", "limit": 25},
+        )
+        parsed = json.loads(result.split("\n", 1)[1])
+        self.assertEqual(parsed["source"], "/api/assets/..%2FUS%20DC/vaults")
+
+    async def test_core_support_dashboard_token_venues_rejects_empty_symbol(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "token symbol is required"):
+            await support_dashboard_tools.core_support_dashboard_token_venues(
+                token_symbol="   "
+            )
 
     async def test_core_support_dashboard_changes_limits_movers(self) -> None:
         payload = {
@@ -142,9 +222,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             "movers": {
                 "risers": [{"symbol": "A"}, {"symbol": "B"}],
                 "fallers": [{"symbol": "C"}, {"symbol": "D"}],
-                "largest_abs_delta": [{"symbol": "E"}, {"symbol": "F"}],
             },
-            "stale": [{"symbol": "G"}, {"symbol": "H"}],
         }
         with mock.patch(
             "support_dashboard_tools._fetch_dashboard_json",
@@ -158,7 +236,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
 
         parsed = json.loads(result.split("\n", 1)[1])
         self.assertEqual(len(parsed["risers"]), 1)
-        self.assertEqual(len(parsed["stale"]), 1)
+        self.assertEqual(len(parsed["fallers"]), 1)
 
     async def test_core_support_dashboard_styfi_trims_snapshot_tail(self) -> None:
         payload = {
@@ -173,13 +251,16 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch(
             "support_dashboard_tools._fetch_dashboard_json",
             new=mock.AsyncMock(return_value=payload),
-        ):
+        ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_styfi(
                 days=30,
                 epoch_limit=12,
-                chain_id=1,
             )
 
+        fetch_mock.assert_awaited_once_with(
+            "/api/styfi",
+            {"days": 30, "epoch_limit": 12},
+        )
         parsed = json.loads(result.split("\n", 1)[1])
         self.assertEqual(parsed["source"], "/api/styfi")
         self.assertEqual(len(parsed["latest_snapshots"]), 5)

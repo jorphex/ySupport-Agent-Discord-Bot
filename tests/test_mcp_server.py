@@ -18,7 +18,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from starlette.testclient import TestClient
 
-from mcp_server import _build_mcp_server, _StaticBearerTokenVerifier
+from mcp_server import _build_mcp_server, _StaticBearerTokenVerifier, mcp
 
 
 class StaticBearerTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
@@ -38,6 +38,28 @@ class StaticBearerTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(await verifier.verify_token(""))
         self.assertIsNone(await verifier.verify_token("any-token"))
+
+
+class MCPToolContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dashboard_tool_schemas_match_current_api_contract(self) -> None:
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        discover = tools["support_dashboard_discover"].inputSchema["properties"]
+        harvests = tools["support_dashboard_harvests"].inputSchema["properties"]
+        styfi = tools["support_dashboard_styfi"].inputSchema["properties"]
+
+        self.assertEqual(
+            set(discover),
+            {"chain_id", "market", "universe", "sort_by", "limit"},
+        )
+        self.assertEqual(
+            discover["market"]["enum"],
+            ["all", "stablecoins", "eth", "bitcoin", "other"],
+        )
+        self.assertIsNone(harvests["chain_id"]["default"])
+        self.assertEqual(harvests["days"]["minimum"], 7)
+        self.assertEqual(set(styfi), {"days", "epoch_limit"})
+        self.assertEqual(styfi["days"]["maximum"], 122)
+        self.assertEqual(styfi["epoch_limit"]["minimum"], 3)
 
 
 class MCPAuthenticationIntegrationTests(unittest.TestCase):

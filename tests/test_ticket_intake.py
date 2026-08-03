@@ -178,6 +178,15 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             ("katana", "0x80c34BD3A3569E126e7055831036aa7b212cB159"),
         )
 
+    def test_extract_address_or_ens_accepts_short_valid_labels(self) -> None:
+        self.assertEqual(yearn_targets.extract_address_or_ens("wallet a.eth"), "a.eth")
+        self.assertEqual(
+            yearn_targets.extract_address_or_ens("wallet ab.eth"), "ab.eth"
+        )
+
+    def test_extract_address_or_ens_rejects_trailing_hyphen_label(self) -> None:
+        self.assertIsNone(yearn_targets.extract_address_or_ens("wallet a-.eth"))
+
     async def test_resolve_yearn_address_target_prefers_known_strategy_match(self) -> None:
         address = "0x1111111111111111111111111111111111111111"
         with patch(

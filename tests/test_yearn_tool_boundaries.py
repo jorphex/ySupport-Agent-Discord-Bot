@@ -6,6 +6,37 @@ import onchain_tools
 import vault_search_tools
 
 
+class _VaultSearchResponse:
+    def __init__(self, payload) -> None:
+        self.payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def json(self):
+        return self.payload
+
+
+class _VaultSearchSession:
+    def __init__(self, payload) -> None:
+        self.payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, *args, **kwargs):
+        return _VaultSearchResponse(self.payload)
+
+
 class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_tx_summary_profiles_contracts_and_formats_transfers(self) -> None:
         class _HexLike:
@@ -217,6 +248,85 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_core_search_vaults_rejects_unknown_chain(self) -> None:
+        with patch.object(
+            vault_search_tools.aiohttp,
+            "ClientSession",
+            return_value=_VaultSearchSession([]),
+        ) as session_mock:
+            result = await vault_search_tools.core_search_vaults(
+                "USDC", chain="mainnet"
+            )
+
+        self.assertIn("Unsupported chain: 'mainnet'", result)
+        self.assertNotIn("Found", result)
+        session_mock.assert_not_called()
+
+    async def test_core_search_vaults_rejects_non_list_provider_response(self) -> None:
+        with patch.object(
+            vault_search_tools.aiohttp,
+            "ClientSession",
+            return_value=_VaultSearchSession({"rows": []}),
+        ):
+            result = await vault_search_tools.core_search_vaults("USDC")
+
+        self.assertEqual(
+            result, "Error: Received unexpected data format from vault API."
+        )
+
+    async def test_core_search_vaults_does_not_recommend_excluded_fallback(self) -> None:
+        excluded_vault = {
+            "chainID": 1,
+            "address": "0x1111111111111111111111111111111111111111",
+            "name": "Retired Yearn Vault",
+            "symbol": "yvOLD",
+            "kind": "Multi Strategy",
+            "token": {"name": "USD Coin", "symbol": "USDC"},
+            "apr": {"netAPR": 0.1},
+            "tvl": {"tvl": 1000},
+            "info": {"isRetired": True},
+            "strategies": [{"name": "One"}, {"name": "Two"}],
+        }
+        with patch.object(
+            vault_search_tools.aiohttp,
+            "ClientSession",
+            return_value=_VaultSearchSession([excluded_vault]),
+        ):
+            result = await vault_search_tools.core_search_vaults(
+                "all", recommended_only=True
+            )
+
+        self.assertEqual(
+            result,
+            "No recommendation-grade active Yearn vaults found matching your criteria.",
+        )
+
+    async def test_core_search_vaults_tolerates_malformed_numeric_fields(self) -> None:
+        vault = {
+            "chainID": 1,
+            "address": "0x1111111111111111111111111111111111111111",
+            "name": "Yearn USDC",
+            "symbol": "yvUSDC",
+            "version": "3.0.4",
+            "kind": "Multi Strategy",
+            "featuringScore": "unknown",
+            "token": {"name": "USD Coin", "symbol": "USDC"},
+            "apr": {"netAPR": "unknown"},
+            "tvl": {"tvl": "unknown"},
+            "info": {"riskLevel": "unknown"},
+            "strategies": [{"name": "One"}, {"name": "Two"}],
+        }
+        with patch.object(
+            vault_search_tools.aiohttp,
+            "ClientSession",
+            return_value=_VaultSearchSession([vault]),
+        ):
+            result = await vault_search_tools.core_search_vaults(
+                "all", recommended_only=True
+            )
+
+        self.assertIn("Vault: Yearn USDC (yvUSDC)", result)
+
     def test_format_single_vault_data_handles_nullable_apr_fields(self) -> None:
         formatted = vault_search_tools.format_single_vault_data_for_llm(
             {

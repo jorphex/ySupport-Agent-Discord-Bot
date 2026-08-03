@@ -20,6 +20,19 @@ from ticket_execution.status import (
 
 
 class ConfigSummaryTests(unittest.TestCase):
+    def test_support_dashboard_tls_verification_defaults_on(self) -> None:
+        self.assertTrue(config.SUPPORT_DASHBOARD_VERIFY_SSL)
+
+    def test_mcp_compose_keeps_dashboard_tls_verification_on_by_default(
+        self,
+    ) -> None:
+        compose = Path("compose.mcp.yaml").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'SUPPORT_DASHBOARD_VERIFY_SSL: "${SUPPORT_DASHBOARD_VERIFY_SSL:-true}"',
+            compose,
+        )
+
     def test_invalid_boolean_env_keeps_safe_default_and_reports_error(self) -> None:
         config._INVALID_ENV_ERRORS.pop("TEST_BOOLEAN_SETTING", None)
         try:

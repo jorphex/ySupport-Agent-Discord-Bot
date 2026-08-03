@@ -2,7 +2,7 @@
 import hmac
 import logging
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
@@ -254,38 +254,27 @@ async def repo_context_status() -> str:
 @mcp.tool()
 async def support_dashboard_discover(
     chain_id: Annotated[
-        int,
+        int | None,
         Field(
-            default=1,
+            default=None,
             description=(
                 "Optional numeric chain filter for the support dashboard discover index. "
                 "Use chain ids such as 1 for Ethereum or 8453 for Base."
             ),
             ge=1,
         ),
-    ] = 1,
-    category: Annotated[
-        str,
+    ] = None,
+    market: Annotated[
+        Literal["all", "stablecoins", "eth", "bitcoin", "other"],
         Field(
-            default="",
+            default="all",
             description=(
-                "Optional Yearn vault category filter such as 'Stablecoin' or 'auto'. "
-                "Leave blank to search all categories."
+                "Vault market filter. Supported values: all, stablecoins, eth, bitcoin, or other."
             ),
         ),
-    ] = "",
-    token_symbol: Annotated[
-        str,
-        Field(
-            default="",
-            description=(
-                "Optional token symbol filter such as 'USDC', 'WETH', or 'cbBTC'. "
-                "Use this for support questions about where a token can be deployed or which vaults match a token."
-            ),
-        ),
-    ] = "",
+    ] = "all",
     universe: Annotated[
-        str,
+        Literal["core", "extended", "raw"],
         Field(
             default="core",
             description=(
@@ -295,11 +284,11 @@ async def support_dashboard_discover(
         ),
     ] = "core",
     sort_by: Annotated[
-        str,
+        Literal["tvl", "est_apy", "apy_30d", "momentum"],
         Field(
             default="tvl",
             description=(
-                "Sorting field for matching vault rows. Common values are 'tvl' or other dashboard-supported sort keys."
+                "Sorting field. Supported values: tvl, est_apy, apy_30d, or momentum."
             ),
         ),
     ] = "tvl",
@@ -320,9 +309,9 @@ async def support_dashboard_discover(
     Look up Yearn vaults from the support dashboard's discover index.
 
     Use this when support needs a fast vault lookup surface that returns current vault rows with
-    chain, token, TVL, APY, regime, strategy count, and freshness fields. It is especially useful for:
-    - identifying a vault from a token or category query
-    - showing the most relevant Yearn vaults for a token like USDC or WETH
+    chain, market, TVL, estimated APY, realized APY, and momentum fields. It is especially useful for:
+    - browsing vaults by chain or market
+    - showing the most relevant Yearn vaults in a market such as stablecoins or ETH
     - quickly grounding a support answer with current dashboard-visible vault metadata
 
     Returns:
@@ -332,8 +321,7 @@ async def support_dashboard_discover(
     try:
         return await support_dashboard_tools.core_support_dashboard_discover(
             chain_id=chain_id,
-            category=category or None,
-            token_symbol=token_symbol or None,
+            market=market,
             universe=universe,
             sort_by=sort_by,
             limit=limit,
@@ -354,20 +342,20 @@ async def support_dashboard_harvests(
                 "Use smaller windows such as 7 or 14 for recent support questions and larger windows when investigating "
                 "longer inactivity claims."
             ),
-            ge=1,
+            ge=7,
             le=365,
         ),
     ] = 30,
     chain_id: Annotated[
-        int,
+        int | None,
         Field(
-            default=1,
+            default=None,
             description=(
-                "Optional numeric chain filter. Use 1 for Ethereum unless the user is asking about another supported chain."
+                "Optional numeric chain filter. Leave unset for all chains, or use a chain id such as 1 for Ethereum."
             ),
             ge=1,
         ),
-    ] = 1,
+    ] = None,
     vault_address: Annotated[
         str,
         Field(
@@ -394,7 +382,7 @@ async def support_dashboard_harvests(
     Fetch recent vault harvest/report history from the support dashboard.
 
     This is the best support tool for stale-update, stale-PPS, and 'has this vault harvested recently?'
-    questions. The payload includes trailing 24h counts, chain rollups, and recent vault report rows with
+    questions. The payload includes trailing 24h counts, available chains, and recent vault report rows with
     timestamps, tx hashes, strategy addresses, gain/loss, debt, fee assets, and refund assets.
 
     Important scope note:
@@ -420,7 +408,7 @@ async def support_dashboard_harvests(
 @mcp.tool()
 async def support_dashboard_changes(
     window: Annotated[
-        str,
+        Literal["24h", "7d", "30d"],
         Field(
             default="7d",
             description=(
@@ -429,7 +417,7 @@ async def support_dashboard_changes(
         ),
     ] = "7d",
     universe: Annotated[
-        str,
+        Literal["core", "extended", "raw"],
         Field(
             default="core",
             description=(
@@ -442,14 +430,14 @@ async def support_dashboard_changes(
         Field(
             default=10,
             description=(
-                "Maximum number of risers, fallers, and largest-delta rows to include."
+                "Maximum number of riser and faller rows to include."
             ),
             ge=1,
             le=25,
         ),
     ] = 10,
     stale_threshold: Annotated[
-        str,
+        Literal["auto", "24h", "7d", "30d"],
         Field(
             default="auto",
             description=(
@@ -495,7 +483,7 @@ async def support_dashboard_token_venues(
         ),
     ],
     universe: Annotated[
-        str,
+        Literal["core", "extended", "raw"],
         Field(
             default="core",
             description=(
@@ -508,7 +496,7 @@ async def support_dashboard_token_venues(
     Compare Yearn venues for a single token symbol using the support dashboard.
 
     This tool is best for support questions about where a token can be deployed across Yearn.
-    It returns venue-level rows with chain, symbol, TVL, APY, and freshness fields so the bot can
+    It returns venue-level rows with chain, symbol, TVL, estimated and realized APY, and momentum so the bot can
     compare Yearn options for tokens like USDC, WETH, or cbBTC without improvising.
 
     Returns:
@@ -533,8 +521,8 @@ async def support_dashboard_styfi(
             description=(
                 "Trailing lookback window in days for stYFI dashboard context and snapshots."
             ),
-            ge=1,
-            le=365,
+            ge=7,
+            le=122,
         ),
     ] = 30,
     epoch_limit: Annotated[
@@ -544,18 +532,10 @@ async def support_dashboard_styfi(
             description=(
                 "Maximum number of reward epochs to request from the stYFI dashboard endpoint."
             ),
-            ge=1,
-            le=50,
+            ge=3,
+            le=24,
         ),
     ] = 12,
-    chain_id: Annotated[
-        int,
-        Field(
-            default=1,
-            description="Numeric chain id for the stYFI dashboard endpoint. Use 1 for Ethereum.",
-            ge=1,
-        ),
-    ] = 1,
 ) -> str:
     """
     Fetch stYFI reward and staking state from the support dashboard.
@@ -573,7 +553,6 @@ async def support_dashboard_styfi(
         return await support_dashboard_tools.core_support_dashboard_styfi(
             days=days,
             epoch_limit=epoch_limit,
-            chain_id=chain_id,
         )
     except Exception as e:
         logging.error(f"Error in support_dashboard_styfi: {e}")
