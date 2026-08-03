@@ -13,7 +13,6 @@ from state import (
     channels_awaiting_initial_button_press,
     TeamHandoffNotice,
     clear_ticket_channel_state,
-    monitored_new_channels,
     pending_tasks,
     stopped_channels,
     team_handoff_notice_by_channel,
@@ -36,7 +35,6 @@ from ysupport import (
 )
 from ticket_channel_lifecycle import (
     initialize_ticket_channel,
-    process_synthetic_button_input as process_synthetic_button_lifecycle,
 )
 
 from tests.ticket_flow_test_support import TicketFlowTestCase
@@ -58,14 +56,12 @@ class TicketFlowTests(TicketFlowTestCase):
             async def send(self, content, **kwargs):
                 self.sent.append((content, kwargs))
 
-        class _PendingTask:
-            cancelled = False
-
-            def cancel(self) -> None:
-                self.cancelled = True
-
         channel = _TextChannel()
-        old_task = _PendingTask()
+
+        async def pending_turn() -> None:
+            await asyncio.Event().wait()
+
+        old_task = asyncio.create_task(pending_turn())
         pending_tasks[channel_id] = old_task
         try:
             with (
@@ -84,7 +80,6 @@ class TicketFlowTests(TicketFlowTestCase):
 
             self.assertTrue(old_task.cancelled)
             self.assertNotIn(channel_id, pending_tasks)
-            self.assertIn(channel_id, monitored_new_channels)
             self.assertEqual(ticket_owner_user_id_by_channel[channel_id], 93001)
             self.assertIn(channel_id, channels_awaiting_initial_button_press)
             sleep.assert_awaited_once_with(1.5)
@@ -97,105 +92,21 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
-    async def test_ticketbot_channel_handlers_delegate_to_lifecycle_module(
-        self,
-    ) -> None:
-        bot = TicketBot(intents=discord.Intents.none())
-        channel = SimpleNamespace(id=94001)
-
-        with (
-            patch(
-                "ysupport.initialize_ticket_channel",
-                new=AsyncMock(),
-            ) as initialize,
-            patch(
-                "ysupport.process_synthetic_ticket_button",
-                new=AsyncMock(),
-            ) as process_button,
-        ):
-            await bot.on_guild_channel_create(channel)
-            await bot.process_synthetic_button_input(
-                channel,
-                "I need help with a deposit.",
-                "deposit_issue",
-            )
-
-        initialize.assert_awaited_once_with(channel)
-        process_button.assert_awaited_once_with(
-            bot,
-            channel,
-            "I need help with a deposit.",
-            "deposit_issue",
-        )
-
-    async def test_synthetic_button_lifecycle_cancels_pending_and_runs_turn(
-        self,
-    ) -> None:
-        channel_id = 94501
-        run_context = SimpleNamespace(channel_id=channel_id)
-
-        class _PendingTask:
-            cancelled = False
-
-            def cancel(self) -> None:
-                self.cancelled = True
-
-        class _Bot:
-            def __init__(self) -> None:
-                self.calls = []
-
-            async def process_ticket_message(self, *args, **kwargs) -> None:
-                self.calls.append((args, kwargs))
-
-        pending_task = _PendingTask()
-        pending_tasks[channel_id] = pending_task
-        bot = _Bot()
-        channel = SimpleNamespace(
-            id=channel_id,
-            category=SimpleNamespace(id=94502),
-        )
-        try:
-            with patch(
-                "ticket_channel_lifecycle._build_ticket_run_context",
-                return_value=run_context,
-            ) as build_context:
-                await process_synthetic_button_lifecycle(
-                    bot,
-                    channel,
-                    "I need help with a deposit.",
-                    "deposit_issue",
-                )
-
-            build_context.assert_called_once_with(
-                channel_id=channel_id,
-                category_id=94502,
-                initial_button_intent="deposit_issue",
-            )
-            self.assertTrue(pending_task.cancelled)
-            self.assertEqual(
-                bot.calls,
-                [
-                    (
-                        (channel_id, run_context),
-                        {
-                            "is_button_trigger": True,
-                            "synthetic_user_message_for_log": (
-                                "I need help with a deposit."
-                            ),
-                        },
-                    )
-                ],
-            )
-        finally:
-            pending_tasks.pop(channel_id, None)
-
     async def test_on_ready_starts_services_and_close_cancels_cleanup(self) -> None:
         bot = TicketBot(intents=discord.Intents.none())
         cleanup_started = asyncio.Event()
+        ticket_task_started = asyncio.Event()
 
         async def cleanup_loop() -> None:
             cleanup_started.set()
             await asyncio.Event().wait()
+
+        async def ticket_turn() -> None:
+            ticket_task_started.set()
+            await asyncio.Event().wait()
+
+        ticket_task = asyncio.create_task(ticket_turn())
+        pending_tasks[95002] = ticket_task
 
         with (
             patch.object(
@@ -209,7 +120,11 @@ class TicketFlowTests(TicketFlowTestCase):
                 return_value=2,
             ) as hydrate,
             patch.object(bot.telegram_handoffs, "start", return_value=True) as start,
-            patch.object(bot.telegram_handoffs, "close") as controller_close,
+            patch.object(
+                bot.telegram_handoffs,
+                "close",
+                new=AsyncMock(),
+            ) as controller_close,
             patch.object(bot, "_state_cleanup_loop", new=cleanup_loop),
             patch.object(discord.Client, "close", new=AsyncMock()) as client_close,
         ):
@@ -217,16 +132,19 @@ class TicketFlowTests(TicketFlowTestCase):
             cleanup_task = bot._state_cleanup_task
             self.assertIsNotNone(cleanup_task)
             await cleanup_started.wait()
+            await ticket_task_started.wait()
             await bot.close()
 
         hydrate.assert_called_once_with()
         start.assert_called_once_with()
-        controller_close.assert_called_once_with()
+        controller_close.assert_awaited_once_with()
         client_close.assert_awaited_once_with()
         self.assertIsNone(bot._state_cleanup_task)
         assert cleanup_task is not None
         with self.assertRaises(asyncio.CancelledError):
             await cleanup_task
+        self.assertTrue(ticket_task.cancelled())
+        self.assertNotIn(95002, pending_tasks)
 
     async def test_setup_hook_registers_persistent_ticket_views(self) -> None:
         bot = TicketBot(intents=discord.Intents.none())

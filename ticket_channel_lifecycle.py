@@ -3,37 +3,21 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import logging
-from typing import Any, Protocol
 
 import discord
 
 import config
-from discord_support_runtime import (
-    _build_ticket_run_context,
-    _detect_ticket_owner_user_id,
-)
+from discord_support_runtime import _detect_ticket_owner_user_id
 from handoff import build_archived_handoff_notice, edit_handoff_notice
 from state import (
+    cancel_pending_ticket_task,
     clear_ticket_channel_state,
-    conversation_threads,
     last_bot_reply_ts_by_channel,
     mark_ticket_awaiting_initial_button,
-    monitored_new_channels,
-    pending_tasks,
     remember_ticket_owner_user_id,
     team_handoff_notice_by_channel,
 )
 from views import InitialInquiryView
-
-
-class _TicketBotHost(Protocol):
-    async def process_ticket_message(
-        self,
-        channel_id: int,
-        run_context: Any,
-        is_button_trigger: bool = False,
-        synthetic_user_message_for_log: str = "",
-    ) -> None: ...
 
 
 async def initialize_ticket_channel(channel: discord.abc.GuildChannel) -> None:
@@ -49,13 +33,8 @@ async def initialize_ticket_channel(channel: discord.abc.GuildChannel) -> None:
         channel.name,
         channel.id,
     )
-    conversation_threads[channel.id] = []
     clear_ticket_channel_state(channel.id, keep_stopped=False, delete_persisted=True)
-    task = pending_tasks.pop(channel.id, None)
-    if task is not None:
-        task.cancel()
-    monitored_new_channels.add(channel.id)
-
+    await cancel_pending_ticket_task(channel.id)
     await asyncio.sleep(1.5)
     ticket_owner_user_id = await _detect_ticket_owner_user_id(channel)
     if ticket_owner_user_id is not None:
@@ -99,33 +78,10 @@ async def initialize_ticket_channel(channel: discord.abc.GuildChannel) -> None:
             exc_info=True,
         )
 
-
-async def process_synthetic_button_input(
-    bot: _TicketBotHost,
-    channel: discord.TextChannel,
-    synthetic_text: str,
-    intent_category: str,
-) -> None:
-    channel_id = channel.id
-    run_context = _build_ticket_run_context(
-        channel_id=channel_id,
-        category_id=channel.category.id if channel.category else None,
-        initial_button_intent=intent_category,
-    )
-    task = pending_tasks.get(channel_id)
-    if task is not None:
-        task.cancel()
-    await bot.process_ticket_message(
-        channel_id,
-        run_context,
-        is_button_trigger=True,
-        synthetic_user_message_for_log=synthetic_text,
-    )
-
-
 async def clear_deleted_ticket_channel(channel: discord.abc.GuildChannel) -> None:
     if not isinstance(channel, discord.TextChannel):
         return
+    await cancel_pending_ticket_task(channel.id)
     notice = team_handoff_notice_by_channel.get(channel.id)
     if notice is not None:
         try:

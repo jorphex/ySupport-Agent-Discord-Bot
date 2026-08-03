@@ -8,6 +8,7 @@ import discord
 
 import config
 import handoff
+from discord_support_runtime import InternalInstructionTurnResult
 from state import (
     TeamHandoffNotice,
     channel_intent_after_button,
@@ -93,7 +94,7 @@ class TicketFlowTests(TicketFlowTestCase):
             edited_messages.append((chat_id, message_id, message_text))
             return True
 
-        async def fake_internal_turn(**kwargs) -> str:
+        async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
             internal_turn_calls.append(
                 {
                     "prompt_text": kwargs["prompt_text"],
@@ -101,7 +102,14 @@ class TicketFlowTests(TicketFlowTestCase):
                     "attachments": kwargs["attachments"],
                 }
             )
-            return "The transaction has been queued and is pending multisig signatures."
+            return InternalInstructionTurnResult(
+                reply=(
+                    "The transaction has been queued and is pending multisig "
+                    "signatures."
+                ),
+                conversation_history=conversation_threads[channel_id]
+                + [{"role": "assistant", "content": "Delivered update."}],
+            )
 
         async def fake_send_long_message(channel, message, **kwargs):
             await channel.send(message, **kwargs)

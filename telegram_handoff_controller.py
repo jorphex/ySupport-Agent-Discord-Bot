@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from datetime import datetime, timezone
 import logging
 from typing import Any, Protocol
@@ -28,14 +29,15 @@ from handoff import (
     TelegramApiError,
 )
 from state import (
+    cancel_pending_ticket_task,
     channel_intent_after_button,
     clear_team_handoff_notice,
+    conversation_threads,
     get_or_create_ticket_investigation_job,
     last_bot_reply_ts_by_channel,
     load_telegram_update_offset,
     mark_team_handoff_notice_delivered,
     mark_team_handoff_notice_pending_delivery,
-    pending_tasks,
     persist_telegram_update_offset,
     persist_ticket_state,
     reset_ticket_codex_session,
@@ -69,10 +71,13 @@ class TelegramHandoffController:
             self.task = asyncio.create_task(self._telegram_handoff_reply_loop())
         return True
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self.task is not None:
-            self.task.cancel()
+            task = self.task
             self.task = None
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def _telegram_handoff_reply_loop(self) -> None:
         while not self.bot.is_closed():
@@ -240,9 +245,7 @@ class TelegramHandoffController:
             return
 
         stopped_durably = stop_ticket_channel(matched_channel_id)
-        task = pending_tasks.pop(matched_channel_id, None)
-        if task is not None:
-            task.cancel()
+        await cancel_pending_ticket_task(matched_channel_id)
 
         if not stopped_durably:
             team_handoff_notice_by_channel[matched_channel_id] = matched_notice
@@ -345,7 +348,7 @@ class TelegramHandoffController:
                     )
                     if channel_id in stopped_channels:
                         return False
-                    final_reply = await _run_internal_instruction_turn(
+                    turn_result = await _run_internal_instruction_turn(
                         executor=self.bot.investigation_executor,
                         channel=channel,
                         channel_id=channel_id,
@@ -366,8 +369,9 @@ class TelegramHandoffController:
                         exc_info=True,
                     )
                     return False
-                await send_long_message(channel, final_reply)
+                await send_long_message(channel, turn_result.reply)
         except Exception as exc:
+            reset_ticket_codex_session(channel_id)
             logging.error(
                 "Failed to deliver Telegram handoff reply for channel %s: %s",
                 channel_id,
@@ -376,6 +380,7 @@ class TelegramHandoffController:
             )
             return False
 
+        conversation_threads[channel_id] = turn_result.conversation_history
         investigation_job.mark_waiting_for_user()
         last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
         mark_team_handoff_notice_delivered(channel_id)

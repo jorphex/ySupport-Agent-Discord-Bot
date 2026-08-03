@@ -14,6 +14,18 @@ class _FakeChannel:
         self.sent.append((text, kwargs))
 
 
+class _FailingChannel(_FakeChannel):
+    async def send(self, text, **kwargs):
+        raise RuntimeError("Discord send failed")
+
+
+class _FailingAfterOneChannel(_FakeChannel):
+    async def send(self, text, **kwargs):
+        if self.sent:
+            raise RuntimeError("Discord chunk send failed")
+        await super().send(text, **kwargs)
+
+
 class _FakeMessage:
     def __init__(self) -> None:
         self.replies = []
@@ -40,3 +52,18 @@ class SendLongMessageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(message.replies), 1)
         self.assertTrue(message.replies[0][1]["suppress_embeds"])
+
+    async def test_send_long_message_propagates_incomplete_delivery(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Discord send failed"):
+            await send_long_message(_FailingChannel(), "reply")
+
+    async def test_send_long_message_propagates_partial_chunk_delivery(self) -> None:
+        channel = _FailingAfterOneChannel()
+        with (
+            patch("utils.config.MAX_DISCORD_MESSAGE_LENGTH", 5),
+            patch("utils.asyncio.sleep", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Discord chunk send failed"):
+                await send_long_message(channel, "first\nsecond")
+
+        self.assertEqual(channel.sent, [("first", {"view": None, "suppress_embeds": True})])

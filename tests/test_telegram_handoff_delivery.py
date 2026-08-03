@@ -1,5 +1,6 @@
 import tests as _test_environment  # noqa: F401
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import discord
 
 import config
 import state
+from discord_support_runtime import InternalInstructionTurnResult
 from state import (
     TeamHandoffNotice,
     channel_intent_after_button,
@@ -17,6 +19,7 @@ from state import (
     conversation_threads,
     get_or_create_ticket_investigation_job,
     last_bot_reply_ts_by_channel,
+    pending_tasks,
     stopped_channels,
     team_handoff_notice_by_channel,
     ticket_investigation_jobs,
@@ -141,8 +144,15 @@ class TicketFlowTests(TicketFlowTestCase):
             edited_messages.append((chat_id, message_id, message_text))
             return True
 
-        async def fake_internal_turn(**kwargs) -> str:
-            return "The transaction has been queued and is pending multisig signatures."
+        async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
+            return InternalInstructionTurnResult(
+                reply=(
+                    "The transaction has been queued and is pending multisig "
+                    "signatures."
+                ),
+                conversation_history=conversation_threads[channel_id]
+                + [{"role": "assistant", "content": "Delivered update."}],
+            )
 
         async def fake_send_long_message(channel, message, **kwargs):
             await channel.send(message, **kwargs)
@@ -187,6 +197,69 @@ class TicketFlowTests(TicketFlowTestCase):
             clear_team_handoff_notice(channel_id)
             clear_ticket_investigation_job(channel_id)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
+
+    async def test_failed_discord_delivery_does_not_commit_team_reply(self) -> None:
+        channel_id = 296
+        channel = _FakeDiscordChannel(channel_id)
+        channel.category = SimpleNamespace(id=1)
+        previous_history = [{"role": "user", "content": "initial issue"}]
+        conversation_threads[channel_id] = previous_history
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="manual follow-up needed",
+            status="pending_delivery",
+            pending_reply_text="tell the user it is queued",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        get_or_create_ticket_investigation_job(
+            channel_id
+        ).mark_escalated_to_human()
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: channel
+
+        async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
+            return InternalInstructionTurnResult(
+                reply="The transaction is queued.",
+                conversation_history=previous_history
+                + [
+                    {
+                        "role": "assistant",
+                        "content": "The transaction is queued.",
+                    }
+                ],
+            )
+
+        try:
+            with (
+                patch(
+                    "telegram_handoff_controller.edit_handoff_notice",
+                    return_value=True,
+                ),
+                patch(
+                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    new=fake_internal_turn,
+                ),
+                patch(
+                    "telegram_handoff_controller.send_long_message",
+                    side_effect=RuntimeError("Discord send failed"),
+                ),
+                patch(
+                    "telegram_handoff_controller.reset_ticket_codex_session"
+                ) as reset_session,
+            ):
+                delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
+                    channel_id=channel_id,
+                    notice=notice,
+                    team_reply_text="tell the user it is queued",
+                )
+
+            self.assertFalse(delivered)
+            self.assertEqual(conversation_threads[channel_id], previous_history)
+            self.assertEqual(notice.status, "pending_delivery")
+            reset_session.assert_called_once_with(channel_id)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
 
     async def test_failed_team_reply_synthesis_stays_pending_without_raw_delivery(
         self,
@@ -302,6 +375,12 @@ class TicketFlowTests(TicketFlowTestCase):
         fake_channel = _FakeDiscordChannel(channel_id)
         edits: list[tuple[str, int, str]] = []
 
+        async def active_turn() -> None:
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(active_turn())
+        pending_tasks[channel_id] = task
+
         async def fake_edit_handoff_notice(
             *, chat_id: str, message_id: int, message_text: str
         ) -> bool:
@@ -325,7 +404,12 @@ class TicketFlowTests(TicketFlowTestCase):
                 [("123", 456, build_archived_handoff_notice(original_notice))],
             )
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            self.assertTrue(task.cancelled())
+            self.assertNotIn(channel_id, pending_tasks)
         finally:
+            pending_tasks.pop(channel_id, None)
+            if not task.done():
+                task.cancel()
             clear_team_handoff_notice(channel_id)
 
     async def test_delivered_pending_close_resumes_without_resending_discord_update(

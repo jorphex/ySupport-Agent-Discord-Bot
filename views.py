@@ -8,10 +8,10 @@ from bot_behavior import STANDARD_REDIRECT_MESSAGE
 from handoff import build_dismissed_handoff_notice, retire_handoff_notice
 from state import (
     apply_initial_button_intent,
+    cancel_pending_ticket_task,
     channels_awaiting_initial_button_press,
     hydrate_ticket_state,
     mark_ticket_channel_stopped,
-    pending_tasks,
     persist_ticket_state,
     stop_ticket_channel,
     team_handoff_notice_by_channel,
@@ -37,9 +37,7 @@ def is_ticket_support_staff(user: discord.abc.User) -> bool:
 async def stop_ticket_for_manual_support(channel_id: int) -> bool:
     handoff_notice = team_handoff_notice_by_channel.get(channel_id)
     stopped_durably = stop_ticket_channel(channel_id)
-    task = pending_tasks.pop(channel_id, None)
-    if task is not None:
-        task.cancel()
+    await cancel_pending_ticket_task(channel_id)
 
     if not stopped_durably:
         if handoff_notice is not None:

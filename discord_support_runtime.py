@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from typing import Any, List, Literal
@@ -71,8 +73,11 @@ class _DiscordProgressReporter:
 
     async def close(self) -> None:
         if self._flush_task is not None:
-            self._flush_task.cancel()
+            flush_task = self._flush_task
             self._flush_task = None
+            flush_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await flush_task
         if self._message is None:
             return
         try:
@@ -441,14 +446,14 @@ def _remember_sent_handoff_notice(
     )
 
 
-async def _notify_and_record_ticket_handoff(
+async def _send_ticket_handoff_notice(
     *,
     reason: str,
     summary: str,
     channel_id: int,
     guild_id: int | None,
     investigation_job: TicketInvestigationJob,
-) -> bool:
+) -> TelegramSentMessage | None:
     recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
     known_facts = _handoff_known_facts(investigation_job)
     notice = await _notify_handoff(
@@ -460,16 +465,7 @@ async def _notify_and_record_ticket_handoff(
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
     )
-    if notice is None:
-        investigation_job.mark_waiting_for_user()
-        return False
-    investigation_job.mark_escalated_to_human()
-    _remember_sent_handoff_notice(
-        channel_id=channel_id,
-        reason=reason,
-        notice=notice,
-    )
-    return True
+    return notice
 
 
 def _handoff_delivery_failure_reply(
@@ -502,8 +498,7 @@ async def _run_internal_instruction_turn(
     workflow_suffix: str,
     attachments: list[dict[str, Any]],
     current_history_override: List[TResponseInputItem] | None = None,
-    persist_result: bool = True,
-) -> str:
+) -> InternalInstructionTurnResult:
     investigation_job = deepcopy(get_or_create_ticket_investigation_job(channel_id))
     current_history = (
         list(current_history_override)
@@ -545,14 +540,18 @@ async def _run_internal_instruction_turn(
                 send_progress_update=progress_reporter.update,
             ),
         )
-        if persist_result:
-            conversation_threads[channel_id] = (
-                worker_result.flow_outcome.conversation_history
-            )
-            persist_ticket_state(channel_id)
-        return _render_support_reply(worker_result.flow_outcome.raw_final_reply)
+        return InternalInstructionTurnResult(
+            reply=_render_support_reply(worker_result.flow_outcome.raw_final_reply),
+            conversation_history=worker_result.flow_outcome.conversation_history,
+        )
     finally:
         await progress_reporter.close()
+
+
+@dataclass(frozen=True)
+class InternalInstructionTurnResult:
+    reply: str
+    conversation_history: List[TResponseInputItem]
 
 
 async def _execute_ticket_turn(

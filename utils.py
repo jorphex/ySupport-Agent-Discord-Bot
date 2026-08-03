@@ -24,7 +24,11 @@ def split_long_message(text: str) -> list[str]:
                 chunks.append(part)
             continue
 
-        if len(current_chunk) + len(line) + 1 > config.MAX_DISCORD_MESSAGE_LENGTH:
+        if (
+            current_chunk
+            and len(current_chunk) + len(line) + 1
+            > config.MAX_DISCORD_MESSAGE_LENGTH
+        ):
             chunks.append(current_chunk)
             current_chunk = line
         else:
@@ -47,39 +51,25 @@ async def send_long_message(
     text: str,
     view: discord.ui.View = None
 ):
-    """Sends a potentially long message, splitting it into chunks if necessary."""
+    """Send every Discord chunk, raising if delivery is incomplete."""
     if len(text) <= config.MAX_DISCORD_MESSAGE_LENGTH:
-        try:
-            if isinstance(target, discord.Message):
-                await target.reply(text, view=view, suppress_embeds=True)
-            else:
-                await target.send(text, view=view, suppress_embeds=True)
-        except discord.HTTPException as e:
-            logging.error(f"Discord API error sending message: {e}")
+        if isinstance(target, discord.Message):
+            await target.reply(text, view=view, suppress_embeds=True)
+        else:
+            await target.send(text, view=view, suppress_embeds=True)
         return
 
     chunks = split_long_message(text)
-
     first_message = True
 
-    try:
-        for chunk in chunks:
-            if first_message:
-                if isinstance(target, discord.Message):
-                    await target.reply(chunk, view=view, suppress_embeds=True)
-                else:
-                    await target.send(chunk, view=view, suppress_embeds=True)
-                first_message = False
+    for chunk in chunks:
+        if first_message:
+            if isinstance(target, discord.Message):
+                await target.reply(chunk, view=view, suppress_embeds=True)
             else:
-                channel = target.channel if isinstance(target, discord.Message) else target
-                await channel.send(chunk, suppress_embeds=True)
-            await asyncio.sleep(0.3)
-    except discord.HTTPException as e:
-        logging.error(f"Discord API error sending message chunk: {e}")
-        try:
+                await target.send(chunk, view=view, suppress_embeds=True)
+            first_message = False
+        else:
             channel = target.channel if isinstance(target, discord.Message) else target
-            await channel.send(f"Error: Could not send full message due to Discord API issue ({e.status}).", suppress_embeds=True)
-        except Exception:
-            pass
-    except Exception as e:
-        logging.error(f"Unexpected error in send_long_message: {e}", exc_info=True)
+            await channel.send(chunk, suppress_embeds=True)
+        await asyncio.sleep(0.3)

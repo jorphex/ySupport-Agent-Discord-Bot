@@ -159,8 +159,6 @@ active_ticket_payloads: Dict[
     int,
     tuple[asyncio.Task, str, List[Dict[str, Any]]],
 ] = {}
-monitored_new_channels: set[int] = set()
-
 channels_awaiting_initial_button_press: set[int] = set()
 channel_intent_after_button: Dict[int, str] = {}
 bug_report_debounce_channels: set[int] = set()
@@ -168,6 +166,15 @@ bug_report_debounce_channels: set[int] = set()
 public_conversations: Dict[int, PublicConversation] = {}
 
 ticket_investigation_jobs: Dict[int, TicketInvestigationJob] = {}
+
+
+async def cancel_pending_ticket_task(channel_id: int) -> bool:
+    task = pending_tasks.pop(channel_id, None)
+    if task is None:
+        return False
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    return True
 
 # Last known wallet address per channel (checksummed)
 last_wallet_by_channel: Dict[int, str] = {}
@@ -289,7 +296,6 @@ def hydrate_ticket_state(channel_id: int) -> None:
                     if isinstance(attachment, dict)
                 ],
             )
-    monitored_new_channels.add(channel_id)
 
 
 def hydrate_persisted_team_handoff_states() -> int:
@@ -378,7 +384,6 @@ def clear_ticket_channel_state(
     else:
         stopped_channels.discard(channel_id)
         stop_reasons_by_channel.pop(channel_id, None)
-        monitored_new_channels.discard(channel_id)
     if preserved_ticket_owner_user_id is not None:
         ticket_owner_user_id_by_channel[channel_id] = preserved_ticket_owner_user_id
     if delete_persisted:

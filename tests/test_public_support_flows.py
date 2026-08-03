@@ -1,5 +1,6 @@
 import tests as _test_environment  # noqa: F401
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -390,3 +391,132 @@ class TicketFlowTests(TicketFlowTestCase):
             )
         finally:
             public_conversations.pop(original_author_id, None)
+
+    async def test_public_delivery_failure_keeps_last_delivered_context(self) -> None:
+        original_author_id = 301
+        original_message = _FakeOriginalMessage(
+            author_id=original_author_id,
+            content="What changed since your last answer?",
+        )
+        trigger_channel = _FakePublicChannel(302, original_message)
+        trigger_message = _FakeTriggerMessage(
+            trigger_channel,
+            reference_message_id=12345,
+        )
+        previous_history = [
+            {"role": "assistant", "content": "Last delivered answer."}
+        ]
+        public_conversations[original_author_id] = PublicConversation(
+            history=previous_history,
+            last_interaction_time=datetime.now(timezone.utc),
+        )
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.investigation_executor = _FakeInvestigationExecutor(
+            result=SimpleNamespace(
+                flow_outcome=TicketAgentFlowOutcome(
+                    raw_final_reply="This answer was not delivered.",
+                    conversation_history=previous_history
+                    + [
+                        {"role": "user", "content": original_message.content},
+                        {
+                            "role": "assistant",
+                            "content": "This answer was not delivered.",
+                        },
+                    ],
+                    completed_agent_key=None,
+                    requires_human_handoff=False,
+                ),
+                updated_job=TicketInvestigationJob(channel_id=302),
+            )
+        )
+
+        try:
+            with (
+                patch(
+                    "ysupport.send_long_message",
+                    side_effect=RuntimeError("Discord send failed"),
+                ),
+                patch("ysupport.reset_public_codex_session") as reset_session,
+            ):
+                await bot._handle_public_trigger_message(trigger_message, "y")
+
+            self.assertEqual(
+                public_conversations[original_author_id].history,
+                previous_history,
+            )
+            reset_session.assert_called_once_with(original_author_id)
+            self.assertEqual(len(original_message.replies), 1)
+            self.assertIn(
+                "couldn't deliver my complete response",
+                original_message.replies[0][0],
+            )
+        finally:
+            clear_public_conversation(original_author_id)
+
+    async def test_public_turns_for_one_user_serialize_conversation_state(self) -> None:
+        author_id = 401
+        first_message = _FakeOriginalMessage(author_id, "First question")
+        second_message = _FakeOriginalMessage(author_id, "Second question")
+        first_trigger = _FakeTriggerMessage(
+            _FakePublicChannel(402, first_message),
+            reference_message_id=1,
+        )
+        second_trigger = _FakeTriggerMessage(
+            _FakePublicChannel(403, second_message),
+            reference_message_id=2,
+        )
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        requests = []
+
+        class _SerialExecutor:
+            async def execute_turn(self, request, hooks=None):
+                del hooks
+                requests.append(request)
+                if len(requests) == 1:
+                    first_started.set()
+                    await release_first.wait()
+                answer = f"Answer {len(requests)}"
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply=answer,
+                        conversation_history=request.current_history
+                        + [
+                            {"role": "user", "content": request.aggregated_text},
+                            {"role": "assistant", "content": answer},
+                        ],
+                        completed_agent_key=None,
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.investigation_executor = _SerialExecutor()
+        first_task = asyncio.create_task(
+            bot._handle_public_trigger_message(first_trigger, "y")
+        )
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second_task = asyncio.create_task(
+            bot._handle_public_trigger_message(second_trigger, "y")
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(len(requests), 1)
+        release_first.set()
+
+        try:
+            await asyncio.gather(first_task, second_task)
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(
+                requests[1].current_history,
+                [
+                    {"role": "user", "content": "First question"},
+                    {"role": "assistant", "content": "Answer 1"},
+                ],
+            )
+        finally:
+            release_first.set()
+            for task in (first_task, second_task):
+                if not task.done():
+                    task.cancel()
+            clear_public_conversation(author_id)

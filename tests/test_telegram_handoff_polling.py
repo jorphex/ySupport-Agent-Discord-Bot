@@ -61,7 +61,7 @@ class TicketFlowTests(TicketFlowTestCase):
             await loop_started.wait()
             self.assertTrue(controller.start())
             self.assertIs(controller.task, task)
-            controller.close()
+            await controller.close()
 
         self.assertIsNone(controller.task)
         assert task is not None

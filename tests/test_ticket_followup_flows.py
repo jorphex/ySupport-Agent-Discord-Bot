@@ -24,6 +24,7 @@ from state import (
     pending_attachments_by_channel,
     pending_messages,
     pending_tasks,
+    stopped_channels,
     team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
 )
@@ -658,9 +659,9 @@ class TicketFlowTests(TicketFlowTestCase):
                 )
                 final_replacement = pending_tasks[channel_id]
 
-                self.assertIsNot(first_replacement, final_replacement)
+                self.assertIs(first_replacement, final_replacement)
                 await asyncio.sleep(0)
-                self.assertTrue(first_replacement.done())
+                self.assertFalse(first_replacement.done())
                 self.assertEqual(
                     pending_messages[channel_id],
                     "Initial vault issue.\nIt is on Base.\nThe tx hash is 0xabc.",
@@ -695,4 +696,223 @@ class TicketFlowTests(TicketFlowTestCase):
                 task.cancel()
             if not active_task.done():
                 active_task.cancel()
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_failed_reply_delivery_does_not_commit_unseen_turn(self) -> None:
+        channel_id = 497
+        channel = _FakeDiscordChannel(channel_id)
+        previous_history = [
+            {"role": "assistant", "content": "Previously delivered answer."}
+        ]
+        conversation_threads[channel_id] = previous_history
+        live_job = get_or_create_ticket_investigation_job(channel_id)
+        live_job.mark_waiting_for_user()
+        updated_job = TicketInvestigationJob(channel_id=channel_id)
+        updated_job.begin_collecting()
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: channel
+        bot.investigation_executor = _FakeInvestigationExecutor(
+            result=SimpleNamespace(
+                flow_outcome=TicketAgentFlowOutcome(
+                    raw_final_reply="Unseen answer.",
+                    conversation_history=previous_history
+                    + [
+                        {"role": "user", "content": "new question"},
+                        {"role": "assistant", "content": "Unseen answer."},
+                    ],
+                    completed_agent_key=None,
+                    requires_human_handoff=False,
+                ),
+                updated_job=updated_job,
+            )
+        )
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+        )
+        pending_messages[channel_id] = "new question"
+
+        try:
+            with (
+                patch.object(config, "COOLDOWN_SECONDS", 0),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch(
+                    "ysupport.send_long_message",
+                    side_effect=RuntimeError("Discord send failed"),
+                ),
+                patch("ysupport.reset_ticket_codex_session") as reset_session,
+            ):
+                await bot.process_ticket_message(
+                    channel_id,
+                    run_context,
+                )
+
+            self.assertEqual(conversation_threads[channel_id], previous_history)
+            self.assertEqual(live_job.mode, "waiting_for_user")
+            self.assertIn(channel_id, stopped_channels)
+            reset_session.assert_called_once_with(channel_id)
+            self.assertEqual(
+                channel.sent_messages,
+                [
+                    "I couldn't deliver my complete response. Please send a new "
+                    "message to retry."
+                ],
+            )
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_followup_during_delivery_waits_without_replaying_prior_turn(
+        self,
+    ) -> None:
+        channel_id = 498
+        channel = _FakeDiscordChannel(channel_id)
+        channel.category = SimpleNamespace(id=1)
+        owner = SimpleNamespace(id=777, bot=False, name="owner")
+        delivery_started = asyncio.Event()
+        release_delivery = asyncio.Event()
+        requests: list[TicketTurnRequest] = []
+
+        class _Executor:
+            async def execute_turn(self, request, hooks=None):
+                del hooks
+                requests.append(request)
+                answer = f"Answer {len(requests)}"
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply=answer,
+                        conversation_history=request.current_history
+                        + [
+                            {"role": "user", "content": request.aggregated_text},
+                            {"role": "assistant", "content": answer},
+                        ],
+                        completed_agent_key=None,
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        async def fake_send_long_message(target, text, **kwargs):
+            if text == "Answer 1":
+                delivery_started.set()
+                await release_delivery.wait()
+            await target.send(text, **kwargs)
+
+        def ticket_message(message_id: int, content: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                author=owner,
+                content=content,
+                channel=channel,
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                attachments=[],
+            )
+
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: channel
+        bot.investigation_executor = _Executor()
+        ticket_owner_user_id_by_channel[channel_id] = owner.id
+
+        try:
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch.object(config, "COOLDOWN_SECONDS", 0),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch("ysupport.send_long_message", new=fake_send_long_message),
+            ):
+                await bot.on_message(ticket_message(5001, "First question"))
+                first_task = pending_tasks[channel_id]
+                await asyncio.wait_for(delivery_started.wait(), timeout=1)
+                await bot.on_message(ticket_message(5002, "Second question"))
+
+                self.assertIs(pending_tasks[channel_id], first_task)
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(pending_messages[channel_id], "Second question")
+                release_delivery.set()
+                await asyncio.wait_for(first_task, timeout=1)
+                while channel_id in pending_tasks:
+                    await asyncio.sleep(0)
+
+            self.assertEqual(
+                [request.aggregated_text for request in requests],
+                ["First question", "Second question"],
+            )
+            self.assertEqual(channel.sent_messages, ["Answer 1", "Answer 2"])
+        finally:
+            release_delivery.set()
+            task = pending_tasks.pop(channel_id, None)
+            if task is not None and not task.done():
+                task.cancel()
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
+    async def test_handoff_stays_durable_when_discord_confirmation_fails(
+        self,
+    ) -> None:
+        channel_id = 499
+        channel = _FakeDiscordChannel(channel_id)
+        updated_job = TicketInvestigationJob(channel_id=channel_id)
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: channel
+        bot.investigation_executor = _FakeInvestigationExecutor(
+            result=SimpleNamespace(
+                flow_outcome=TicketAgentFlowOutcome(
+                    raw_final_reply="The team needs to review this.",
+                    conversation_history=[
+                        {"role": "user", "content": "manual review needed"},
+                        {
+                            "role": "assistant",
+                            "content": "The team needs to review this.",
+                        },
+                    ],
+                    completed_agent_key=None,
+                    requires_human_handoff=True,
+                    handoff_reason="manual action required",
+                ),
+                updated_job=updated_job,
+            )
+        )
+        run_context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+        )
+        pending_messages[channel_id] = "manual review needed"
+
+        try:
+            with (
+                patch.object(config, "COOLDOWN_SECONDS", 0),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch(
+                    "ysupport.send_long_message",
+                    side_effect=RuntimeError("Discord send failed"),
+                ),
+                patch(
+                    "discord_support_runtime.send_handoff_notice",
+                    return_value=TelegramSentMessage(
+                        chat_id="123",
+                        message_id=456,
+                        message_text="notice",
+                    ),
+                ),
+                patch("ysupport.reset_ticket_codex_session") as reset_session,
+            ):
+                await bot.process_ticket_message(
+                    channel_id,
+                    run_context,
+                )
+
+            self.assertTrue(is_ticket_waiting_for_team(channel_id))
+            self.assertIn(channel_id, team_handoff_notice_by_channel)
+            self.assertEqual(
+                conversation_threads[channel_id][-1]["content"],
+                "The team needs to review this.",
+            )
+            reset_session.assert_not_called()
+            self.assertEqual(
+                channel.sent_messages,
+                [
+                    "Your request reached the support team, but I couldn't deliver my "
+                    "complete response here. You can add more details while you wait."
+                ],
+            )
+        finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)

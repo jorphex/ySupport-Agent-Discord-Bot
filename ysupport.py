@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import importlib
 import logging
 import time
@@ -34,17 +35,18 @@ from discord_support_runtime import (
     _merge_pending_ticket_payload,
     _message_text_for_turn,
     _normalize_staff_summon_prompt,
-    _notify_and_record_ticket_handoff,
     _notify_handoff,
     _outer_support_boundary_result,
     _public_workflow_name,
     _record_button_requested_intent,
     _record_waiting_for_team_followup,
+    _remember_sent_handoff_notice,
     _render_support_reply,
     _restore_active_ticket_payload,
     _run_internal_instruction_turn,
     _should_ack_waiting_for_team,
     _should_stop_for_boundary_output,
+    _send_ticket_handoff_notice,
     _ticket_debounce_seconds,
     _ticket_workflow_name,
     _waiting_for_team_reply,
@@ -69,7 +71,6 @@ from state import (
     is_ticket_waiting_for_team,
     last_bot_reply_ts_by_channel,
     mark_ticket_channel_stopped,
-    monitored_new_channels,
     pending_messages,
     pending_attachments_by_channel,
     pending_tasks,
@@ -78,7 +79,10 @@ from state import (
     prune_expired_public_conversations,
     public_conversations,
     remember_ticket_owner_user_id,
+    remember_team_handoff_followup_attachments,
     reset_ticket_channel_for_terminal_reply,
+    reset_public_codex_session,
+    reset_ticket_codex_session,
     stop_ticket_channel,
     stopped_channels,
     ticket_owner_user_id_by_channel,
@@ -87,7 +91,6 @@ from ticket_intake import prepare_ticket_turn_input
 from ticket_channel_lifecycle import (
     clear_deleted_ticket_channel,
     initialize_ticket_channel,
-    process_synthetic_button_input as process_synthetic_ticket_button,
 )
 from telegram_handoff_controller import TelegramHandoffController
 from ticket_investigation.json_endpoint import (
@@ -124,6 +127,7 @@ class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
         self._state_cleanup_task: asyncio.Task[None] | None = None
+        self._public_turn_locks: dict[int, asyncio.Lock] = {}
         local_executor = None
         if "local" in {
             config.TICKET_EXECUTION_ENDPOINT,
@@ -175,10 +179,19 @@ class TicketBot(discord.Client):
         logging.info("Telegram handoff reply loop initialized: %s", telegram_started)
 
     async def close(self) -> None:
-        self.telegram_handoffs.close()
+        await self.telegram_handoffs.close()
+        ticket_tasks = set(pending_tasks.values())
+        pending_tasks.clear()
+        for task in ticket_tasks:
+            task.cancel()
+        if ticket_tasks:
+            await asyncio.gather(*ticket_tasks, return_exceptions=True)
         if self._state_cleanup_task is not None:
-            self._state_cleanup_task.cancel()
+            cleanup_task = self._state_cleanup_task
             self._state_cleanup_task = None
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
         await super().close()
 
     async def _state_cleanup_loop(self) -> None:
@@ -210,18 +223,6 @@ class TicketBot(discord.Client):
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         await initialize_ticket_channel(channel)
 
-    async def process_synthetic_button_input(self, channel: discord.TextChannel, synthetic_text: str, intent_category: str):
-        """
-        Processes a synthetic input generated from an initial button press.
-        This will queue up a task similar to process_ticket_message but with predefined input.
-        """
-        await process_synthetic_ticket_button(
-            self,
-            channel,
-            synthetic_text,
-            intent_category,
-        )
-
     async def _handle_public_trigger_message(
         self,
         message: discord.Message,
@@ -229,6 +230,9 @@ class TicketBot(discord.Client):
     ) -> bool:
         original_message: discord.Message | None = None
         original_author_id: int | None = None
+        public_lock: asyncio.Lock | None = None
+        public_lock_acquired = False
+        preserve_public_state_on_error = False
         logging.info(
             "Stateful public trigger '%s' detected by %s in channel %s",
             trigger_char_used,
@@ -250,6 +254,12 @@ class TicketBot(discord.Client):
                 return True
 
             original_author_id = original_message.author.id
+            public_lock = self._public_turn_locks.setdefault(
+                original_author_id,
+                asyncio.Lock(),
+            )
+            await public_lock.acquire()
+            public_lock_acquired = True
             current_history: List[TResponseInputItem] = []
             public_investigation_job = None
             hydrate_public_conversation(original_author_id)
@@ -287,13 +297,13 @@ class TicketBot(discord.Client):
             boundary_output = await _outer_support_boundary_result(original_message_text)
             boundary_reply = _boundary_reply_from_output(boundary_output)
             if boundary_reply is not None:
-                public_conversations.pop(original_author_id, None)
-                clear_public_conversation(original_author_id)
+                preserve_public_state_on_error = True
                 await original_message.reply(
                     boundary_reply,
                     mention_author=False,
                     suppress_embeds=True,
                 )
+                clear_public_conversation(original_author_id)
                 return True
 
             async with message.channel.typing():
@@ -301,6 +311,7 @@ class TicketBot(discord.Client):
                     message.channel,
                     message.channel.id,
                 )
+                next_conversation: PublicConversation | None = None
                 try:
                     worker_result = await self.investigation_executor.execute_turn(
                         _build_turn_request(
@@ -321,16 +332,10 @@ class TicketBot(discord.Client):
                     )
                     flow_outcome = worker_result.flow_outcome
                     new_history = flow_outcome.conversation_history
-                    public_conversations[original_author_id] = PublicConversation(
+                    next_conversation = PublicConversation(
                         history=new_history,
                         last_interaction_time=datetime.now(timezone.utc),
                         investigation_job=worker_result.updated_job,
-                    )
-                    persist_public_conversation(original_author_id)
-                    logging.info(
-                        "Saved updated public conversation context for user %s. History length: %s items.",
-                        original_author_id,
-                        len(new_history),
                     )
 
                     raw_reply = (
@@ -355,17 +360,29 @@ class TicketBot(discord.Client):
                                 raw_reply,
                                 location="here",
                             )
-                            public_conversations.pop(original_author_id, None)
-                            clear_public_conversation(original_author_id)
+                            handoff_sent = True
                         else:
+                            handoff_sent = False
                             final_reply = _handoff_delivery_failure_reply(
                                 raw_reply,
                                 location="here",
                             )
                     else:
+                        handoff_sent = False
                         final_reply = _render_support_reply(raw_reply)
                     await progress_reporter.close()
                     await send_long_message(message.channel, final_reply)
+                    if handoff_sent:
+                        clear_public_conversation(original_author_id)
+                    else:
+                        public_conversations[original_author_id] = next_conversation
+                        persist_public_conversation(original_author_id)
+                        logging.info(
+                            "Saved updated public conversation context for user %s. "
+                            "History length: %s items.",
+                            original_author_id,
+                            len(new_history),
+                        )
                 except InputGuardrailTripwireTriggered as e:
                     await progress_reporter.close()
                     logging.warning(
@@ -411,13 +428,29 @@ class TicketBot(discord.Client):
                         e,
                         exc_info=True,
                     )
-                    public_conversations.pop(original_author_id, None)
-                    clear_public_conversation(original_author_id)
-                    await original_message.reply(
-                        "Sorry, an error occurred while processing that request. Please try again.",
-                        mention_author=False,
-                        suppress_embeds=True,
-                    )
+                    if next_conversation is None:
+                        clear_public_conversation(original_author_id)
+                        error_reply = (
+                            "Sorry, an error occurred while processing that request. "
+                            "Please try again."
+                        )
+                    else:
+                        reset_public_codex_session(original_author_id)
+                        error_reply = (
+                            "I couldn't deliver my complete response. Please try again."
+                        )
+                    try:
+                        await original_message.reply(
+                            error_reply,
+                            mention_author=False,
+                            suppress_embeds=True,
+                        )
+                    except Exception:
+                        logging.warning(
+                            "Failed to send public trigger error reply for message %s.",
+                            message.id,
+                            exc_info=True,
+                        )
             return True
         except discord.NotFound:
             logging.warning(f"Original message for public trigger reply {message.id} not found.")
@@ -427,13 +460,20 @@ class TicketBot(discord.Client):
             return True
         except Exception as e:
             logging.error(f"Error handling public trigger for message {message.id}: {e}", exc_info=True)
-            if original_author_id is not None:
+            if original_author_id is not None and not preserve_public_state_on_error:
                 public_conversations.pop(original_author_id, None)
                 clear_public_conversation(original_author_id)
             if original_message is not None:
                 try:
                     await original_message.reply(
-                        "Sorry, an error occurred while preparing that request. Please try again.",
+                        (
+                            "I couldn't deliver my complete response. Please try again."
+                            if preserve_public_state_on_error
+                            else (
+                                "Sorry, an error occurred while preparing that request. "
+                                "Please try again."
+                            )
+                        ),
                         mention_author=False,
                         suppress_embeds=True,
                     )
@@ -444,18 +484,15 @@ class TicketBot(discord.Client):
                         exc_info=True,
                     )
             return True
+        finally:
+            if public_lock is not None and public_lock_acquired:
+                public_lock.release()
 
     async def _collect_aggregated_ticket_payload(
         self,
         channel_id: int,
         run_context: BotRunContext,
-        *,
-        is_button_trigger: bool,
-        synthetic_user_message_for_log: str,
     ) -> tuple[str | None, list[dict[str, Any]]]:
-        if is_button_trigger:
-            return synthetic_user_message_for_log.strip(), []
-
         debounce_seconds = _ticket_debounce_seconds(channel_id, run_context)
         try:
             await asyncio.sleep(debounce_seconds)
@@ -472,6 +509,46 @@ class TicketBot(discord.Client):
                 attachments,
             )
         return aggregated_text, attachments
+
+    def _finish_ticket_task(
+        self,
+        *,
+        channel_id: int,
+        current_task: asyncio.Task | None,
+        run_context: BotRunContext,
+    ) -> None:
+        if pending_tasks.get(channel_id) is not current_task:
+            return
+        pending_tasks.pop(channel_id, None)
+        queued_text = pending_messages.get(channel_id)
+        if not queued_text:
+            return
+        if channel_id in stopped_channels:
+            _discard_pending_ticket_payload(channel_id)
+            return
+        if is_ticket_waiting_for_team(channel_id):
+            pending_messages.pop(channel_id, None)
+            queued_attachments = pending_attachments_by_channel.pop(channel_id, [])
+            conversation_threads.setdefault(channel_id, []).append(
+                {"role": "user", "content": queued_text}
+            )
+            if queued_attachments:
+                remember_team_handoff_followup_attachments(
+                    channel_id,
+                    queued_attachments,
+                )
+            else:
+                persist_ticket_state(channel_id)
+            return
+        followup_context = _build_ticket_run_context(
+            channel_id=channel_id,
+            category_id=run_context.category_id,
+            initial_button_intent=None,
+            conversation_owner_id=run_context.conversation_owner_id,
+        )
+        pending_tasks[channel_id] = asyncio.create_task(
+            self.process_ticket_message(channel_id, followup_context)
+        )
 
     async def _handle_ticket_staff_summon(
         self,
@@ -505,6 +582,7 @@ class TicketBot(discord.Client):
             )
 
         current_task = asyncio.current_task()
+        turn_result = None
         try:
             current_history = await _build_staff_summon_history(
                 message.channel,
@@ -513,7 +591,7 @@ class TicketBot(discord.Client):
                 bot_user_id=self.user.id if self.user is not None else None,
             )
             async with message.channel.typing():
-                final_reply = await _run_internal_instruction_turn(
+                turn_result = await _run_internal_instruction_turn(
                     executor=self.investigation_executor,
                     channel=message.channel,
                     channel_id=channel_id,
@@ -523,15 +601,15 @@ class TicketBot(discord.Client):
                     workflow_suffix="staff summon",
                     attachments=_attachment_payloads_from_message(message),
                     current_history_override=current_history,
-                    persist_result=not was_stopped,
                 )
             await send_long_message(
                 message.channel,
-                final_reply,
+                turn_result.reply,
                 view=StopBotView() if not was_stopped else None,
             )
             last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
             if not was_stopped:
+                conversation_threads[channel_id] = turn_result.conversation_history
                 persist_ticket_state(channel_id)
         except asyncio.CancelledError:
             logging.info(
@@ -540,6 +618,8 @@ class TicketBot(discord.Client):
             )
             raise
         except Exception as exc:
+            if turn_result is not None:
+                reset_ticket_codex_session(channel_id)
             logging.error(
                 "Staff-directed ySupport turn failed in ticket %s: %s",
                 channel_id,
@@ -549,11 +629,19 @@ class TicketBot(discord.Client):
             failure_reply = "I couldn't complete that ySupport request."
             if was_stopped:
                 failure_reply += " The ticket remains under manual staff control."
-            await send_long_message(
-                message.channel,
-                failure_reply,
-                view=StopBotView() if not was_stopped else None,
-            )
+            try:
+                await send_long_message(
+                    message.channel,
+                    failure_reply,
+                    view=StopBotView() if not was_stopped else None,
+                )
+            except Exception:
+                logging.warning(
+                    "Could not send staff-directed ySupport failure reply in "
+                    "ticket %s.",
+                    channel_id,
+                    exc_info=True,
+                )
         finally:
             if was_stopped and not stop_ticket_channel(channel_id):
                 logging.error(
@@ -561,8 +649,11 @@ class TicketBot(discord.Client):
                     "in ticket %s.",
                     channel_id,
                 )
-            if pending_tasks.get(channel_id) is current_task:
-                pending_tasks.pop(channel_id, None)
+            self._finish_ticket_task(
+                channel_id=channel_id,
+                current_task=current_task,
+                run_context=run_context,
+            )
 
     async def _build_ticket_turn_input(
         self,
@@ -632,7 +723,6 @@ class TicketBot(discord.Client):
         if message.channel.category.id not in config.CATEGORY_CONTEXT_MAP:
             return
         hydrate_ticket_state(channel_id)
-        monitored_new_channels.add(channel_id)
         ticket_owner_user_id = ticket_owner_user_id_by_channel.get(channel_id)
         if ticket_owner_user_id is None and isinstance(message.channel, discord.TextChannel):
             ticket_owner_user_id = await _detect_ticket_owner_user_id(message.channel)
@@ -769,20 +859,31 @@ class TicketBot(discord.Client):
             return
         logging.info(f"Processing ticket message in {channel_id} from {message.author.name} (Context: {ticket_run_context.project_context}, Intent: {current_intent_from_map})")
 
+        normalized_message_text = _message_text_for_turn(message)
+        message_attachments = _attachment_payloads_from_message(message)
         existing_task = pending_tasks.get(channel_id)
         interrupted_active_executor = False
         if existing_task and not existing_task.done():
+            if (
+                channel_id not in active_ticket_payloads
+                and active_ticket_executor_tasks.get(channel_id) is not existing_task
+            ):
+                _merge_pending_ticket_payload(
+                    channel_id,
+                    normalized_message_text,
+                    message_attachments,
+                )
+                return
             interrupted_active_executor = (
                 active_ticket_executor_tasks.get(channel_id) is existing_task
             )
             _restore_active_ticket_payload(channel_id)
             existing_task.cancel()
 
-        normalized_message_text = _message_text_for_turn(message)
         _merge_pending_ticket_payload(
             channel_id,
             normalized_message_text,
-            _attachment_payloads_from_message(message),
+            message_attachments,
         )
 
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
@@ -802,15 +903,17 @@ class TicketBot(discord.Client):
         debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
         logging.debug(f"Scheduled processing task for channel {channel_id} in {debounce_seconds}s")
 
-    async def process_ticket_message(self, channel_id: int, run_context: BotRunContext, is_button_trigger: bool = False, synthetic_user_message_for_log: str = ""):
+    async def process_ticket_message(
+        self,
+        channel_id: int,
+        run_context: BotRunContext,
+    ) -> None:
         current_task = asyncio.current_task()
         try:
             investigation_job = get_or_create_ticket_investigation_job(channel_id)
             aggregated_text, attachments = await self._collect_aggregated_ticket_payload(
                 channel_id,
                 run_context,
-                is_button_trigger=is_button_trigger,
-                synthetic_user_message_for_log=synthetic_user_message_for_log,
             )
             if not aggregated_text:
                 return
@@ -836,6 +939,9 @@ class TicketBot(discord.Client):
                 final_reply = "An unexpected error occurred."
                 should_stop_processing = False
                 stop_reason = None
+                proposed_job: TicketInvestigationJob | None = None
+                proposed_history: List[TResponseInputItem] | None = None
+                handoff_state_committed = False
 
                 boundary_output = await _outer_support_boundary_result(aggregated_text)
                 boundary_reply = _boundary_reply_from_output(boundary_output)
@@ -846,7 +952,6 @@ class TicketBot(discord.Client):
                     )
                     if should_stop_processing:
                         stop_reason = "boundary_stop"
-                        reset_ticket_channel_for_terminal_reply(channel_id)
                 else:
                     try:
                         worker_result = await _execute_ticket_turn(
@@ -866,9 +971,12 @@ class TicketBot(discord.Client):
                                 send_progress_update=progress_reporter.update,
                             ),
                         )
-                        investigation_job.apply_snapshot(worker_result.updated_job)
+                        active_payload = active_ticket_payloads.get(channel_id)
+                        if active_payload is not None and active_payload[0] is current_task:
+                            active_ticket_payloads.pop(channel_id, None)
                         flow_outcome = worker_result.flow_outcome
-                        conversation_threads[channel_id] = flow_outcome.conversation_history
+                        proposed_job = worker_result.updated_job
+                        proposed_history = flow_outcome.conversation_history
 
                         raw_final_reply = flow_outcome.raw_final_reply
                         if flow_outcome.requires_human_handoff:
@@ -876,13 +984,26 @@ class TicketBot(discord.Client):
                                 flow_outcome.handoff_reason
                                 or "manual follow-up needed"
                             )
-                            handoff_sent = await _notify_and_record_ticket_handoff(
+                            notice = await _send_ticket_handoff_notice(
                                 reason=handoff_reason,
                                 summary=aggregated_text,
                                 channel_id=channel_id,
                                 guild_id=guild_id,
-                                investigation_job=investigation_job,
+                                investigation_job=proposed_job,
                             )
+                            handoff_sent = notice is not None
+                            if handoff_sent:
+                                proposed_job.mark_escalated_to_human()
+                                investigation_job.apply_snapshot(proposed_job)
+                                conversation_threads[channel_id] = proposed_history
+                                _remember_sent_handoff_notice(
+                                    channel_id=channel_id,
+                                    reason=handoff_reason,
+                                    notice=notice,
+                                )
+                                handoff_state_committed = True
+                            else:
+                                proposed_job.mark_waiting_for_user()
                             final_reply = (
                                 build_user_handoff_reply(raw_final_reply)
                                 if handoff_sent
@@ -896,7 +1017,6 @@ class TicketBot(discord.Client):
                                 "Leaving channel active for follow-up.",
                                 channel_id,
                             )
-                        persist_ticket_state(channel_id)
                     except InputGuardrailTripwireTriggered as e:
                         logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
                         final_reply = _guardrail_tripwire_reply(e)
@@ -910,7 +1030,6 @@ class TicketBot(discord.Client):
                         )
                         if should_stop_processing:
                             stop_reason = "boundary_stop"
-                            reset_ticket_channel_for_terminal_reply(channel_id)
                     except MaxTurnsExceeded:
                         logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
                         if run_context.repo_search_calls:
@@ -938,9 +1057,19 @@ class TicketBot(discord.Client):
                     finally:
                         await progress_reporter.close()
 
+                active_payload = active_ticket_payloads.get(channel_id)
+                if active_payload is not None and active_payload[0] is current_task:
+                    active_ticket_payloads.pop(channel_id, None)
+
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
                     await send_long_message(channel, final_reply, view=reply_view)
+                    if proposed_job is not None and not handoff_state_committed:
+                        investigation_job.apply_snapshot(proposed_job)
+                        if proposed_history is not None:
+                            conversation_threads[channel_id] = proposed_history
+                    if stop_reason == "boundary_stop":
+                        reset_ticket_channel_for_terminal_reply(channel_id)
                     if channel_id in bug_report_debounce_channels:
                         bug_report_debounce_channels.discard(channel_id)
                         logging.info("Cleared bug-report debounce flag for channel %s", channel_id)
@@ -956,12 +1085,40 @@ class TicketBot(discord.Client):
                         persist_ticket_state(channel_id)
                 except discord.Forbidden:
                     logging.error(f"Missing permissions to send message in channel {channel_id}")
-                    mark_ticket_channel_stopped(
-                        channel_id,
-                        reason="runtime_error",
-                    )
+                    if not handoff_state_committed:
+                        reset_ticket_codex_session(channel_id)
+                        mark_ticket_channel_stopped(
+                            channel_id,
+                            reason="runtime_error",
+                        )
                 except Exception as e:
                     logging.error(f"Unexpected error occurred during or after calling send_long_message for channel {channel_id}: {e}", exc_info=True)
+                    if not handoff_state_committed:
+                        reset_ticket_codex_session(channel_id)
+                        mark_ticket_channel_stopped(
+                            channel_id,
+                            reason="runtime_error",
+                        )
+                    try:
+                        await channel.send(
+                            (
+                                "Your request reached the support team, but I couldn't "
+                                "deliver my complete response here. You can add more "
+                                "details while you wait."
+                                if handoff_state_committed
+                                else (
+                                    "I couldn't deliver my complete response. Please send "
+                                    "a new message to retry."
+                                )
+                            ),
+                            suppress_embeds=True,
+                        )
+                    except Exception:
+                        logging.warning(
+                            "Could not send delivery-failure notice in ticket %s.",
+                            channel_id,
+                            exc_info=True,
+                        )
         except asyncio.CancelledError:
             logging.info(f"Processing task for channel {channel_id} cancelled mid-run.")
             return
@@ -969,8 +1126,11 @@ class TicketBot(discord.Client):
             active_payload = active_ticket_payloads.get(channel_id)
             if active_payload is not None and active_payload[0] is current_task:
                 active_ticket_payloads.pop(channel_id, None)
-            if pending_tasks.get(channel_id) is current_task:
-                pending_tasks.pop(channel_id, None)
+            self._finish_ticket_task(
+                channel_id=channel_id,
+                current_task=current_task,
+                run_context=run_context,
+            )
 
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         await clear_deleted_ticket_channel(channel)
