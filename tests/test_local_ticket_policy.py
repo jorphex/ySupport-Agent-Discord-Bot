@@ -6,7 +6,11 @@ from unittest.mock import patch
 
 from agents import Runner
 
-from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE, SECURITY_VENDOR_BOUNDARY_MESSAGE
+from bot_behavior import (
+    OUT_OF_SCOPE_SUPPORT_MESSAGE,
+    SECURITY_PROCESS_URL,
+    SECURITY_VENDOR_BOUNDARY_MESSAGE,
+)
 import config
 from state import (
     BotRunContext,
@@ -28,9 +32,19 @@ from ticket_investigation.runtime import (
     _reply_requests_human_handoff,
     TicketTurnRequest,
 )
+from router import is_wallet_confirmation
 from discord_support_runtime import (
     _outer_support_boundary_reply,
 )
+
+
+class WalletConfirmationPolicyTests(unittest.TestCase):
+    def test_confirmation_requires_an_explicit_complete_reply(self) -> None:
+        self.assertTrue(is_wallet_confirmation("Yes, that's correct."))
+        self.assertTrue(is_wallet_confirmation("use it"))
+        self.assertFalse(is_wallet_confirmation("Yesterday the vault worked."))
+        self.assertFalse(is_wallet_confirmation("That is the incorrect address."))
+        self.assertFalse(is_wallet_confirmation("I did not confirm that address."))
 
 
 class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
@@ -181,6 +195,28 @@ class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["tripwire_triggered"])
         self.assertEqual(result["classification"], "security_process_boundary")
         self.assertIn("contact-information", result["message"].lower())
+
+    async def test_security_process_boundary_uses_direct_disclosure_guidelines(
+        self,
+    ) -> None:
+        class FakeResult:
+            def final_output_as(self, _output_type):
+                return SupportBoundaryCheckOutput(
+                    classification="security_process_boundary",
+                    business_subtype=None,
+                    reasoning="security disclosure request",
+                )
+
+        async def fake_run(self, *, starting_agent, input, run_config):
+            return FakeResult()
+
+        with patch.object(Runner, "run", new=fake_run):
+            result = await evaluate_support_boundary(
+                "I found a concrete Yearn vulnerability and want to disclose it."
+            )
+
+        self.assertEqual(result["classification"], "security_process_boundary")
+        self.assertIn(SECURITY_PROCESS_URL, result["message"])
 
     async def test_outer_support_boundary_reply_prefers_bug_bounty_boundary(
         self,

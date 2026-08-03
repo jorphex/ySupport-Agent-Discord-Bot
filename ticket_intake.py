@@ -140,10 +140,8 @@ async def prepare_ticket_turn_input(
     if pending_wallet:
         if is_wallet_confirmation(aggregated_text):
             last_wallet_by_channel[channel_id] = pending_wallet
+            investigation_job.remember_wallet(pending_wallet)
             pending_wallet_confirmation_by_channel.pop(channel_id, None)
-            preparation.system_hints.append(
-                f"User confirmed their wallet address is {pending_wallet}. Use this address going forward."
-            )
         elif is_wallet_rejection(aggregated_text):
             pending_wallet_confirmation_by_channel.pop(channel_id, None)
             preparation.system_hints.append(

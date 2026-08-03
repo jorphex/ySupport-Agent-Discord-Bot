@@ -204,7 +204,6 @@ triage_agent = Agent[BotRunContext](
 ticket_triage_router_agent = Agent[BotRunContext](
     name="Ticket Triage Router",
     instructions=_with_runtime_context(TICKET_TRIAGE_ROUTER_INSTRUCTIONS),
-    input_guardrails=[support_boundary_guardrail],
     output_type=TicketTriageDecision,
     model=config.LLM_TRIAGE_AGENT_MODEL,
     model_settings=_gpt5_model_settings(

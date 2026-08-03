@@ -22,6 +22,7 @@ from codex_support_contract import (
     verify_support_turn_result,
 )
 from codex_support_sessions import CodexSupportSessionManager
+from bot_behavior import SECURITY_PROCESS_URL
 from ticket_investigation.codex_support_attachments import (
     image_attachment_paths,
     prepare_support_request_attachments,
@@ -766,7 +767,7 @@ def _codex_support_prompt(
         "Use `support_state.workflow_context` as outer Discord/UI context. Follow its expected first actions before generic clarification.\n"
         "Treat `support_state.workflow_context.non_support_boundaries` as hard outer guardrails.\n"
         "If a boundary or off-scope message reaches you, reply briefly and stay on the boundary.\n"
-        "If the user opens with an ambiguous request to report a bug and has not said whether it is an ordinary product issue or a security vulnerability or bounty disclosure, begin the reply with https://github.com/yearn/yearn-security/blob/master/SECURITY.md and tell them not to post sensitive security details in Discord. Only after that, offer to accept ordinary product-bug details. Do not stop or request human handoff solely because the user used generic bug-report wording.\n"
+        f"If the user opens with an ambiguous request to report a bug and has not said whether it is an ordinary product issue or a security vulnerability or bounty disclosure, begin the reply with {SECURITY_PROCESS_URL} and tell them not to post sensitive security details in Discord. Only after that, offer to accept ordinary product-bug details. Do not stop or request human handoff solely because the user used generic bug-report wording.\n"
         "Use only the tools listed in `constraints.allowed_tools`.\n"
         "If `ysupport_mcp` is listed, prefer it for Yearn-specific docs, repo context, vault context, and support facts.\n"
         "For docs/mechanics/product-explanation questions, synthesize a concise direct answer from the Yearn documentation excerpts and preserve relevant official links and YIP status.\n"

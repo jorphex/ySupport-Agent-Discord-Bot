@@ -52,7 +52,6 @@ from discord_support_runtime import (
 from handoff import (
     build_user_handoff_reply,
 )
-from router import is_bug_report_query
 from state import (
     active_ticket_executor_tasks,
     active_ticket_payloads,
@@ -68,7 +67,6 @@ from state import (
     hydrate_ticket_state,
     hydrate_persisted_team_handoff_states,
     is_ticket_waiting_for_team,
-    last_wallet_by_channel,
     last_bot_reply_ts_by_channel,
     mark_ticket_channel_stopped,
     monitored_new_channels,
@@ -612,14 +610,6 @@ class TicketBot(discord.Client):
         )
         if contextual_hints:
             input_list = input_list[:-1] + [{"role": "system", "content": " ".join(contextual_hints)}] + [input_list[-1]]
-
-        if is_bug_report_query(aggregated_text):
-            last_wallet = last_wallet_by_channel.get(channel_id)
-            if last_wallet and last_wallet not in aggregated_text:
-                input_list = input_list[:-1] + [{
-                    "role": "system",
-                    "content": f"Context: User previously provided wallet address {last_wallet} for this ticket. Use it if needed; do not ask again unless they want a different address."
-                }] + [input_list[-1]]
 
         return current_history, input_list
 

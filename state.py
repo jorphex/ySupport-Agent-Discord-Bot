@@ -243,6 +243,9 @@ def hydrate_ticket_state(channel_id: int) -> None:
     wallet = payload.get("last_wallet")
     if wallet:
         last_wallet_by_channel[channel_id] = wallet
+        investigation_job = ticket_investigation_jobs.get(channel_id)
+        if investigation_job is not None:
+            investigation_job.remember_wallet(wallet)
     pending_wallet = payload.get("pending_wallet_confirmation")
     if pending_wallet:
         pending_wallet_confirmation_by_channel[channel_id] = pending_wallet

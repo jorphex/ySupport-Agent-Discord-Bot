@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from unittest.mock import patch
 
 
-from agents import RunContextWrapper
+from agents import InputGuardrailTripwireTriggered, RunContextWrapper
 
-from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE
+from bot_behavior import OUT_OF_SCOPE_SUPPORT_MESSAGE, SECURITY_PROCESS_URL
 import config
 from state import (
     BotRunContext,
@@ -57,14 +57,22 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         context = BotRunContext(channel_id=30, project_context="yearn")
 
-        agent_key = await resolve_freeform_starting_agent(
-            runner=fake_runner,
-            input_list="Where do I see my stYFI position?",
-            run_context=context,
-            workflow_name="tests.public_route",
-        )
+        with patch(
+            "support_agents.evaluate_support_boundary",
+            return_value={
+                "classification": "yearn_support",
+                "tripwire_triggered": False,
+            },
+        ) as boundary_check:
+            agent_key = await resolve_freeform_starting_agent(
+                runner=fake_runner,
+                input_list="Where do I see my stYFI position?",
+                run_context=context,
+                workflow_name="tests.public_route",
+            )
 
         self.assertEqual(agent_key, "docs")
+        boundary_check.assert_awaited_once_with("Where do I see my stYFI position?")
         self.assertEqual(len(fake_runner.calls), 1)
         self.assertIs(
             fake_runner.calls[0]["starting_agent"], ticket_triage_router_agent
@@ -242,7 +250,7 @@ class TicketFlowTests(TicketFlowTestCase):
             ),
         )
 
-    async def test_ticket_agent_flow_forces_handoff_for_explicit_human_request_with_repro_context(
+    async def test_ticket_agent_flow_investigates_before_handoff_for_explicit_human_request_with_repro_context(
         self,
     ) -> None:
         channel_id = 38
@@ -258,6 +266,11 @@ class TicketFlowTests(TicketFlowTestCase):
                         message=None,
                         reasoning="likely web issue",
                     ),
+                ),
+                _FakeResult(
+                    final_output="I checked the blocked withdrawal flow and need one exact error message.",
+                    last_agent=yearn_bug_triage_agent,
+                    _history=[],
                 ),
             ]
         )
@@ -282,10 +295,45 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
-        self.assertEqual(len(fake_runner.calls), 1)
-        self.assertIsNone(outcome.completed_agent_key)
-        self.assertTrue(outcome.requires_human_handoff)
-        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, outcome.raw_final_reply)
+        self.assertEqual(len(fake_runner.calls), 2)
+        self.assertIs(fake_runner.calls[1]["starting_agent"], yearn_bug_triage_agent)
+        self.assertEqual(outcome.completed_agent_key, "bug")
+        self.assertFalse(outcome.requires_human_handoff)
+        self.assertIn("blocked withdrawal flow", outcome.raw_final_reply)
+
+    async def test_freeform_router_preserves_boundary_tripwire_before_lane_selection(
+        self,
+    ) -> None:
+        fake_runner = _FakeRunner([])
+        context = BotRunContext(channel_id=381, project_context="yearn")
+
+        async def fake_boundary(_text: str):
+            return {
+                "classification": "business_boundary",
+                "tripwire_triggered": True,
+                "message": "Business boundary",
+            }
+
+        with (
+            patch(
+                "support_agents.evaluate_support_boundary",
+                new=fake_boundary,
+            ),
+            self.assertRaises(InputGuardrailTripwireTriggered) as exc_info,
+        ):
+            await resolve_freeform_starting_agent(
+                runner=fake_runner,
+                input_list="We want a marketing partnership",
+                run_context=context,
+                workflow_name="tests.public_route",
+            )
+
+        self.assertEqual(fake_runner.calls, [])
+        self.assertEqual(
+            exc_info.exception.guardrail_result.output.output_info["message"],
+            "Business boundary",
+        )
+        self.assertEqual(ticket_triage_router_agent.input_guardrails, [])
 
     async def test_ticket_agent_flow_keeps_bug_lane_when_human_request_lacks_repro_context(
         self,
@@ -347,7 +395,7 @@ class TicketFlowTests(TicketFlowTestCase):
                 "tripwire_triggered": True,
                 "message": (
                     "If you are reporting a Yearn security issue and want bounty or disclosure handling, "
-                    "use Yearn's official security process at https://docs.yearn.fi/developers/security. "
+                    f"use Yearn's official security process at {SECURITY_PROCESS_URL}. "
                     f"Human help is required beyond that path. {config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
                 ),
             }
@@ -386,7 +434,7 @@ class TicketFlowTests(TicketFlowTestCase):
         self.assertIsNone(outcome.completed_agent_key)
         self.assertTrue(outcome.requires_human_handoff)
         lowered = outcome.raw_final_reply.lower()
-        self.assertIn("docs.yearn.fi/developers/security", lowered)
+        self.assertIn(SECURITY_PROCESS_URL.lower(), lowered)
         self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
         self.assertNotIn("browser", lowered)
         self.assertNotIn("device", lowered)
@@ -817,4 +865,5 @@ class DynamicInstructionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(prompt)
         assert prompt is not None
         self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, prompt)
+        self.assertIn(SECURITY_PROCESS_URL, prompt)
         self.assertIn("initial_button_intent: bug_report", prompt)

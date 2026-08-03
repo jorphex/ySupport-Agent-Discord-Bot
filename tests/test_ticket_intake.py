@@ -26,7 +26,10 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from ticket_intake import canonicalize_current_user_message as _canonicalize_current_user_message
+from ticket_intake import (
+    canonicalize_current_user_message as _canonicalize_current_user_message,
+    prepare_ticket_turn_input,
+)
 from ticket_investigation.runtime import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
@@ -75,6 +78,35 @@ class WalletCanonicalizationTests(unittest.TestCase):
             ),
             "How do I withdraw from this vault?",
         )
+
+
+class WalletConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmed_replacement_wallet_updates_structured_ticket_evidence(
+        self,
+    ) -> None:
+        channel_id = 64
+        old_wallet = "0x1111111111111111111111111111111111111111"
+        new_wallet = "0x2222222222222222222222222222222222222222"
+        job = TicketInvestigationJob(channel_id=channel_id)
+        job.remember_wallet(old_wallet)
+        last_wallet_by_channel[channel_id] = old_wallet
+        pending_wallet_confirmation_by_channel[channel_id] = new_wallet
+        try:
+            preparation = await prepare_ticket_turn_input(
+                channel_id=channel_id,
+                run_context=BotRunContext(
+                    channel_id=channel_id,
+                    project_context="yearn",
+                ),
+                investigation_job=job,
+                aggregated_text="yes",
+            )
+        finally:
+            last_wallet_by_channel.pop(channel_id, None)
+            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+
+        self.assertEqual(job.evidence.wallet, new_wallet)
+        self.assertEqual(preparation.system_hints, [])
 
 
 class _FakeTypingContext:

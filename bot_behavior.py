@@ -1,5 +1,9 @@
 import config
 
+SECURITY_PROCESS_URL = (
+    "https://github.com/yearn/yearn-security/blob/master/SECURITY.md"
+)
+
 LISTING_DENIAL_MESSAGE = (
     "Thank you for your interest! "
     "Yearn Finance ($YFI) is permissionlessly listable on exchanges. Yearn does not pay listing fees, nor does it provide liquidity for exchange listings. "
@@ -15,7 +19,7 @@ STANDARD_REDIRECT_MESSAGE = (
 
 SECURITY_VENDOR_BOUNDARY_MESSAGE = (
     "Thanks for flagging this. This support bot does not handle vendor scans, takedown offers, or security-service trials.\n\n"
-    "If you are disclosing a concrete Yearn security issue or phishing infrastructure, use Yearn's official security process and contacts in https://github.com/yearn/yearn-security/blob/master/SECURITY.md .\n\n"
+    f"If you are disclosing a concrete Yearn security issue or phishing infrastructure, use Yearn's official security process and contacts in {SECURITY_PROCESS_URL}.\n\n"
     "We cannot engage on vendor offerings or trial coordination here."
 )
 

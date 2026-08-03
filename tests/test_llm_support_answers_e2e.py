@@ -7,6 +7,7 @@ from unittest.mock import patch
 from agents.exceptions import InputGuardrailTripwireTriggered
 
 import config
+from bot_behavior import SECURITY_PROCESS_URL
 from support_agents import yearn_data_agent
 from tests.llm_e2e_harness import LlmE2EBase, RUN_LLM_E2E
 
@@ -597,8 +598,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertTrue(outcome.requires_human_handoff)
         lowered = outcome.raw_final_reply.lower()
         self.assertTrue(
-            "docs.yearn.fi/developers/security" in lowered
-            or "github.com/yearn/yearn-security" in lowered
+            SECURITY_PROCESS_URL.lower() in lowered
             or "security@yearn.finance" in lowered
         )
         self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER.lower(), lowered)
@@ -709,7 +709,7 @@ class LlmSupportAnswerTests(LlmE2EBase):
         self.assertIn("block.timestamp", lowered)
         self.assertNoGenericBugTriage(lowered)
         if outcome.requires_human_handoff:
-            self.assertIn("docs.yearn.fi/developers/security", lowered)
+            self.assertIn(SECURITY_PROCESS_URL.lower(), lowered)
         else:
             self.assertTrue("documented" in lowered or "expected behavior" in lowered)
 

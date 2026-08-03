@@ -15,13 +15,13 @@ from bot_behavior import (
     LISTING_DENIAL_MESSAGE,
     OUT_OF_SCOPE_SUPPORT_MESSAGE,
     SECURITY_VENDOR_BOUNDARY_MESSAGE,
+    SECURITY_PROCESS_URL,
     STANDARD_REDIRECT_MESSAGE,
 )
 
 
 _SUPPORT_SCOPE_TX_HASH_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{64}")
 _SUPPORT_SCOPE_ADDRESS_RE = re.compile(r"(?:[a-z]+:)?0x[a-fA-F0-9]{40}")
-_SECURITY_PROCESS_URL = "https://docs.yearn.fi/developers/security"
 _SECURITY_PROCESS_EXCEPTION_REQUIRED_TOKENS = (
     "immunefi",
     "zkpassport",
@@ -106,7 +106,7 @@ def _message_for_support_boundary(
             return config.SECURITY_ALTERNATE_CONTACT_MESSAGE
         return (
             "If you are reporting a Yearn security issue and want bounty or disclosure handling, "
-            f"use Yearn's official security process at {_SECURITY_PROCESS_URL}. "
+            f"use Yearn's official security process at {SECURITY_PROCESS_URL}. "
             "Human help is required beyond that path."
         )
     if classification == "non_support_assistant":

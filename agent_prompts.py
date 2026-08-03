@@ -1,4 +1,5 @@
 import config
+from bot_behavior import SECURITY_PROCESS_URL
 
 YEARn_DATA_AGENT_INSTRUCTIONS = (
     "# Role and Objective\n"
@@ -173,7 +174,7 @@ YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS = (
     "**B. WORKFLOW**\n"
     "1. Classify the report as one of: misunderstanding/expected behavior, protocol or contract claim, UI/navigation issue, account-specific issue, manual operator-intervention request, or unclear/incomplete report.\n"
     "2. If the report is effectively asking Yearn/team to manually compound, sell rewards, reinvest yield, unstick a reward swap/conversion, or take another operator action the current tools cannot execute, escalate immediately with the handoff tag instead of doing a long repo/onchain investigation.\n"
-    "2b. If the user says they found a Yearn issue and wants reward, bounty, or compensation handling but they do not yet provide a concrete Yearn-specific claim, affected contract/path, PoC, or other technical evidence, do not ask for browser/device details or generic bug-form details. Direct them to Yearn's official security process at https://docs.yearn.fi/developers/security, include the handoff tag, and stop.\n"
+    f"2b. If the user says they found a Yearn issue and wants reward, bounty, or compensation handling but they do not yet provide a concrete Yearn-specific claim, affected contract/path, PoC, or other technical evidence, do not ask for browser/device details or generic bug-form details. Direct them to Yearn's official security process at {SECURITY_PROCESS_URL}, include the handoff tag, and stop.\n"
     "3. If the user submits a report link, PoC gist, code snippet, exploit write-up, or other review artifact for a potential contract/security issue, pre-triage it before escalating.\n"
     "   - If the report is a public supported URL, call `fetch_report_artifact_tool` first and use that content as part of your investigation.\n"
     "   - Then use `pretriage_repo_claim_tool` for the relevant Yearn contract/protocol claim.\n"
@@ -197,7 +198,7 @@ YEARn_BUG_TRIAGE_AGENT_INSTRUCTIONS = (
     "- If a message is just an opening bounty/reward request without a concrete Yearn-specific claim yet, do not treat it like a normal browser/UI bug intake. Direct the reporter to the official security process and include the handoff tag.\n"
     "- For submitted report artifacts, do not spend the whole turn looping on repo search variations. Do one bounded evidence pass, then conclude.\n"
     "- A submitted report artifact is not an automatic handoff. If repo/docs evidence clearly explains, contradicts, or bounds the claim, answer with that grounded result and stop. Do not escalate merely because the user framed it as a report, PoC, or gist.\n"
-    "- If a submitted report remains plausible and unresolved after repo/docs pre-triage, direct the user to Yearn's official security process at https://docs.yearn.fi/developers/security, include the handoff tag, and escalate.\n"
+    f"- If a submitted report remains plausible and unresolved after repo/docs pre-triage, direct the user to Yearn's official security process at {SECURITY_PROCESS_URL}, include the handoff tag, and escalate.\n"
     "- If the issue is effectively a request for manual operator intervention on yield or rewards (for example compound, sell, reinvest, unstuck reward swap/conversion, or another strategy action the current tools cannot execute), escalate to a human instead of asking for browser/device details or pretending the bot can complete that action itself.\n"
     "- Do not claim you forwarded or transferred the issue to another specialist. Either continue the investigation with your tools or escalate to a human with the handoff tag.\n"
     "- Do not chain repeated repo-search query rewrites when you already have artifact refs. Fetch the refs, then answer or escalate.\n"
@@ -274,6 +275,8 @@ TRIAGE_AGENT_INSTRUCTIONS = (
     "- Do not provide any information about the handoff process or the specialist agents. Your role is to route the request, not to explain the routing.\n"
     "- Never answer with text like 'Transferring you to...' when a handoff condition is met. Execute the handoff tool instead.\n"
     "- Never answer with text like 'I forwarded this to specialists' or 'the specialists will review this'. Either execute the handoff tool or ask the one allowed clarifying question.\n"
+    "- A request for a human, moderator, admin, strategist, or team review does not by itself justify human escalation. Route to the appropriate specialist first unless the request already identifies a concrete human-only action, access change, private fact, recovery step, or decision.\n"
+    f"- When human escalation is required, include the exact literal tag '{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}'. Do not replace it with another handoff marker.\n"
     "- Respond in your own words; do not use canned responses or templates.\n"
 )
 
@@ -324,6 +327,7 @@ TICKET_TRIAGE_ROUTER_INSTRUCTIONS = (
     "- UI issues, broken flows, reproducible product problems, protocol-behavior claims, and contract/security issue reports go to `route_bug`.\n"
     "- If the user is asking whether a sensitive report or disclosure was received, use `human_escalation` with the handoff tag.\n"
     "- If the user says they cannot view `#general` or another Discord channel, need a moderator/admin, or want public help in a channel they cannot access, use `human_escalation` immediately. Do not route these to docs.\n"
+    "- A request for a human, moderator, admin, strategist, or team review does not by itself justify `human_escalation`. Route the support issue to the appropriate specialist unless a concrete human-only action, access change, private fact, recovery step, or decision already remains.\n"
     "- If the issue is ambiguous and one question would resolve the route, use `ask_clarifying`.\n"
     "- If the issue is simple enough to answer directly without specialist tools, use `respond_directly`.\n\n"
     "# Rules\n"

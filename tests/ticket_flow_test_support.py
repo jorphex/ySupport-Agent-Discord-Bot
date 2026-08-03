@@ -66,6 +66,15 @@ class TicketFlowTestCase(unittest.IsolatedAsyncioTestCase):
         )
         runtime_boundary_patcher.start()
         self.addCleanup(runtime_boundary_patcher.stop)
+        agent_boundary_patcher = patch(
+            "support_agents.evaluate_support_boundary",
+            return_value={
+                "classification": "yearn_support",
+                "tripwire_triggered": False,
+            },
+        )
+        agent_boundary_patcher.start()
+        self.addCleanup(agent_boundary_patcher.stop)
         summary_patcher = patch(
             "discord_support_runtime.summarize_handoff_summary",
             return_value=None,

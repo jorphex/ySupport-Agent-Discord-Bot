@@ -27,67 +27,6 @@ def is_message_primarily_address(text: str) -> bool:
     return False
 
 
-def is_bug_report_query(text: str) -> bool:
-    if not text:
-        return False
-    q = text.lower()
-    strong_terms = [
-        "bug",
-        "ui issue",
-        "ui error",
-        "exploit",
-        "vulnerability",
-        "security issue",
-        "unexpected behavior",
-        "reentrancy",
-        "broken",
-    ]
-    failure_terms = [
-        "not working",
-        "doesn't work",
-        "doesnt work",
-        "failed",
-        "fails",
-        "failing",
-        "stuck",
-        "error",
-        "wrong",
-        "unable",
-        "cannot",
-        "can't",
-        "cant",
-        "missing",
-    ]
-    product_terms = [
-        "styfi",
-        "veyfi",
-        "vault",
-        "router",
-        "strategy",
-        "migration",
-        "deposit",
-        "withdraw",
-        "app",
-        "site",
-        "page",
-        "button",
-    ]
-    return any(term in q for term in strong_terms) or (
-        any(term in q for term in failure_terms) and any(term in q for term in product_terms)
-    )
-
-
-def is_account_specific_veyfi_query(text: str) -> bool:
-    if not text:
-        return False
-    q = text.lower()
-    veyfi_terms = ["veyfi", "ve yfi"]
-    account_terms = ["my", "mine", "balance", "eligibility", "eligible", "can you see", "can you check", "check", "see"]
-    if not any(t in q for t in veyfi_terms):
-        return False
-    return any(t in q for t in account_terms)
-
-
 def is_probable_wallet_address(text: str) -> bool:
     if not text:
         return False
@@ -104,13 +43,28 @@ def is_probable_wallet_address(text: str) -> bool:
 def is_wallet_confirmation(text: str) -> bool:
     if not text:
         return False
-    q = text.lower().strip()
-    confirmations = [
-        "yes", "yep", "yeah", "yup", "correct", "confirm", "confirmed",
-        "that's my wallet", "that is my wallet", "use that", "use this",
-        "use it", "that's right", "that is right"
-    ]
-    return any(phrase in q for phrase in confirmations)
+    normalized = re.sub(r"[^a-z']+", " ", text.lower()).strip()
+    return normalized in {
+        "yes",
+        "yep",
+        "yeah",
+        "yup",
+        "correct",
+        "confirm",
+        "confirmed",
+        "that's my wallet",
+        "that is my wallet",
+        "use that",
+        "use this",
+        "use it",
+        "that's right",
+        "that is right",
+        "yes that's correct",
+        "yes that is correct",
+        "yes use that",
+        "yes use this",
+        "yes use it",
+    }
 
 
 def is_wallet_rejection(text: str) -> bool:

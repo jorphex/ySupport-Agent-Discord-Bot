@@ -124,6 +124,37 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 )
                 self.assertIn(channel_id, bug_report_debounce_channels)
 
+    def test_hydration_reconciles_legacy_wallet_map_into_structured_evidence(
+        self,
+    ) -> None:
+        channel_id = 111
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            public_dir = Path(temp_dir) / "public"
+            with (
+                patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
+                patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
+            ):
+                job = TicketInvestigationJob(channel_id=channel_id)
+                job.remember_wallet("0x1111111111111111111111111111111111111111")
+                ticket_investigation_jobs[channel_id] = job
+                last_wallet_by_channel[channel_id] = (
+                    "0x2222222222222222222222222222222222222222"
+                )
+                persist_ticket_state(channel_id)
+
+                ticket_investigation_jobs.pop(channel_id, None)
+                last_wallet_by_channel.pop(channel_id, None)
+                hydrate_ticket_state(channel_id)
+
+                self.assertEqual(
+                    ticket_investigation_jobs[channel_id].evidence.wallet,
+                    "0x2222222222222222222222222222222222222222",
+                )
+
+                ticket_investigation_jobs.pop(channel_id, None)
+                last_wallet_by_channel.pop(channel_id, None)
+
     def test_clear_ticket_channel_state_keeps_stopped_marker_and_persists_minimal_state(self) -> None:
         channel_id = 102
         with tempfile.TemporaryDirectory() as temp_dir:
