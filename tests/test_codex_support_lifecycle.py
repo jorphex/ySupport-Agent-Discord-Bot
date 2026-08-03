@@ -131,22 +131,13 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(second_started.is_set())
 
-    async def test_codex_support_endpoint_retries_once_on_auth_error(self) -> None:
-        response = SupportTurnResult(
-            answer="support-ok",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked",
-            used_tools=["shell"],
-        ).to_json()
+    async def test_codex_support_endpoint_does_not_retry_auth_error(self) -> None:
         call_count = 0
 
         async def fake_run_streaming_subprocess(**kwargs):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                raise RuntimeError("refresh_token_reused token_expired")
-            return CodexSupportExecutionOutput(final_response_text=response)
+            raise RuntimeError("refresh_token_reused token_expired")
 
         endpoint = CodexSupportTicketExecutionJsonEndpoint(
             codex_command=["codex", "exec"],
@@ -171,28 +162,16 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             wants_bug_review_status=False,
         )
 
-        with (
-            mock.patch.object(
-                endpoint,
-                "_prepare_support_home",
-                return_value=False,
-            ) as mock_prepare,
-            mock.patch(
-                "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
-                side_effect=fake_run_streaming_subprocess,
-            ),
+        with mock.patch(
+            "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+            side_effect=fake_run_streaming_subprocess,
         ):
-            response_json = await endpoint.execute_json_turn(request.to_json())
+            with self.assertRaisesRegex(RuntimeError, "refresh_token_reused"):
+                await endpoint.execute_json_turn(request.to_json())
 
-        transport_result = TicketExecutionTransportResult.from_json(response_json)
-        self.assertEqual(
-            transport_result.flow_outcome["raw_final_reply"],
-            "support-ok",
-        )
-        self.assertEqual(call_count, 2)
-        self.assertEqual(mock_prepare.call_count, 2)
+        self.assertEqual(call_count, 1)
 
-    async def test_codex_support_endpoint_syncs_bot_auth_back_to_sources_after_run(
+    async def test_codex_support_endpoint_uses_service_auth_link_in_place(
         self,
     ) -> None:
         response = SupportTurnResult(
@@ -225,8 +204,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             endpoint = CodexSupportTicketExecutionJsonEndpoint(
                 codex_command=["codex", "exec"],
                 codex_home=bot_home,
-                codex_auth_source=auth_source,
-                codex_auth_sync_source=canonical_source,
+                codex_auth_link_source=canonical_source,
                 allowed_command_prefixes=[["codex", "exec"]],
             )
             request = TicketExecutionTransportRequest(
@@ -261,14 +239,16 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 auth_source.read_text(encoding="utf-8"),
-                '{"auth_mode":"bot-refreshed"}',
+                '{"auth_mode":"source-old"}',
             )
             self.assertEqual(
                 canonical_source.read_text(encoding="utf-8"),
                 '{"auth_mode":"bot-refreshed"}',
             )
 
-    async def test_codex_support_endpoint_syncs_auth_before_first_attempt(self) -> None:
+    async def test_codex_support_endpoint_replaces_stale_home_auth_with_service_link(
+        self,
+    ) -> None:
         response = SupportTurnResult(
             answer="support-ok",
             requires_human_handoff=False,
@@ -306,8 +286,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             endpoint = CodexSupportTicketExecutionJsonEndpoint(
                 codex_command=["codex", "exec"],
                 codex_home=bot_home,
-                codex_auth_source=auth_source,
-                codex_auth_sync_source=canonical_source,
+                codex_auth_link_source=canonical_source,
                 allowed_command_prefixes=[["codex", "exec"]],
             )
             request = TicketExecutionTransportRequest(
@@ -346,7 +325,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 auth_source.read_text(encoding="utf-8"),
-                '{"auth_mode":"canonical-fresh"}',
+                '{"auth_mode":"source-old"}',
             )
             self.assertEqual(
                 canonical_source.read_text(encoding="utf-8"),
@@ -494,16 +473,9 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             wants_bug_review_status=False,
         )
 
-        with (
-            mock.patch.object(
-                endpoint,
-                "_prepare_support_home",
-                return_value=False,
-            ),
-            mock.patch(
-                "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
-                side_effect=fake_run_streaming_subprocess,
-            ),
+        with mock.patch(
+            "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+            side_effect=fake_run_streaming_subprocess,
         ):
             first_task = asyncio.create_task(
                 endpoint.execute_json_turn(request_one.to_json())

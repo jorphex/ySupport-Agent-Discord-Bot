@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import importlib.util
+import os
 from pathlib import Path
-import shutil
-import socket
-import subprocess
 from urllib.parse import urlparse
-from typing import Any
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -24,10 +21,6 @@ def prepare_codex_support_home(
     codex_home: str | Path,
     ysupport_mcp_url: str,
     mcp_server_api_key: str,
-    repo_root: str | Path | None = None,
-    mcp_container_name: str | None = None,
-    auth_source: str | Path | None = None,
-    auth_sync_source: str | Path | None = None,
     auth_link_source: str | Path | None = None,
     web_search_mode: str = "live",
 ) -> CodexSupportHome:
@@ -37,42 +30,37 @@ def prepare_codex_support_home(
     config_path = home_dir / "config.toml"
     auth_path = home_dir / "auth.json"
     instructions_path = home_dir / "ysupport_instructions.md"
-    shutil.copy2(_instructions_template_path(), instructions_path)
-    repo_root_path = Path(repo_root) if repo_root else None
     normalized_ysupport_mcp_url = ysupport_mcp_url.strip()
     normalized_mcp_server_api_key = mcp_server_api_key.strip()
-    use_http_mcp = bool(
-        normalized_ysupport_mcp_url
-        and normalized_mcp_server_api_key
-        and _is_http_url_reachable(normalized_ysupport_mcp_url)
+    if bool(normalized_ysupport_mcp_url) != bool(normalized_mcp_server_api_key):
+        raise ValueError("ySupport MCP requires both its HTTP URL and bearer key.")
+    ysupport_mcp_enabled = bool(
+        normalized_ysupport_mcp_url and normalized_mcp_server_api_key
     )
-    stdio_launcher = None
-    if not use_http_mcp:
-        stdio_launcher = _choose_ysupport_stdio_launcher(
-            repo_root=repo_root_path,
-            mcp_server_api_key=mcp_server_api_key,
-            mcp_container_name=mcp_container_name,
-        )
-    ysupport_mcp_enabled = use_http_mcp or stdio_launcher is not None
+    if ysupport_mcp_enabled:
+        _validate_http_mcp_url(normalized_ysupport_mcp_url)
 
-    config_path.write_text(
+    _atomic_write_text(
+        instructions_path,
+        _instructions_template_path().read_text(encoding="utf-8"),
+    )
+    _atomic_write_text(
+        config_path,
         build_codex_support_config_toml(
             instructions_path=instructions_path,
-            stdio_launcher=stdio_launcher,
-            ysupport_mcp_url=normalized_ysupport_mcp_url if use_http_mcp else "",
-            mcp_server_api_key=normalized_mcp_server_api_key if ysupport_mcp_enabled else "",
+            ysupport_mcp_url=normalized_ysupport_mcp_url,
+            mcp_server_api_key=normalized_mcp_server_api_key
+            if ysupport_mcp_enabled
+            else "",
             web_search_mode=web_search_mode,
         ),
-        encoding="utf-8",
     )
 
-    prepare_codex_auth_state(
-        home_auth_path=auth_path,
-        auth_source_path=Path(auth_source) if auth_source else None,
-        auth_sync_source_path=Path(auth_sync_source) if auth_sync_source else None,
-        auth_link_source_path=Path(auth_link_source) if auth_link_source else None,
-        preferred_source_path=Path(auth_sync_source) if auth_sync_source else None,
-    )
+    if auth_link_source:
+        prepare_codex_auth_link(
+            home_auth_path=auth_path,
+            auth_link_source_path=Path(auth_link_source),
+        )
 
     return CodexSupportHome(
         home_dir=home_dir,
@@ -88,112 +76,43 @@ def prepare_codex_auth_link(
     home_auth_path: Path,
     auth_link_source_path: Path,
 ) -> Path:
-    source_resolved = auth_link_source_path.resolve(strict=False)
+    if not auth_link_source_path.is_file():
+        raise FileNotFoundError(
+            f"Codex auth link source is not a readable file: {auth_link_source_path}"
+        )
+    source_resolved = auth_link_source_path.resolve(strict=True)
     home_auth_path.parent.mkdir(parents=True, exist_ok=True)
     if home_auth_path.is_symlink():
         current_target = home_auth_path.resolve(strict=False)
         if current_target == source_resolved:
             return auth_link_source_path
-        home_auth_path.unlink()
     elif home_auth_path.exists():
         if home_auth_path.resolve(strict=False) == source_resolved:
             return auth_link_source_path
-        home_auth_path.unlink()
-    home_auth_path.symlink_to(auth_link_source_path)
+    temporary_link = home_auth_path.with_name(
+        f".{home_auth_path.name}.{uuid4().hex}.tmp"
+    )
+    try:
+        temporary_link.symlink_to(source_resolved)
+        os.replace(temporary_link, home_auth_path)
+    finally:
+        temporary_link.unlink(missing_ok=True)
     return auth_link_source_path
 
 
-def prepare_codex_auth_state(
-    *,
-    home_auth_path: Path,
-    auth_source_path: Path | None = None,
-    auth_sync_source_path: Path | None = None,
-    auth_link_source_path: Path | None = None,
-    preferred_source_path: Path | None = None,
-) -> Path | None:
-    if auth_link_source_path is not None:
-        return prepare_codex_auth_link(
-            home_auth_path=home_auth_path,
-            auth_link_source_path=auth_link_source_path,
-        )
-    return sync_codex_auth_state(
-        home_auth_path=home_auth_path,
-        auth_source_path=auth_source_path,
-        auth_sync_source_path=auth_sync_source_path,
-        preferred_source_path=preferred_source_path,
-    )
-
-
-def sync_codex_auth_state(
-    *,
-    home_auth_path: Path,
-    auth_source_path: Path | None = None,
-    auth_sync_source_path: Path | None = None,
-    preferred_source_path: Path | None = None,
-) -> Path | None:
-    candidate_paths = _unique_paths(
-        home_auth_path,
-        auth_source_path,
-        auth_sync_source_path,
-    )
-    existing_paths = [path for path in candidate_paths if path.exists()]
-    if not existing_paths:
-        return None
-    preferred_existing_path = _match_existing_path(
-        existing_paths,
-        preferred_source_path,
-    )
-    freshest_path = preferred_existing_path or max(
-        existing_paths,
-        key=lambda path: (path.stat().st_mtime_ns, str(path.resolve())),
-    )
-    for target_path in candidate_paths:
-        if target_path == freshest_path:
-            continue
-        _copy_file_if_distinct(freshest_path, target_path)
-    return freshest_path
-
-
-def _unique_paths(*paths: Path | None) -> list[Path]:
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for path in paths:
-        if path is None:
-            continue
-        resolved = path.resolve(strict=False)
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        unique.append(path)
-    return unique
-
-
-def _match_existing_path(
-    existing_paths: list[Path],
-    preferred_source_path: Path | None,
-) -> Path | None:
-    if preferred_source_path is None:
-        return None
-    preferred_resolved = preferred_source_path.resolve(strict=False)
-    for path in existing_paths:
-        if path.resolve(strict=False) == preferred_resolved:
-            return path
-    return None
-
-
-def _copy_file_if_distinct(source_path: Path, destination_path: Path) -> None:
-    source_resolved = source_path.resolve()
-    destination_resolved = destination_path.resolve()
-    if source_resolved == destination_resolved:
-        return
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, destination_path)
+def _atomic_write_text(path: Path, text: str) -> None:
+    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary_path.write_text(text, encoding="utf-8")
+        temporary_path.chmod(0o600)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def build_codex_support_config_toml(
     *,
     instructions_path: str | Path,
-    stdio_launcher: dict[str, Any] | None = None,
     ysupport_mcp_url: str,
     mcp_server_api_key: str,
     web_search_mode: str = "live",
@@ -205,19 +124,15 @@ def build_codex_support_config_toml(
     quoted_url = _toml_string(normalized_ysupport_mcp_url)
     quoted_api_key = _toml_string(f"Bearer {normalized_mcp_server_api_key}")
     quoted_web_search_mode = _toml_string(normalized_web_search_mode)
-    use_stdio_mcp = stdio_launcher is not None
     return "\n".join(
         _codex_support_config_lines(
             quoted_instructions_path=quoted_instructions_path,
             quoted_web_search_mode=quoted_web_search_mode,
-            stdio_launcher=stdio_launcher,
             quoted_url=quoted_url,
             quoted_api_key=quoted_api_key,
-            ysupport_mcp_enabled=use_stdio_mcp or bool(
+            ysupport_mcp_enabled=bool(
                 normalized_ysupport_mcp_url and normalized_mcp_server_api_key
             ),
-            use_stdio_mcp=use_stdio_mcp,
-            quoted_mcp_server_api_key=_toml_string(normalized_mcp_server_api_key),
         )
     )
 
@@ -226,161 +141,69 @@ def _codex_support_config_lines(
     *,
     quoted_instructions_path: str,
     quoted_web_search_mode: str,
-    stdio_launcher: dict[str, Any] | None,
     quoted_url: str,
     quoted_api_key: str,
     ysupport_mcp_enabled: bool,
-    use_stdio_mcp: bool,
-    quoted_mcp_server_api_key: str,
 ) -> list[str]:
     lines = [
-            'approval_policy = "never"',
-            'sandbox_mode = "danger-full-access"',
-            "allow_login_shell = false",
-            'cli_auth_credentials_store = "file"',
-            f"model_instructions_file = {quoted_instructions_path}",
-            f"web_search = {quoted_web_search_mode}",
-            "",
-            "[history]",
-            'persistence = "none"',
-            "",
-            "[features]",
-            "apps = false",
-            "multi_agent = false",
-            "shell_tool = true",
-            "",
-            "[tools]",
-            "view_image = false",
-        ]
+        'approval_policy = "never"',
+        'sandbox_mode = "danger-full-access"',
+        "allow_login_shell = false",
+        'cli_auth_credentials_store = "file"',
+        f"model_instructions_file = {quoted_instructions_path}",
+        f"web_search = {quoted_web_search_mode}",
+        "",
+        "[history]",
+        'persistence = "none"',
+        "",
+        "[features]",
+        "apps = false",
+        "multi_agent = false",
+        "shell_tool = true",
+        "",
+        "[tools]",
+        "view_image = false",
+    ]
     if ysupport_mcp_enabled:
-        if use_stdio_mcp:
-            assert stdio_launcher is not None
-            lines.extend(
-                [
-                    "",
-                    "[mcp_servers.ysupport]",
-                    "enabled = true",
-                    f'command = {_toml_string(str(stdio_launcher["command"]))}',
-                    f'args = {_toml_string_array(stdio_launcher["args"])}',
-                    "startup_timeout_sec = 20",
-                    "tool_timeout_sec = 120",
-                    "",
-                ]
-            )
-            if stdio_launcher.get("cwd"):
-                lines.append(f'cwd = {_toml_string(str(stdio_launcher["cwd"]))}')
-            if stdio_launcher.get("env_vars"):
-                lines.append(
-                    f'env_vars = {_toml_string_array(stdio_launcher["env_vars"])}'
-                )
-            if stdio_launcher.get("env"):
-                lines.extend(["", "[mcp_servers.ysupport.env]"])
-                for key, value in stdio_launcher["env"].items():
-                    lines.append(f"{key} = {_toml_string(str(value))}")
-                lines.append("")
-        else:
-            lines.extend(
-                [
-                    "",
-                    "[mcp_servers.ysupport]",
-                    "enabled = true",
-                    f"url = {quoted_url}",
-                    "",
-                    "[mcp_servers.ysupport.http_headers]",
-                    f"Authorization = {quoted_api_key}",
-                    "",
-                ]
-            )
+        lines.extend(
+            [
+                "",
+                "[mcp_servers.ysupport]",
+                "enabled = true",
+                f"url = {quoted_url}",
+                "",
+                "[mcp_servers.ysupport.http_headers]",
+                f"Authorization = {quoted_api_key}",
+                "",
+            ]
+        )
     return lines
 
 
 def _toml_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("\b", "\\b")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\f", "\\f")
+        .replace("\r", "\\r")
+        .replace('"', '\\"')
+    )
     return f'"{escaped}"'
-
-
-def _toml_string_array(values: list[str]) -> str:
-    return "[" + ", ".join(_toml_string(value) for value in values) + "]"
 
 
 def _instructions_template_path() -> Path:
     return Path(__file__).resolve().with_name("ysupport_codex_instructions.md")
 
 
-def _is_http_url_reachable(url: str, *, timeout_seconds: float = 1.0) -> bool:
-    parsed = urlparse(url.strip())
+def _validate_http_mcp_url(url: str) -> None:
+    parsed = urlparse(url)
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("ySupport MCP URL has an invalid port.") from exc
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        return True
-    port = parsed.port
-    if port is None:
-        port = 443 if parsed.scheme == "https" else 80
-    try:
-        with socket.create_connection((parsed.hostname, port), timeout=timeout_seconds):
-            return True
-    except OSError:
-        return False
-
-
-def _choose_ysupport_stdio_launcher(
-    *,
-    repo_root: Path | None,
-    mcp_server_api_key: str,
-    mcp_container_name: str | None,
-) -> dict[str, Any] | None:
-    if repo_root is not None and (repo_root / "mcp_server.py").exists() and _local_python_has_mcp():
-        return {
-            "command": "python3",
-            "args": ["mcp_server.py"],
-            "cwd": str(repo_root),
-            "env_vars": [
-                "OPENAI_API_KEY",
-                "PINECONE_API_KEY",
-                "ALCHEMY_KEY",
-                "PINECONE_INDEX_NAME",
-            ],
-            "env": {
-                "MCP_TRANSPORT": "stdio",
-                "MCP_SERVER_API_KEY": mcp_server_api_key,
-            },
-        }
-    if mcp_container_name and _docker_container_running(mcp_container_name):
-        return {
-            "command": "docker",
-            "args": [
-                "exec",
-                "-i",
-                mcp_container_name,
-                "env",
-                "MCP_TRANSPORT=stdio",
-                f"MCP_SERVER_API_KEY={mcp_server_api_key}",
-                "python",
-                "mcp_server.py",
-            ],
-            "env": {},
-            "env_vars": [],
-        }
-    return None
-
-
-def _local_python_has_mcp() -> bool:
-    return importlib.util.find_spec("mcp") is not None
-
-
-def _docker_container_running(container_name: str, *, timeout_seconds: float = 2.0) -> bool:
-    try:
-        completed = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "-f",
-                "{{.State.Running}}",
-                container_name,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0 and completed.stdout.strip() == "true"
+        raise ValueError("ySupport MCP URL must be an absolute HTTP(S) URL.")
+    if parsed.username or parsed.password:
+        raise ValueError("ySupport MCP URL must not contain credentials.")

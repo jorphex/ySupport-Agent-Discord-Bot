@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import io
 import json
 import os
 from pathlib import Path
+import signal
 from typing import Awaitable, Callable, Sequence
 
 from ticket_execution.subprocess_utils import write_execution_artifacts
+
+_MAX_JSONL_EVENT_BYTES = 8 * 1024 * 1024
+_MAX_STDOUT_CAPTURE_CHARS = 4 * 1024 * 1024
+_MAX_STDERR_CAPTURE_CHARS = 256 * 1024
 
 
 @dataclass
@@ -43,8 +49,14 @@ async def run_codex_support_json_subprocess(
         env=env,
         **creation_kwargs,
     )
-    stdout_lines: list[str] = []
-    stderr_chunks: list[str] = []
+    process_group_id = process.pid if os.name != "nt" else None
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    stdout_capture_chars = 0
+    stderr_capture_chars = 0
+    stdout_truncated = False
+    stderr_truncated = False
+    saw_stdout = False
     final_response_text: str | None = None
 
     async def feed_stdin() -> None:
@@ -59,16 +71,27 @@ async def run_codex_support_json_subprocess(
             return
 
     async def read_stdout() -> None:
-        nonlocal final_response_text
+        nonlocal final_response_text, saw_stdout, stdout_capture_chars, stdout_truncated
         if process.stdout is None:
             return
 
         async def handle_line(line: bytes) -> None:
-            nonlocal final_response_text
+            nonlocal final_response_text, saw_stdout, stdout_capture_chars, stdout_truncated
             text = line.decode("utf-8", errors="replace").rstrip("\r")
             if not text:
                 return
-            stdout_lines.append(text)
+            saw_stdout = True
+            capture_text = ("\n" if stdout_capture_chars else "") + text
+            previous_capture_chars = stdout_capture_chars
+            stdout_capture_chars = _append_bounded_text(
+                stdout_capture,
+                capture_text,
+                captured_chars=stdout_capture_chars,
+                max_chars=_MAX_STDOUT_CAPTURE_CHARS,
+            )
+            stdout_truncated = stdout_truncated or (
+                stdout_capture_chars - previous_capture_chars < len(capture_text)
+            )
             event = parse_json_event(text)
             if event is None:
                 return
@@ -85,79 +108,116 @@ async def run_codex_support_json_subprocess(
             if not chunk:
                 break
             pending.extend(chunk)
+            if len(pending) > _MAX_JSONL_EVENT_BYTES and pending.find(b"\n") < 0:
+                raise RuntimeError(
+                    "Codex support execution returned an oversized JSONL event."
+                )
             while True:
                 separator_index = pending.find(b"\n")
                 if separator_index < 0:
                     break
+                if separator_index > _MAX_JSONL_EVENT_BYTES:
+                    raise RuntimeError(
+                        "Codex support execution returned an oversized JSONL event."
+                    )
                 line = bytes(pending[:separator_index])
                 del pending[: separator_index + 1]
                 await handle_line(line)
         if pending:
+            if len(pending) > _MAX_JSONL_EVENT_BYTES:
+                raise RuntimeError(
+                    "Codex support execution returned an oversized JSONL event."
+                )
             await handle_line(bytes(pending))
 
     async def read_stderr() -> None:
+        nonlocal stderr_capture_chars, stderr_truncated
         if process.stderr is None:
             return
         while True:
             chunk = await process.stderr.read(4096)
             if not chunk:
                 break
-            stderr_chunks.append(chunk.decode("utf-8", errors="replace"))
+            text = chunk.decode("utf-8", errors="replace")
+            previous_capture_chars = stderr_capture_chars
+            stderr_capture_chars = _append_bounded_text(
+                stderr_capture,
+                text,
+                captured_chars=stderr_capture_chars,
+                max_chars=_MAX_STDERR_CAPTURE_CHARS,
+            )
+            stderr_truncated = stderr_truncated or (
+                stderr_capture_chars - previous_capture_chars < len(text)
+            )
 
-    io_tasks = [
+    execution_tasks = [
         asyncio.create_task(feed_stdin()),
         asyncio.create_task(read_stdout()),
         asyncio.create_task(read_stderr()),
+        asyncio.create_task(process.wait()),
     ]
-    io_future = asyncio.gather(*io_tasks)
+    execution_future = asyncio.gather(*execution_tasks)
     try:
-        await asyncio.wait_for(io_future, timeout=timeout_seconds)
-        await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+        await asyncio.wait_for(execution_future, timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
-        await _terminate_streamed_subprocess(process)
+        await _terminate_streamed_subprocess(process, process_group_id)
         write_execution_artifacts(
             artifact_run_dir,
-            stdout_text="\n".join(stdout_lines),
-            stderr_text="".join(stderr_chunks).strip(),
-            metadata={**metadata, "timed_out": True},
+            stdout_text=stdout_capture.getvalue().strip(),
+            stderr_text=stderr_capture.getvalue().strip(),
+            metadata={
+                **metadata,
+                "timed_out": True,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+            },
         )
         raise RuntimeError(timeout_message) from exc
     except asyncio.CancelledError:
-        await _terminate_streamed_subprocess(process)
+        await _terminate_streamed_subprocess(process, process_group_id)
         raise
     except Exception:
-        await _terminate_streamed_subprocess(process)
+        await _terminate_streamed_subprocess(process, process_group_id)
         raise
     finally:
-        for task in io_tasks:
+        for task in execution_tasks:
             if not task.done():
                 task.cancel()
-        if not io_future.done():
-            io_future.cancel()
+        if not execution_future.done():
+            execution_future.cancel()
         try:
-            await io_future
+            await execution_future
         except (Exception, asyncio.CancelledError):
             pass
 
-    stdout_text = "\n".join(stdout_lines).strip()
-    stderr_text = "".join(stderr_chunks).strip()
+    stdout_text = stdout_capture.getvalue().strip()
+    stderr_text = stderr_capture.getvalue().strip()
     write_execution_artifacts(
         artifact_run_dir,
         stdout_text=stdout_text,
         stderr_text=stderr_text,
-        metadata={**metadata, "returncode": process.returncode, "timed_out": False},
+        metadata={
+            **metadata,
+            "returncode": process.returncode,
+            "timed_out": False,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+        },
     )
     if process.returncode != 0:
         error_text = (
             stderr_text or "Codex support execution exited without stderr output."
         )
         raise RuntimeError(error_text[:max_error_chars])
-    if not stdout_text:
+    if not saw_stdout:
         raise RuntimeError(empty_stdout_message)
-    execution_output = parse_codex_support_execution_output(stdout_text)
-    if len(execution_output.final_response_text) > max_output_chars:
+    if final_response_text is None:
+        raise RuntimeError(
+            "Codex support execution returned JSON events without a final agent message."
+        )
+    if len(final_response_text) > max_output_chars:
         raise RuntimeError(oversized_stdout_message)
-    return execution_output
+    return CodexSupportExecutionOutput(final_response_text=final_response_text)
 
 
 def parse_codex_support_execution_output(
@@ -249,14 +309,31 @@ def _progress_from_tool_item(item: dict[str, object]) -> str:
     return "Checking Yearn support data"
 
 
-async def _terminate_streamed_subprocess(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
+def _append_bounded_text(
+    capture: io.StringIO,
+    text: str,
+    *,
+    captured_chars: int,
+    max_chars: int,
+) -> int:
+    remaining = max_chars - captured_chars
+    if remaining <= 0:
+        return captured_chars
+    captured = text[:remaining]
+    capture.write(captured)
+    return captured_chars + len(captured)
+
+
+async def _terminate_streamed_subprocess(
+    process: asyncio.subprocess.Process,
+    process_group_id: int | None,
+) -> None:
     try:
         if os.name == "nt":
-            process.kill()
-        else:
-            os.killpg(os.getpgid(process.pid), 9)
+            if process.returncode is None:
+                process.kill()
+        elif process_group_id is not None:
+            os.killpg(process_group_id, signal.SIGKILL)
     except ProcessLookupError:
         pass
     finally:

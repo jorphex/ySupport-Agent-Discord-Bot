@@ -318,15 +318,11 @@ def _build_single_ticket_execution_json_endpoint(
             codex_command=command,
             model=config.TICKET_EXECUTION_CODEX_MODEL,
             reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
-            repo_root=config.BASE_DIR,
             codex_home=config.TICKET_EXECUTION_CODEX_HOME,
-            codex_auth_source=config.TICKET_EXECUTION_CODEX_AUTH_SOURCE,
-            codex_auth_sync_source=config.TICKET_EXECUTION_CODEX_AUTH_SYNC_SOURCE,
             codex_auth_link_source=config.TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE,
             session_dir=config.TICKET_EXECUTION_CODEX_SESSION_DIR,
             session_max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
             ysupport_mcp_url=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL,
-            ysupport_mcp_container=config.TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER,
             mcp_server_api_key=config.MCP_SERVER_API_KEY,
             web_search_mode=config.TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE,
             allowed_command_prefixes=_allowed_codex_prefixes(
@@ -404,7 +400,17 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _codex_env() -> dict[str, str]:
-    env = _subprocess_env()
+    allowed_keys = {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+    }
+    env = {key: value for key, value in os.environ.items() if key in allowed_keys}
     if config.TICKET_EXECUTION_CODEX_HOME:
         env["CODEX_HOME"] = config.TICKET_EXECUTION_CODEX_HOME
     return env

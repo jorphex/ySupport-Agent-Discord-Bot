@@ -31,12 +31,62 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             )
 
             record = manager.load("ticket:123")
+            record_path = Path(temp_dir) / "ticket_123.json"
+            record_mode = record_path.stat().st_mode & 0o777
 
         self.assertIsNotNone(record)
         assert record is not None
         self.assertEqual(record.session_id, "019dade1-5acf-70e2-9c61-f5ba37862a78")
         self.assertEqual(record.run_count, 1)
         self.assertEqual(record.last_artifact_dir, "/tmp/run-1")
+        self.assertEqual(record_mode, 0o600)
+
+    def test_failed_atomic_write_preserves_previous_session_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+            manager.record_success(
+                conversation_key="ticket:123",
+                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+            )
+
+            with patch(
+                "codex_support_sessions.os.replace",
+                side_effect=OSError("replace failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    manager.record_success(
+                        conversation_key="ticket:123",
+                        session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
+                    )
+
+            record = manager.load("ticket:123")
+            temporary_files = list(Path(temp_dir).glob("*.tmp"))
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.run_count, 1)
+        self.assertEqual(temporary_files, [])
+
+    def test_invalid_session_record_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            record_path = Path(temp_dir) / "ticket_123.json"
+            record_path.write_text(
+                json.dumps(
+                    {
+                        "conversation_key": "ticket:123",
+                        "session_id": "------------------------------------",
+                        "created_at_utc": "not-a-timestamp",
+                        "updated_at_utc": 123,
+                        "run_count": "one",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
+
+            record = manager.load("ticket:123")
+
+        self.assertIsNone(record)
 
     def test_extract_session_id_from_stderr(self) -> None:
         manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
@@ -123,6 +173,20 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             manager.conversation_key_for_request(request),
             "public_user:777",
         )
+
+    def test_conversation_key_is_absent_without_owner_or_channel(self) -> None:
+        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
+        request = TicketExecutionTransportRequest(
+            aggregated_text="hello",
+            input_list=[],
+            current_history=[],
+            run_context={"is_public_trigger": True},
+            investigation_job={"evidence": {}},
+            workflow_name="tests.unkeyed",
+            wants_bug_review_status=False,
+        )
+
+        self.assertIsNone(manager.conversation_key_for_request(request))
 
     def test_summary_reports_active_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

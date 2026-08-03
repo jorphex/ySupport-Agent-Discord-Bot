@@ -73,30 +73,6 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _read_codex_mcp_url_from_home(codex_home: Path) -> str | None:
-    config_path = codex_home / "config.toml"
-    if not config_path.exists():
-        return None
-    try:
-        lines = config_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    in_ysupport_section = False
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            in_ysupport_section = line == "[mcp_servers.ysupport]"
-            continue
-        if not in_ysupport_section or not line.startswith("url"):
-            continue
-        _, _, value = line.partition("=")
-        normalized = value.strip().strip('"').strip("'")
-        return normalized or None
-    return None
-
-
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- Secrets ---
@@ -250,13 +226,6 @@ TICKET_EXECUTION_CODEX_HOME = (
     ).strip()
     or None
 )
-TICKET_EXECUTION_CODEX_AUTH_SOURCE = os.getenv(
-    "TICKET_EXECUTION_CODEX_AUTH_SOURCE", ""
-).strip() or None
-TICKET_EXECUTION_CODEX_AUTH_SYNC_SOURCE = os.getenv(
-    "TICKET_EXECUTION_CODEX_AUTH_SYNC_SOURCE",
-    str(Path.home() / ".codex" / "auth.json"),
-).strip() or None
 TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE = os.getenv(
     "TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE",
     "",
@@ -276,24 +245,14 @@ _DEFAULT_MCP_PORT = (
     )
     or 8001
 )
-_DEFAULT_SYSTEM_CODEX_HOME = Path(
-    os.getenv("TICKET_EXECUTION_CODEX_SOURCE_HOME", str(Path.home() / ".codex"))
-)
-_DEFAULT_SYSTEM_YSUPPORT_MCP_URL = _read_codex_mcp_url_from_home(
-    _DEFAULT_SYSTEM_CODEX_HOME
-)
 TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL = os.getenv(
     "TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL",
-    _DEFAULT_SYSTEM_YSUPPORT_MCP_URL or f"http://127.0.0.1:{_DEFAULT_MCP_PORT}/mcp",
+    f"http://127.0.0.1:{_DEFAULT_MCP_PORT}/mcp",
 ).strip()
 TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE = os.getenv(
     "TICKET_EXECUTION_CODEX_WEB_SEARCH_MODE",
     "live",
 ).strip().lower()
-TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER = os.getenv(
-    "TICKET_EXECUTION_CODEX_YSUPPORT_MCP_CONTAINER",
-    "ysupport-mcp",
-).strip() or None
 TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES = _env_command_prefixes(
     "TICKET_EXECUTION_ALLOWED_COMMAND_PREFIXES"
 )
@@ -404,6 +363,10 @@ def validate_ticket_execution_runtime_config() -> None:
     if uses_codex_support and not MCP_SERVER_API_KEY:
         raise ValueError(
             "codex_support_exec requires MCP_SERVER_API_KEY for the ysupport MCP config."
+        )
+    if uses_codex_support and not TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL:
+        raise ValueError(
+            "codex_support_exec requires TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL."
         )
 
 

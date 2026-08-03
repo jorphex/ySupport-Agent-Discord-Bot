@@ -111,7 +111,9 @@ def _reset_replay_session(request_json: str) -> None:
         config.TICKET_EXECUTION_CODEX_SESSION_DIR,
         max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
     )
-    manager.reset(manager.conversation_key_for_request(request))
+    conversation_key = manager.conversation_key_for_request(request)
+    if conversation_key is not None:
+        manager.reset(conversation_key)
 
 
 async def _main(argv: list[str] | None = None) -> int:

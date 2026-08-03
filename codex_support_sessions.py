@@ -3,16 +3,22 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
+from uuid import uuid4
 
 
+_SESSION_UUID_PATTERN = (
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 _SESSION_ID_RE = re.compile(
-    r"session id:\s*(?P<session_id>[0-9a-fA-F-]{36})",
+    rf"session id:\s*(?P<session_id>{_SESSION_UUID_PATTERN})",
     re.IGNORECASE,
 )
-_SESSION_UUID_RE = re.compile(r"[0-9a-fA-F-]{36}")
+_SESSION_UUID_RE = re.compile(_SESSION_UUID_PATTERN)
 
 
 @dataclass
@@ -192,18 +198,8 @@ class CodexSupportSessionManager:
                 removed += 1
         return removed
 
-    def conversation_key_for_request(self, request) -> str:
-        if request.run_context.get("is_public_trigger"):
-            conversation_owner_id = request.run_context.get("conversation_owner_id")
-            if conversation_owner_id is not None:
-                return f"public_user:{conversation_owner_id}"
-            channel_type = "public"
-        else:
-            channel_type = "ticket"
-        channel_id = request.run_context.get("channel_id")
-        if channel_id is not None:
-            return f"{channel_type}:{channel_id}"
-        return f"{channel_type}:{request.workflow_name}"
+    def conversation_key_for_request(self, request) -> str | None:
+        return conversation_key_for_request(request)
 
     def extract_session_id(self, stderr_text: str) -> str | None:
         match = _SESSION_ID_RE.search(stderr_text or "")
@@ -229,10 +225,17 @@ class CodexSupportSessionManager:
         return self.root_dir / f"{safe_key}.json"
 
     def _write(self, record: CodexSupportSessionRecord) -> None:
-        self._record_path(record.conversation_key).write_text(
-            json.dumps(asdict(record), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        path = self._record_path(record.conversation_key)
+        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(asdict(record), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            temporary_path.chmod(0o600)
+            os.replace(temporary_path, path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     def _read_record(self, path: Path) -> CodexSupportSessionRecord | None:
         try:
@@ -240,17 +243,55 @@ class CodexSupportSessionManager:
         except (OSError, json.JSONDecodeError):
             return None
         try:
-            return CodexSupportSessionRecord(**payload)
+            record = CodexSupportSessionRecord(**payload)
         except TypeError:
             return None
+        if not self._record_is_valid(record, path):
+            return None
+        return record
+
+    def _record_is_valid(
+        self,
+        record: CodexSupportSessionRecord,
+        path: Path,
+    ) -> bool:
+        if (
+            not isinstance(record.conversation_key, str)
+            or not record.conversation_key
+            or self._record_path(record.conversation_key) != path
+            or not isinstance(record.session_id, str)
+            or _SESSION_UUID_RE.fullmatch(record.session_id) is None
+            or not _is_valid_timestamp(record.created_at_utc)
+            or not _is_valid_timestamp(record.updated_at_utc)
+            or not isinstance(record.run_count, int)
+            or isinstance(record.run_count, bool)
+            or record.run_count < 1
+            or not isinstance(record.consecutive_failures, int)
+            or isinstance(record.consecutive_failures, bool)
+            or record.consecutive_failures < 0
+            or not isinstance(record.last_human_handoff_active, bool)
+        ):
+            return False
+        optional_text_fields = (
+            record.last_artifact_dir,
+            record.last_error,
+            record.last_error_at_utc,
+            record.last_requested_intent,
+            record.last_guardrail_profile,
+        )
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in optional_text_fields
+        ):
+            return False
+        return record.last_error_at_utc is None or _is_valid_timestamp(
+            record.last_error_at_utc
+        )
 
     def _is_expired(self, record: CodexSupportSessionRecord) -> bool:
         if self.max_age is None:
             return False
-        try:
-            updated_at = datetime.fromisoformat(record.updated_at_utc)
-        except ValueError:
-            return False
+        updated_at = datetime.fromisoformat(record.updated_at_utc)
         return datetime.now(timezone.utc) - updated_at > self.max_age
 
     def _should_reset_for_turn(
@@ -282,3 +323,27 @@ class CodexSupportSessionManager:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_valid_timestamp(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def conversation_key_for_request(request) -> str | None:
+    if request.run_context.get("is_public_trigger"):
+        conversation_owner_id = request.run_context.get("conversation_owner_id")
+        if conversation_owner_id is not None:
+            return f"public_user:{conversation_owner_id}"
+        channel_type = "public"
+    else:
+        channel_type = "ticket"
+    channel_id = request.run_context.get("channel_id")
+    if channel_id is None:
+        return None
+    return f"{channel_type}:{channel_id}"

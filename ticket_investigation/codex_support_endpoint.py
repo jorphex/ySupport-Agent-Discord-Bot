@@ -9,10 +9,9 @@ import logging
 from pathlib import Path
 import re
 from typing import Sequence
-from codex_support_home import (
-    prepare_codex_auth_state,
-    prepare_codex_support_home,
-)
+from weakref import WeakValueDictionary
+
+from codex_support_home import prepare_codex_support_home
 from codex_support_contract import (
     CODEX_SUPPORT_RESULT_SCHEMA,
     SignedTransactionSafetyViolation,
@@ -21,7 +20,10 @@ from codex_support_contract import (
     support_result_to_transport_result,
     verify_support_turn_result,
 )
-from codex_support_sessions import CodexSupportSessionManager
+from codex_support_sessions import (
+    CodexSupportSessionManager,
+    conversation_key_for_request,
+)
 from bot_behavior import SECURITY_PROCESS_URL
 from ticket_investigation.codex_support_attachments import (
     image_attachment_paths,
@@ -89,7 +91,7 @@ class CodexSupportExecutionBundle:
 
 class _ConversationExecutionLocks:
     def __init__(self) -> None:
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._guard = asyncio.Lock()
 
     @asynccontextmanager
@@ -116,15 +118,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
         codex_command: Sequence[str] | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
-        repo_root: str | Path | None = None,
         codex_home: str | Path | None = None,
-        codex_auth_source: str | Path | None = None,
-        codex_auth_sync_source: str | Path | None = None,
         codex_auth_link_source: str | Path | None = None,
         session_dir: str | Path | None = None,
         session_max_age_hours: int | None = None,
         ysupport_mcp_url: str | None = None,
-        ysupport_mcp_container: str | None = None,
         mcp_server_api_key: str | None = None,
         web_search_mode: str = "live",
         allowed_command_prefixes: Sequence[Sequence[str]] | None = None,
@@ -142,12 +140,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.codex_command = command
         self.model = model
         self.reasoning_effort = reasoning_effort
-        self.repo_root = Path(repo_root) if repo_root else None
         self.codex_home = Path(codex_home) if codex_home else None
-        self.codex_auth_source = Path(codex_auth_source) if codex_auth_source else None
-        self.codex_auth_sync_source = (
-            Path(codex_auth_sync_source) if codex_auth_sync_source else None
-        )
         self.codex_auth_link_source = (
             Path(codex_auth_link_source) if codex_auth_link_source else None
         )
@@ -160,7 +153,6 @@ class CodexSupportTicketExecutionJsonEndpoint:
             else None
         )
         self.ysupport_mcp_url = ysupport_mcp_url
-        self.ysupport_mcp_container = ysupport_mcp_container
         self.mcp_server_api_key = mcp_server_api_key
         self.web_search_mode = web_search_mode
         self.allowed_command_prefixes = [
@@ -180,7 +172,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.max_error_chars = max_error_chars
         self.execution_locks = _ConversationExecutionLocks()
         self.codex_runtime_lock = asyncio.Lock()
-        self._prepare_support_home()
+        self.ysupport_mcp_enabled = self._prepare_support_home()
 
     async def prune_expired_sessions(self) -> int:
         if (
@@ -286,10 +278,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
             )
             with workspace as run_dir:
                 async with self.codex_runtime_lock:
-                    ysupport_mcp_enabled = self._prepare_support_home()
                     support_request = SupportTurnRequest.from_ticket_execution_request(
                         request,
-                        ysupport_mcp_enabled=ysupport_mcp_enabled,
+                        ysupport_mcp_enabled=self.ysupport_mcp_enabled,
                     )
                     workflow_context = support_request.support_state.get("workflow_context", {})
                     session_record = (
@@ -320,7 +311,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                     export_workspace = True
                     exported_run_dir: Path | None = None
                     try:
-                        execution_output = await self._run_with_auth_retry(
+                        execution_output = await self._run_codex(
                             bundle=bundle,
                             run_dir=run_dir,
                             hooks=hooks,
@@ -365,7 +356,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                                     resume_session_id=rewrite_session_id,
                                     transaction_safety_rewrite=True,
                                 )
-                                rewrite_output = await self._run_with_auth_retry(
+                                rewrite_output = await self._run_codex(
                                     bundle=rewrite_bundle,
                                     run_dir=rewrite_run_dir,
                                     hooks=hooks,
@@ -442,93 +433,50 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 return response_json
 
     def _prepare_support_home(self) -> bool:
-        if not (self.codex_home and self.ysupport_mcp_url and self.mcp_server_api_key):
+        if self.codex_home is None:
             return False
         support_home = prepare_codex_support_home(
             codex_home=self.codex_home,
-            repo_root=self.repo_root,
-            mcp_container_name=self.ysupport_mcp_container,
-            auth_source=self.codex_auth_source,
-            auth_sync_source=self.codex_auth_sync_source,
             auth_link_source=self.codex_auth_link_source,
-            ysupport_mcp_url=self.ysupport_mcp_url,
-            mcp_server_api_key=self.mcp_server_api_key,
+            ysupport_mcp_url=self.ysupport_mcp_url or "",
+            mcp_server_api_key=self.mcp_server_api_key or "",
             web_search_mode=self.web_search_mode,
         )
         return support_home.ysupport_mcp_enabled
 
-    def _prime_support_home_auth_state(self) -> None:
-        if self.codex_home is None:
-            return
-        prepare_codex_auth_state(
-            home_auth_path=self.codex_home / "auth.json",
-            auth_source_path=self.codex_auth_source,
-            auth_sync_source_path=self.codex_auth_sync_source,
-            auth_link_source_path=self.codex_auth_link_source,
-            preferred_source_path=self.codex_auth_sync_source,
-        )
-
-    async def _run_with_auth_retry(
+    async def _run_codex(
         self,
         *,
         bundle: CodexSupportExecutionBundle,
         run_dir: Path,
         hooks: TicketExecutionHooks | None,
     ) -> CodexSupportExecutionOutput:
-        last_error: Exception | None = None
-        for attempt in range(2):
-            self._prime_support_home_auth_state()
-            if attempt > 0:
-                self._prepare_support_home()
-            try:
-                return await run_codex_support_json_subprocess(
-                    command=bundle.command,
-                    stdin_text=bundle.prompt_text,
-                    cwd=self.cwd or str(run_dir),
-                    env=build_effective_execution_env(
-                        env=self.env,
-                        inherit_parent_env=self.inherit_parent_env,
-                        run_dir=run_dir,
-                    ),
-                    timeout_seconds=self.timeout_seconds,
-                    max_output_chars=self.max_output_chars,
-                    max_error_chars=self.max_error_chars,
-                    timeout_message=(
-                        f"Codex support execution timed out after {self.timeout_seconds} seconds."
-                    ),
-                    empty_stdout_message="Codex support execution returned empty stdout.",
-                    oversized_stdout_message="Codex support execution returned too much stdout.",
-                    metadata={
-                        "base_command": self.codex_command,
-                        "command": bundle.command,
-                        "cwd": self.cwd or str(run_dir),
-                        "auth_retry_attempt": attempt,
-                    },
-                    artifact_run_dir=run_dir,
-                    progress_callback=(
-                        hooks.send_progress_update
-                        if hooks is not None
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                last_error = exc
-                if attempt == 0 and _is_codex_auth_error_text(str(exc)):
-                    continue
-                raise
-            finally:
-                self._sync_support_home_auth_state()
-        assert last_error is not None
-        raise last_error
-
-    def _sync_support_home_auth_state(self) -> None:
-        if self.codex_home is None:
-            return
-        prepare_codex_auth_state(
-            home_auth_path=self.codex_home / "auth.json",
-            auth_source_path=self.codex_auth_source,
-            auth_sync_source_path=self.codex_auth_sync_source,
-            auth_link_source_path=self.codex_auth_link_source,
+        return await run_codex_support_json_subprocess(
+            command=bundle.command,
+            stdin_text=bundle.prompt_text,
+            cwd=self.cwd or str(run_dir),
+            env=build_effective_execution_env(
+                env=self.env,
+                inherit_parent_env=self.inherit_parent_env,
+                run_dir=run_dir,
+            ),
+            timeout_seconds=self.timeout_seconds,
+            max_output_chars=self.max_output_chars,
+            max_error_chars=self.max_error_chars,
+            timeout_message=(
+                f"Codex support execution timed out after {self.timeout_seconds} seconds."
+            ),
+            empty_stdout_message="Codex support execution returned empty stdout.",
+            oversized_stdout_message="Codex support execution returned too much stdout.",
+            metadata={
+                "base_command": self.codex_command,
+                "command": bundle.command,
+                "cwd": self.cwd or str(run_dir),
+            },
+            artifact_run_dir=run_dir,
+            progress_callback=(
+                hooks.send_progress_update if hooks is not None else None
+            ),
         )
 
     def _extract_session_id_from_run_dir(self, run_dir: Path) -> str | None:
@@ -622,15 +570,7 @@ def _build_codex_support_execution_bundle(
 def _conversation_key_for_request(
     request: TicketExecutionTransportRequest,
 ) -> str | None:
-    if request.run_context.get("is_public_trigger"):
-        conversation_owner_id = request.run_context.get("conversation_owner_id")
-        if conversation_owner_id is not None:
-            return f"public_user:{conversation_owner_id}"
-    channel_id = request.run_context.get("channel_id")
-    if channel_id is None:
-        return None
-    channel_type = "public" if request.run_context.get("is_public_trigger") else "ticket"
-    return f"{channel_type}:{channel_id}"
+    return conversation_key_for_request(request)
 
 
 def _build_codex_support_command(
@@ -813,18 +753,4 @@ def _codex_support_transaction_safety_rewrite_prompt(
         f"{_TRANSACTION_SAFETY_INSTRUCTION} "
         f"{_GAS_SUFFICIENCY_INSTRUCTION} "
         f"Return only JSON matching {response_schema_path}."
-    )
-
-
-def _is_codex_auth_error_text(text: str) -> bool:
-    normalized = text.lower()
-    return any(
-        token in normalized
-        for token in (
-            "refresh_token_reused",
-            "token_expired",
-            "failed to refresh token",
-            "provided authentication token is expired",
-            "your access token could not be refreshed",
-        )
     )

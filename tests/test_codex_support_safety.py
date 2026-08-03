@@ -66,7 +66,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             with tempfile.TemporaryDirectory() as codex_home_dir:
-                auth_source = Path(codex_home_dir) / "source-auth.json"
+                auth_source = Path(codex_home_dir) / "service-auth.json"
                 auth_source.write_text('{"auth_mode":"chatgpt"}', encoding="utf-8")
                 bot_home = Path(codex_home_dir) / "bot-home"
                 session_dir = Path(codex_home_dir) / "sessions"
@@ -75,29 +75,15 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 async def record_progress(text: str) -> None:
                     progress_updates.append(text)
 
-                with mock.patch(
-                    "codex_support_home._choose_ysupport_stdio_launcher",
-                    return_value={
-                        "command": "python3",
-                        "args": ["mcp_server.py"],
-                        "cwd": str(Path(__file__).resolve().parents[1]),
-                        "env_vars": ["OPENAI_API_KEY"],
-                        "env": {
-                            "MCP_TRANSPORT": "stdio",
-                            "MCP_SERVER_API_KEY": "secret-key",
-                        },
-                    },
-                ):
+                with self.subTest(mcp_transport="http"):
                     endpoint = CodexSupportTicketExecutionJsonEndpoint(
                         codex_command=[sys.executable, "-c", fake_codex],
                         model="gpt-5.6-sol",
                         reasoning_effort="medium",
-                        repo_root=Path(__file__).resolve().parents[1],
                         codex_home=bot_home,
-                        codex_auth_source=auth_source,
+                        codex_auth_link_source=auth_source,
                         session_dir=session_dir,
                         ysupport_mcp_url="http://127.0.0.1:8000/mcp",
-                        ysupport_mcp_container="ysupport-mcp",
                         mcp_server_api_key="secret-key",
                         allowed_command_prefixes=[[sys.executable, "-c", fake_codex]],
                         artifact_dir=artifact_dir,
@@ -175,7 +161,11 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                         (bot_home / "config.toml").read_text(encoding="utf-8"),
                     )
                     self.assertIn(
-                        'command = "python3"',
+                        'url = "http://127.0.0.1:8000/mcp"',
+                        (bot_home / "config.toml").read_text(encoding="utf-8"),
+                    )
+                    self.assertNotIn(
+                        "command =",
                         (bot_home / "config.toml").read_text(encoding="utf-8"),
                     )
                     self.assertIn(

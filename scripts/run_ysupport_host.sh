@@ -12,8 +12,6 @@ if [[ -f ".venv/bin/activate" ]]; then
 fi
 
 export PYTHONUNBUFFERED=1
-export TICKET_EXECUTION_CODEX_AUTH_SOURCE=""
-export TICKET_EXECUTION_CODEX_AUTH_SYNC_SOURCE=""
 : "${TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE:=${HOME}/.codex/auth.json}"
 
 exec python3 ysupport.py

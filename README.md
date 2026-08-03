@@ -80,8 +80,6 @@ Minimal host-native setup:
 - create a host venv and `pip install -r requirements.txt`
 - ensure `codex exec` works for the service user
 - leave `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path
-- clear `TICKET_EXECUTION_CODEX_AUTH_SOURCE`
-- clear `TICKET_EXECUTION_CODEX_AUTH_SYNC_SOURCE`
 - set `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to the service-owned auth file
 - use `scripts/run_ysupport_host.sh` as the service entrypoint
 - use `systemd/ysupport.service` as the hardened deployment unit

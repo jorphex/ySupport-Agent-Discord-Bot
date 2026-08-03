@@ -238,6 +238,25 @@ class ConfigSummaryTests(unittest.TestCase):
             ):
                 config.validate_ticket_execution_runtime_config()
 
+    def test_ticket_execution_runtime_validation_requires_explicit_mcp_url(
+        self,
+    ) -> None:
+        with patch.multiple(
+            config,
+            TICKET_EXECUTION_ENDPOINT="codex_support_exec",
+            TICKET_EXECUTION_FALLBACK_ENDPOINT="",
+            TICKET_EXECUTION_SHADOW_ENDPOINT="",
+            TICKET_EXECUTION_CANARY_ENDPOINT="",
+            TICKET_EXECUTION_CODEX_HOME="/tmp/codex-home",
+            MCP_SERVER_API_KEY="mcp-key",
+            TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL="",
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "requires TICKET_EXECUTION_CODEX_YSUPPORT_MCP_URL",
+            ):
+                config.validate_ticket_execution_runtime_config()
+
     def test_ticket_execution_runtime_validation_covers_active_canary_codex(
         self,
     ) -> None:
