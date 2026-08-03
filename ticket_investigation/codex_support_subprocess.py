@@ -298,8 +298,10 @@ def _progress_from_tool_item(item: dict[str, object]) -> str:
     ).lower()
     if "view_image" in raw_name or "image" in raw_name or "attachment" in raw_name:
         return "Checking screenshots"
-    if "harvest" in raw_name or "report" in raw_name:
-        return "Checking recent harvests"
+    if "report" in raw_name:
+        return "Checking recent vault reports"
+    if "freshness" in raw_name:
+        return "Checking dashboard data freshness"
     if "search_vaults" in raw_name or "discover" in raw_name or "vault" in raw_name:
         return "Checking vault state"
     if "repo" in raw_name or "artifact" in raw_name:

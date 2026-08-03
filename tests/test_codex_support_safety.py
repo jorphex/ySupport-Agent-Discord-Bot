@@ -61,7 +61,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             "'used_tools':['shell','ysupport_mcp']"
             "}; "
             "sys.stdout.write(json.dumps({'type':'thread.started','thread_id':'019dade1-5acf-70e2-9c61-f5ba37862a78'}) + '\\n'); "
-            "sys.stdout.write(json.dumps({'type':'item.started','item':{'id':'item_1','type':'mcp_tool_call','tool_name':'support_dashboard_harvests'}}) + '\\n'); "
+            "sys.stdout.write(json.dumps({'type':'item.started','item':{'id':'item_1','type':'mcp_tool_call','tool_name':'support_dashboard_reports'}}) + '\\n'); "
             "sys.stdout.write(json.dumps({'type':'item.completed','item':{'id':'item_2','type':'agent_message','text':json.dumps(response)}}))"
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
@@ -190,7 +190,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(updated_job["mode"], "waiting_for_user")
         self.assertIsNone(updated_job["current_specialty"])
-        self.assertIn("Checking recent harvests", progress_updates)
+        self.assertIn("Checking recent vault reports", progress_updates)
 
     async def test_codex_support_endpoint_rewrites_unsafe_signed_transaction_output(
         self,

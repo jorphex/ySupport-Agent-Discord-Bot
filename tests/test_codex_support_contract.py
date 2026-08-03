@@ -598,7 +598,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "used_tools": [
                         "mcp__ysupport.search_vaults",
                         "mcp__ysupport.support_dashboard_discover",
-                        "mcp__ysupport.support_dashboard_token_venues",
+                        "mcp__ysupport.support_dashboard_reports",
                         "mcp__ysupport.search_documentation",
                         "mcp__ysupport.search_repo_context",
                     ],
@@ -611,7 +611,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             [
                 "mcp__ysupport.search_vaults",
                 "mcp__ysupport.support_dashboard_discover",
-                "mcp__ysupport.support_dashboard_token_venues",
+                "mcp__ysupport.support_dashboard_reports",
                 "mcp__ysupport.search_documentation",
                 "mcp__ysupport.search_repo_context",
             ],

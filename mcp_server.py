@@ -308,11 +308,17 @@ async def support_dashboard_discover(
     """
     Look up Yearn vaults from the support dashboard's discover index.
 
-    Use this when support needs a fast vault lookup surface that returns current vault rows with
-    chain, market, TVL, estimated APY, realized APY, and momentum fields. It is especially useful for:
+    Use this for current vault and yield context. It returns current rows with chain,
+    market, TVL, estimated APY, realized APY, and momentum fields. It is especially useful for:
     - browsing vaults by chain or market
     - showing the most relevant Yearn vaults in a market such as stablecoins or ETH
     - quickly grounding a support answer with current dashboard-visible vault metadata
+
+    Use the core universe for user-facing context. Extended is for explicitly requested
+    smaller vaults. Raw can help attempt to locate a known vault but is not authoritative
+    resolution and may still omit records without metrics. APYs are decimal fractions, and
+    summary total TVL is filtered analytics coverage rather than Yearn protocol TVL. Treat
+    the returned filters as the current universe policy instead of hard-coding thresholds.
 
     Returns:
         A compact JSON-style summary of the discover response, including filters, summary stats,
@@ -332,184 +338,112 @@ async def support_dashboard_discover(
 
 
 @mcp.tool()
-async def support_dashboard_harvests(
+async def support_dashboard_reports(
+    chain_id: Annotated[
+        int,
+        Field(
+            description=(
+                "Numeric chain ID for the exact vault, such as 1 for Ethereum or "
+                "8453 for Base. This is required because the global report feed is "
+                "not a safe support diagnostic."
+            ),
+            ge=1,
+        ),
+    ],
+    vault_address: Annotated[
+        str,
+        Field(
+            description=(
+                "Exact vault contract address. Resolve the vault and chain before "
+                "calling this tool; broad report-feed queries are intentionally unavailable."
+            ),
+            min_length=1,
+            max_length=128,
+        ),
+    ],
     days: Annotated[
         int,
         Field(
             default=30,
-            description=(
-                "Trailing lookback window in days for vault harvest/report history. "
-                "Use smaller windows such as 7 or 14 for recent support questions and larger windows when investigating "
-                "longer inactivity claims."
-            ),
+            description="Trailing report lookback in days.",
             ge=7,
             le=365,
         ),
     ] = 30,
-    chain_id: Annotated[
-        int | None,
-        Field(
-            default=None,
-            description=(
-                "Optional numeric chain filter. Leave unset for all chains, or use a chain id such as 1 for Ethereum."
-            ),
-            ge=1,
-        ),
-    ] = None,
-    vault_address: Annotated[
-        str,
-        Field(
-            default="",
-            description=(
-                "Optional vault address filter. Use this for stale PPS, stale update, or 'is this vault still harvesting' "
-                "questions about a specific vault."
-            ),
-        ),
-    ] = "",
     limit: Annotated[
         int,
         Field(
-            default=20,
+            default=50,
             description=(
-                "Maximum number of recent harvest/report rows to return from the dashboard endpoint."
+                "Maximum number of newest matching report rows. The endpoint has no "
+                "pagination, so absence of an older row is inconclusive."
             ),
             ge=1,
             le=50,
         ),
-    ] = 20,
+    ] = 50,
 ) -> str:
     """
-    Fetch recent vault harvest/report history from the support dashboard.
+    Fetch exact-vault StrategyReported events from the support dashboard.
 
-    This is the best support tool for stale-update, stale-PPS, and 'has this vault harvested recently?'
-    questions. The payload includes trailing 24h counts, available chains, and recent vault report rows with
-    timestamps, tx hashes, strategy addresses, gain/loss, debt, fee assets, and refund assets.
+    Use this only after resolving both the vault address and chain. Every row proves that the
+    vault emitted an on-chain StrategyReported event. It does not by itself prove that a
+    traditional off-chain harvest job ran or that profit was realized. `realized_result`
+    means at least one reported economic field was nonzero; `accounting_update` means all
+    available economic fields were zero.
 
-    Important scope note:
-    - this endpoint is based on vault report logs
-    - it is strong evidence for recent vault activity
-    - it may not fully represent deeper raw strategy-level Reported chronology
+    Raw gain, loss, fee, refund, and debt values are integer strings in token units. Scale
+    them by token_decimals, preserve null as unavailable, and account for vault_version when
+    interpreting debt. The query intentionally includes accounting-only reports. Results are
+    the newest bounded rows with no continuation token, so an absent older report is inconclusive.
 
     Returns:
-        A compact JSON-style summary of the harvest history response, focused on support-relevant fields.
+        A compact JSON-style report summary with event identity, economics, scaling,
+        version, and debt context.
     """
     try:
-        return await support_dashboard_tools.core_support_dashboard_harvests(
-            days=days,
+        return await support_dashboard_tools.core_support_dashboard_reports(
             chain_id=chain_id,
-            vault_address=vault_address or None,
+            vault_address=vault_address,
+            days=days,
             limit=limit,
         )
     except Exception as e:
-        logging.error(f"Error in support_dashboard_harvests: {e}")
-        return f"Error querying support dashboard harvests: {str(e)}"
+        logging.error(f"Error in support_dashboard_reports: {e}")
+        return f"Error querying support dashboard reports: {str(e)}"
 
 
 @mcp.tool()
-async def support_dashboard_changes(
-    window: Annotated[
+async def support_dashboard_freshness(
+    threshold: Annotated[
         Literal["24h", "7d", "30d"],
         Field(
-            default="7d",
+            default="24h",
             description=(
-                "Change window for dashboard movers and freshness context. Common values are '24h', '7d', and '30d'."
+                "System/cohort PPS staleness threshold. This does not establish the "
+                "freshness of one specific vault."
             ),
         ),
-    ] = "7d",
-    universe: Annotated[
-        Literal["core", "extended", "raw"],
-        Field(
-            default="core",
-            description=(
-                "Dashboard universe filter. Use 'core' for the default support-safe change feed."
-            ),
-        ),
-    ] = "core",
-    limit: Annotated[
-        int,
-        Field(
-            default=10,
-            description=(
-                "Maximum number of riser and faller rows to include."
-            ),
-            ge=1,
-            le=25,
-        ),
-    ] = 10,
-    stale_threshold: Annotated[
-        Literal["auto", "24h", "7d", "30d"],
-        Field(
-            default="auto",
-            description=(
-                "Optional staleness threshold override accepted by the dashboard endpoint. "
-                "Leave as 'auto' for the endpoint default."
-            ),
-        ),
-    ] = "auto",
+    ] = "24h",
 ) -> str:
     """
-    Fetch recent Yearn APY and freshness changes from the support dashboard.
+    Check system-wide and cohort-wide dashboard data freshness.
 
-    Use this for support questions such as:
-    - what changed recently
-    - why did a vault's yield move up or down
-    - which vaults are recent risers or fallers
-    - whether freshness or ingestion staleness might explain a dashboard discrepancy
-
-    Returns:
-        A compact JSON-style summary with dashboard summary/freshness context plus bounded mover lists.
-    """
-    try:
-        return await support_dashboard_tools.core_support_dashboard_changes(
-            window=window,
-            universe=universe,
-            limit=limit,
-            stale_threshold=stale_threshold,
-        )
-    except Exception as e:
-        logging.error(f"Error in support_dashboard_changes: {e}")
-        return f"Error querying support dashboard changes: {str(e)}"
-
-
-@mcp.tool()
-async def support_dashboard_token_venues(
-    token_symbol: Annotated[
-        str,
-        Field(
-            description=(
-                "Token symbol to compare across Yearn venues, such as 'USDC', 'WETH', or 'cbBTC'. "
-                "This is the best endpoint for 'where can I deploy token X in Yearn?' questions."
-            )
-        ),
-    ],
-    universe: Annotated[
-        Literal["core", "extended", "raw"],
-        Field(
-            default="core",
-            description=(
-                "Dashboard universe filter. Use 'core' for the default support-safe venue comparison."
-            ),
-        ),
-    ] = "core",
-) -> str:
-    """
-    Compare Yearn venues for a single token symbol using the support dashboard.
-
-    This tool is best for support questions about where a token can be deployed across Yearn.
-    It returns venue-level rows with chain, symbol, TVL, estimated and realized APY, and momentum so the bot can
-    compare Yearn options for tokens like USDC, WETH, or cbBTC without improvising.
+    Use this as a data-health preflight when a dashboard discrepancy could come from a
+    broadly stale ingestion pipeline. It reports global/cohort PPS ages, stale ratios,
+    ingestion jobs, and alerts. It cannot prove whether one specific vault has fresh PPS
+    data because yHelper does not currently expose that per-vault contract.
 
     Returns:
-        A compact JSON-style summary of the token venue response.
+        A compact system/cohort freshness summary with the scope limitation included.
     """
     try:
-        return await support_dashboard_tools.core_support_dashboard_token_venues(
-            token_symbol=token_symbol,
-            universe=universe,
+        return await support_dashboard_tools.core_support_dashboard_freshness(
+            threshold=threshold,
         )
     except Exception as e:
-        logging.error(f"Error in support_dashboard_token_venues: {e}")
-        return f"Error querying support dashboard token venues: {str(e)}"
+        logging.error(f"Error in support_dashboard_freshness: {e}")
+        return f"Error querying support dashboard freshness: {str(e)}"
 
 
 @mcp.tool()
@@ -517,37 +451,38 @@ async def support_dashboard_styfi(
     days: Annotated[
         int,
         Field(
-            default=30,
+            default=7,
             description=(
                 "Trailing lookback window in days for stYFI dashboard context and snapshots."
             ),
             ge=7,
             le=122,
         ),
-    ] = 30,
+    ] = 7,
     epoch_limit: Annotated[
         int,
         Field(
-            default=12,
+            default=3,
             description=(
                 "Maximum number of reward epochs to request from the stYFI dashboard endpoint."
             ),
             ge=3,
             le=24,
         ),
-    ] = 12,
+    ] = 3,
 ) -> str:
     """
     Fetch stYFI reward and staking state from the support dashboard.
 
-    This is the best support tool for stYFI questions because it provides:
-    - current reward epoch and reward token context
+    Use this only for stYFI-specific support because it provides:
+    - current reward epoch and reward/APR context
     - current and projected reward/APR state
     - balances and combined staking supply context
-    - recent snapshot history for support investigations
+    - freshness, ingestion, and bounded recent activity context
 
     Returns:
-        A compact JSON-style summary of the stYFI dashboard response with current reward state and recent snapshots.
+        A compact, tolerant subset of the unversioned stYFI response. Historical series
+        and component-layout fields are intentionally excluded.
     """
     try:
         return await support_dashboard_tools.core_support_dashboard_styfi(
