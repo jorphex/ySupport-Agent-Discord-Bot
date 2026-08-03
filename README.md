@@ -18,7 +18,6 @@ The repo also contains:
 - the live Discord bot runtime
 - the ticket investigation runtime and execution boundary
 - transcript-fetch tooling for ticket review
-- an offline knowledge-gap worker for private internal reporting from support tickets
 
 Documentation ingestion:
 - `yearn_rag/update_docs.sh` is the tracked daily refresh entrypoint
@@ -37,7 +36,7 @@ Runtime boundaries:
 - production support turns use `codex_support_exec`
 - `support_boundary.py` is the live outer classifier shared with explicit replay
 - `support_agents.py` and `ticket_investigation/runtime.py` are the legacy local backend retained for explicit local/subprocess replay and LLM evaluation
-- `knowledge_gap_worker.py` and `knowledge_gap_reporting.py` are manual offline analysis tools and are not imported by live support turns
+- `ticket_transcript_fetch.py` is a manual read-only review tool and is not imported by live support turns
 
 Host-native service mode
 

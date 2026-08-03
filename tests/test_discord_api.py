@@ -24,6 +24,25 @@ class _FakeJsonResponse:
 
 
 class DiscordApiTests(unittest.TestCase):
+    def test_discord_request_rejects_non_discord_origins_before_sending_token(
+        self,
+    ) -> None:
+        with (
+            unittest.mock.patch.object(
+                discord_api.config,
+                "DISCORD_BOT_TOKEN",
+                "test-token",
+            ),
+            unittest.mock.patch("discord_api.request.urlopen") as mock_urlopen,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "official v10 API origin",
+            ):
+                discord_api.discord_get_json("https://example.com/collect")
+
+        mock_urlopen.assert_not_called()
+
     def test_discord_request_retries_after_rate_limit(self) -> None:
         rate_limited_body = io.BytesIO(json.dumps({"retry_after": 0.01}).encode("utf-8"))
         rate_limited_error = error.HTTPError(

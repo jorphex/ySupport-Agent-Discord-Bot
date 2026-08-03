@@ -1,7 +1,7 @@
 import json
 import time
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
 import config
 
@@ -17,6 +17,19 @@ class DiscordApiError(RuntimeError):
         self.url = url
         self.status_code = status_code
         super().__init__(message)
+
+
+def _validate_discord_api_url(url: str) -> None:
+    parsed = parse.urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "discord.com"
+        or not (
+            parsed.path == "/api/v10"
+            or parsed.path.startswith("/api/v10/")
+        )
+    ):
+        raise ValueError("Discord API requests must use the official v10 API origin.")
 
 
 def _read_json_body(response) -> Any:
@@ -50,7 +63,8 @@ def _format_http_error(exc: error.HTTPError, *, url: str) -> DiscordApiError:
     return DiscordApiError(message, url=url, status_code=exc.code)
 
 
-def _discord_request_json(method: str, url: str, payload: Any | None = None) -> Any:
+def _discord_request_json(url: str) -> Any:
+    _validate_discord_api_url(url)
     if not config.DISCORD_BOT_TOKEN:
         raise ValueError("DISCORD_BOT_TOKEN is required for Discord API access.")
 
@@ -58,12 +72,7 @@ def _discord_request_json(method: str, url: str, payload: Any | None = None) -> 
         "Authorization": f"Bot {config.DISCORD_BOT_TOKEN}",
         "User-Agent": "ysupport-discord-api-client",
     }
-    body: bytes | None = None
-    if payload is not None:
-        headers["Content-Type"] = "application/json"
-        body = json.dumps(payload).encode("utf-8")
-
-    req = request.Request(url, data=body, headers=headers, method=method)
+    req = request.Request(url, headers=headers, method="GET")
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
             with request.urlopen(req, timeout=30) as response:
@@ -89,8 +98,4 @@ def _discord_request_json(method: str, url: str, payload: Any | None = None) -> 
 
 
 def discord_get_json(url: str) -> Any:
-    return _discord_request_json("GET", url)
-
-
-def discord_post_json(url: str, payload: Any) -> Any:
-    return _discord_request_json("POST", url, payload)
+    return _discord_request_json(url)
