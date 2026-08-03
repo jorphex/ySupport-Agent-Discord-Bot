@@ -30,6 +30,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_RETRIES = 3
 EMBEDDING_BATCH_SIZE = 100
 DELETE_BATCH_SIZE = 1000
+FETCH_BATCH_SIZE = 250
 STATE_SCHEMA_VERSION = 1
 PIPELINE_VERSION = 1
 VERIFY_ATTEMPTS = 6
@@ -141,6 +142,46 @@ def list_namespace_ids(index: Any, namespace: str) -> set[str]:
     return ids
 
 
+def fetch_namespace_ids(
+    index: Any,
+    namespace: str,
+    expected_ids: set[str],
+) -> set[str]:
+    fetched_ids: set[str] = set()
+    ordered_ids = sorted(expected_ids)
+    for offset in range(0, len(ordered_ids), FETCH_BATCH_SIZE):
+        response = index.fetch(
+            ids=ordered_ids[offset : offset + FETCH_BATCH_SIZE],
+            namespace=namespace,
+        )
+        vectors = (
+            response.get("vectors", {})
+            if hasattr(response, "get")
+            else getattr(response, "vectors", {})
+        )
+        fetched_ids.update(str(vector_id) for vector_id in vectors)
+    return fetched_ids
+
+
+def namespace_matches_expected(
+    index: Any,
+    namespace: str,
+    expected_ids: set[str],
+    *,
+    stats_count: int | None = None,
+    listed_ids: set[str] | None = None,
+) -> bool:
+    if stats_count is None:
+        stats_count = _namespace_vector_count(index.describe_index_stats(), namespace)
+    if stats_count != len(expected_ids):
+        return False
+    if listed_ids is None:
+        listed_ids = list_namespace_ids(index, namespace)
+    if listed_ids == expected_ids:
+        return True
+    return fetch_namespace_ids(index, namespace, expected_ids) == expected_ids
+
+
 def _load_docs(input_json: str) -> list[dict[str, Any]]:
     path = Path(input_json)
     try:
@@ -211,7 +252,14 @@ def _verify_namespace_ids(
     actual_ids: set[str] = set()
     for attempt in range(VERIFY_ATTEMPTS):
         actual_ids = list_namespace_ids(index, namespace)
-        if actual_ids == expected_ids:
+        stats_count = _namespace_vector_count(index.describe_index_stats(), namespace)
+        if namespace_matches_expected(
+            index,
+            namespace,
+            expected_ids,
+            stats_count=stats_count,
+            listed_ids=actual_ids,
+        ):
             return
         if attempt < VERIFY_ATTEMPTS - 1:
             time.sleep(VERIFY_DELAY_SECONDS)
@@ -254,7 +302,13 @@ def process_and_embed_source(
         and prior.get("embedding_model") == EMBEDDING_MODEL
         and prior.get("pipeline_version") == PIPELINE_VERSION
     )
-    live_matches = stats_count == len(docs) and live_ids == desired_id_set
+    live_matches = namespace_matches_expected(
+        index,
+        namespace,
+        desired_id_set,
+        stats_count=stats_count,
+        listed_ids=live_ids,
+    )
     if not force_refresh and state_matches and live_matches:
         print(
             f"Unchanged: {namespace} already has the expected {len(docs)} vectors; "

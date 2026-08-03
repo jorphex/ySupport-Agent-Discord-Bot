@@ -6,12 +6,13 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${REPO_ROOT}"
 
-if [[ -f ".venv/bin/activate" ]]; then
-  # shellcheck disable=SC1091
-  source ".venv/bin/activate"
+PYTHON="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -x "${PYTHON}" ]]; then
+  echo "Missing project Python environment: ${PYTHON}" >&2
+  exit 1
 fi
 
 export PYTHONUNBUFFERED=1
-: "${TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE:=${HOME}/.codex/auth.json}"
+: "${TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE:?TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE must point to service-owned auth}"
 
-exec python3 ysupport.py
+exec "${PYTHON}" ysupport.py

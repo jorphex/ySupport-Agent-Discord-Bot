@@ -114,7 +114,6 @@ from views import (
 from utils import send_long_message
 
 
-load_dotenv()
 set_default_openai_key(config.OPENAI_API_KEY)
 
 # Logging
@@ -1153,7 +1152,7 @@ def _run_ticket_bot_once() -> None:
     config.validate_runtime_environment_config()
     config.validate_ticket_execution_runtime_config()
     client = TicketBot(intents=_build_discord_intents())
-    client.run(config.DISCORD_BOT_TOKEN)
+    client.run(config.DISCORD_BOT_TOKEN, log_handler=None)
 
 
 def _run_ticket_bot_with_fatal_startup_backoff() -> None:

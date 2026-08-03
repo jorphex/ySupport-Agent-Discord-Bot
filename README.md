@@ -21,6 +21,7 @@ The repo also contains:
 
 Documentation ingestion:
 - `yearn_rag/update_docs.sh` is the tracked daily refresh entrypoint
+- the refresh uses the repository `.venv` and fails closed if that environment is missing
 - successful source fingerprints are stored under `.cache/docs_ingestion/`
 - unchanged sources skip OpenAI embeddings and Pinecone writes only after the
   live namespace count and exact vector IDs are verified
@@ -31,6 +32,8 @@ Documentation ingestion:
 - set `DOCS_INGESTION_FORCE_REFRESH=1` for an explicit full repair
 - refreshes upsert current vectors before removing stale IDs, so a provider
   failure does not empty the live namespace
+- the production cron entry overwrites `yearn_rag/update_docs.log` on each run
+  instead of retaining unbounded historical output
 
 Runtime boundaries:
 - production support turns use `codex_support_exec`
@@ -63,9 +66,9 @@ docker compose -f compose.mcp.yaml ps
 `compose.mcp.yaml` publishes only `127.0.0.1:8001`, mounts only the generated
 repo-context SQLite database read-only, and does not pass Discord or Telegram
 credentials into MCP. HTTP requests without the configured bearer token are
-rejected before tool execution. Rebuild after dependency or MCP source changes;
-Compose retains the prior image locally for rollback. The tracked
-`.dockerignore` is an allowlist containing only the files copied by
+rejected before tool execution. Before rebuilding after dependency or MCP source
+changes, tag the current image as `ysupport-mcp:rollback`. The tracked
+`Dockerfile.mcp.dockerignore` is an allowlist containing only the files copied by
 `Dockerfile.mcp`, so local credentials, caches, tests, and evidence assets never
 enter the build context.
 
@@ -74,9 +77,10 @@ Important:
 - the bot writes `config.toml` and instructions into its `CODEX_HOME`
 - use `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to point at a `0600` auth file owned by the service user
 - keep the checkout and Codex installation read-only; only the dedicated state directory and private temporary directory need writes
+- keep `.env` root-owned with mode `0600`; systemd reads it before dropping privileges and then hides it from the service namespace
 
 Minimal host-native setup:
-- create a host venv and `pip install -r requirements.txt`
+- create a host venv and `pip install -r requirements.txt`; direct dependencies are pinned to the reviewed deployment versions
 - ensure `codex exec` works for the service user
 - leave `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path
 - set `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to the service-owned auth file

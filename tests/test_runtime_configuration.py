@@ -26,13 +26,22 @@ class ConfigSummaryTests(unittest.TestCase):
         self.assertEqual(config.TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT, "low")
 
     def test_mcp_docker_context_is_an_explicit_tracked_allowlist(self) -> None:
-        dockerignore = Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+        dockerignore = Path("Dockerfile.mcp.dockerignore").read_text(
+            encoding="utf-8"
+        ).splitlines()
 
-        self.assertEqual(dockerignore[0], "*")
+        self.assertEqual(dockerignore[0], "**")
         self.assertIn("!Dockerfile.mcp", dockerignore)
         self.assertIn("!mcp_server.py", dockerignore)
         self.assertIn("!yearn_rag/repo_sources.json", dockerignore)
         self.assertNotIn("!.env", dockerignore)
+
+    def test_host_launcher_requires_the_project_python_and_explicit_auth(self) -> None:
+        launcher = Path("scripts/run_ysupport_host.sh").read_text(encoding="utf-8")
+
+        self.assertIn('PYTHON="${REPO_ROOT}/.venv/bin/python"', launcher)
+        self.assertIn("TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE:?", launcher)
+        self.assertNotIn("exec python3", launcher)
 
     def test_support_dashboard_tls_verification_defaults_on(self) -> None:
         self.assertTrue(config.SUPPORT_DASHBOARD_VERIFY_SSL)

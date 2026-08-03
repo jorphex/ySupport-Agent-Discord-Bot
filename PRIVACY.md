@@ -1,6 +1,6 @@
 # ySupport Privacy Policy
 
-Last updated: July 24, 2026
+Last updated: August 3, 2026
 
 ySupport is an AI-assisted support bot for the official Yearn Discord community. This policy explains how it handles information when people use it.
 
@@ -43,7 +43,7 @@ Access to stored support data is limited to authorized operators and contributor
 
 ## User choices and deletion requests
 
-Using ySupport is optional. A ticket owner may avoid automated processing by not selecting a ySupport category or may use the **Stop Bot** control to stop future automated processing in that ticket. Stopping the bot does not by itself guarantee deletion of previously created operational records.
+Using ySupport is optional. A ticket owner may avoid automated processing by not selecting a ySupport category or may use the **Stop Bot** control to stop automatic responses in that ticket. After the bot is stopped, an authorized support contributor may explicitly invoke ySupport for a single reply. Stopping the bot does not by itself guarantee deletion of previously created operational records.
 
 To request access to or deletion of information associated with a support ticket, open a ticket in the official Yearn Discord and state that the request concerns ySupport privacy or data deletion. Include the relevant Discord user ID and ticket channel ID when available. Requests are subject to applicable security, legal, and operational requirements.
 

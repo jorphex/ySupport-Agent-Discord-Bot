@@ -11,6 +11,7 @@ Group=ysupport
 WorkingDirectory=/root/bots/discord/ysupport
 EnvironmentFile=/root/bots/discord/ysupport/.env
 Environment=PYTHON_DOTENV_DISABLED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/root/bots/discord/ysupport/scripts/run_ysupport_host.sh
 
 StateDirectory=ysupport-codex

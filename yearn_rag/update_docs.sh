@@ -5,6 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+    echo "Missing project Python environment: $PYTHON" >&2
+    exit 1
+fi
+
 LOCK_DIR="$SCRIPT_DIR/../.cache/docs_ingestion"
 mkdir -p "$LOCK_DIR"
 exec 9>"$LOCK_DIR/update_docs.lock"
@@ -19,18 +25,18 @@ git pull --ff-only origin master
 cd ..
 
 echo "Fetching Flex docs..."
-python3 fetch_flex_docs.py
+"$PYTHON" fetch_flex_docs.py
 
 echo "Running process_docs.py..."
-python3 process_docs.py
+"$PYTHON" process_docs.py
 
 echo "Updating vector store..."
-python3 embed_and_store.py
+"$PYTHON" embed_and_store.py
 
 echo "Rebuilding repo context..."
-python3 build_repo_context.py
+"$PYTHON" build_repo_context.py
 
 echo "Verifying repo context..."
-python3 verify_repo_context.py
+"$PYTHON" verify_repo_context.py
 
 echo "Yearn docs sync, vector refresh, and repo-context refresh complete."

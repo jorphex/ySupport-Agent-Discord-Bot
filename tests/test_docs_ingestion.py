@@ -56,11 +56,24 @@ class _FakeEmbeddingClient:
 
 
 class _FakeIndex:
-    def __init__(self, namespaces: dict[str, set[str]] | None = None) -> None:
+    def __init__(
+        self,
+        namespaces: dict[str, set[str]] | None = None,
+        *,
+        listed_namespaces: dict[str, set[str]] | None = None,
+    ) -> None:
         self.namespaces = {
             namespace: set(vector_ids)
             for namespace, vector_ids in (namespaces or {}).items()
         }
+        self.listed_namespaces = (
+            {
+                namespace: set(vector_ids)
+                for namespace, vector_ids in listed_namespaces.items()
+            }
+            if listed_namespaces is not None
+            else self.namespaces
+        )
         self.upserts: list[tuple[str, list[str]]] = []
         self.deletes: list[tuple[str, list[str]]] = []
         self.events: list[str] = []
@@ -74,9 +87,15 @@ class _FakeIndex:
         }
 
     def list(self, *, namespace: str):
-        vector_ids = sorted(self.namespaces.get(namespace, set()))
+        vector_ids = sorted(self.listed_namespaces.get(namespace, set()))
         if vector_ids:
             yield vector_ids
+
+    def fetch(self, *, ids: list[str], namespace: str):
+        available = self.namespaces.get(namespace, set())
+        return SimpleNamespace(
+            vectors={vector_id: {} for vector_id in ids if vector_id in available}
+        )
 
     def upsert(self, *, vectors, namespace: str):
         vector_ids = [vector["id"] for vector in vectors]
@@ -150,6 +169,49 @@ class DocsIngestionTests(unittest.TestCase):
         self.assertEqual(index.upserts, [])
         self.assertEqual(index.deletes, [])
         self.assertFalse(self.state_path.exists())
+
+    def test_unchanged_source_skips_when_list_lags_behind_fetch(self) -> None:
+        state = self._matching_state()
+        index = _FakeIndex(
+            {"test-docs": self.desired_ids},
+            listed_namespaces={"test-docs": {"stale-a", "stale-b"}},
+        )
+        client = _FakeEmbeddingClient()
+
+        result = embed_and_store.process_and_embed_source(
+            self.config,
+            index=index,
+            embedding_client=client,
+            state=state,
+            state_path=self.state_path,
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(client.embeddings.calls, [])
+        self.assertEqual(index.upserts, [])
+        self.assertEqual(index.deletes, [])
+
+    def test_refresh_verification_accepts_current_fetch_when_list_lags(self) -> None:
+        state = {
+            "schema_version": embed_and_store.STATE_SCHEMA_VERSION,
+            "sources": {},
+        }
+        index = _FakeIndex(
+            {"test-docs": self.desired_ids},
+            listed_namespaces={"test-docs": {"stale-a", "stale-b"}},
+        )
+
+        result = embed_and_store.process_and_embed_source(
+            self.config,
+            index=index,
+            embedding_client=_FakeEmbeddingClient(),
+            state=state,
+            state_path=self.state_path,
+        )
+
+        self.assertEqual(result["status"], "refreshed")
+        self.assertEqual(result["deleted_count"], 2)
+        self.assertTrue(self.state_path.exists())
 
     def test_missing_state_refreshes_before_deleting_stale_ids(self) -> None:
         state = {
@@ -296,6 +358,14 @@ class DocsIngestionTests(unittest.TestCase):
         self.assertIn('exec 9>"$LOCK_DIR/update_docs.lock"', script)
         self.assertIn("flock -n 9", script)
         self.assertIn("git pull --ff-only origin master", script)
+        self.assertIn('PYTHON="$SCRIPT_DIR/../.venv/bin/python"', script)
+        self.assertNotIn("python3 process_docs.py", script)
+
+        requirements = (embed_and_store.BASE_DIR / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("tiktoken==", requirements)
+        self.assertIn("python-frontmatter==", requirements)
 
     def test_flex_refresh_removes_sources_no_longer_in_the_target_set(self) -> None:
         output_dir = self.root / "flex-docs"

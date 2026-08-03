@@ -31,6 +31,7 @@ from ysupport import (
     TicketBot,
     _build_discord_intents,
     _reload_runtime_env_and_config,
+    _run_ticket_bot_once,
     _run_ticket_bot_with_fatal_startup_backoff,
 )
 from ticket_channel_lifecycle import (
@@ -528,6 +529,19 @@ class TicketFlowTests(TicketFlowTestCase):
         mock_load.assert_called_once_with(config.BASE_DIR / ".env", override=True)
         mock_reload.assert_called_once_with(config)
         self.assertEqual(config.DISCORD_BOT_TOKEN, original_value)
+
+    def test_run_ticket_bot_uses_the_existing_root_log_handler(self) -> None:
+        with (
+            patch("ysupport.config.validate_runtime_environment_config"),
+            patch("ysupport.config.validate_ticket_execution_runtime_config"),
+            patch("ysupport.TicketBot") as ticket_bot,
+        ):
+            _run_ticket_bot_once()
+
+        ticket_bot.return_value.run.assert_called_once_with(
+            config.DISCORD_BOT_TOKEN,
+            log_handler=None,
+        )
 
     def test_run_ticket_bot_with_fatal_startup_backoff_retries_after_login_failure(
         self,
