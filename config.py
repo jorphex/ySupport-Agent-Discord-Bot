@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import shlex
+from typing import overload
 
 from dotenv import load_dotenv
 
@@ -13,7 +14,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    _INVALID_ENV_ERRORS[name] = f"{name} must be a boolean"
+    return default
 
 
 def _env_command_prefixes(name: str) -> list[list[str]]:
@@ -32,6 +41,14 @@ def _env_command_prefixes(name: str) -> list[list[str]]:
 def _env_csv(name: str) -> list[str]:
     raw_value = os.getenv(name, "")
     return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
+@overload
+def _env_int(name: str, default: int) -> int: ...
+
+
+@overload
+def _env_int(name: str, default: None = None) -> int | None: ...
 
 
 def _env_int(name: str, default: int | None = None) -> int | None:
@@ -185,7 +202,7 @@ MAX_DISCORD_MESSAGE_LENGTH = 1990
 
 # --- Bot Behavior ---
 COOLDOWN_SECONDS = 5
-BUG_REPORT_COOLDOWN_SECONDS = int(os.getenv("BUG_REPORT_COOLDOWN_SECONDS", "60"))
+BUG_REPORT_COOLDOWN_SECONDS = _env_int("BUG_REPORT_COOLDOWN_SECONDS", 60)
 MAX_TICKET_CONVERSATION_TURNS = 10
 MAX_PUBLIC_TRIGGER_TURNS = _env_int(
     "MAX_PUBLIC_TRIGGER_TURNS",
@@ -194,7 +211,6 @@ MAX_PUBLIC_TRIGGER_TURNS = _env_int(
 if MAX_PUBLIC_TRIGGER_TURNS is None:
     MAX_PUBLIC_TRIGGER_TURNS = MAX_TICKET_CONVERSATION_TURNS
 MAX_RESULTS_TO_SHOW = 5
-STRATEGY_FETCH_CONCURRENCY = 10
 PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30
 TICKET_EXECUTION_ENDPOINT = os.getenv("TICKET_EXECUTION_ENDPOINT", "local").strip().lower()
 TICKET_EXECUTION_FALLBACK_ENDPOINT = os.getenv(
@@ -321,6 +337,24 @@ SUPPORT_DASHBOARD_TIMEOUT_SECONDS = _env_float(
 )
 
 
+def ticket_execution_canary_is_active() -> bool:
+    return bool(
+        TICKET_EXECUTION_CANARY_ENDPOINT
+        and (TICKET_EXECUTION_CANARY_CHANNEL_IDS or TICKET_EXECUTION_CANARY_INTENTS)
+    )
+
+
+def ticket_execution_endpoint_modes() -> tuple[str, ...]:
+    modes = [TICKET_EXECUTION_ENDPOINT]
+    if TICKET_EXECUTION_FALLBACK_ENDPOINT:
+        modes.append(TICKET_EXECUTION_FALLBACK_ENDPOINT)
+    if TICKET_EXECUTION_SHADOW_ENDPOINT:
+        modes.append(TICKET_EXECUTION_SHADOW_ENDPOINT)
+    if ticket_execution_canary_is_active():
+        modes.append(TICKET_EXECUTION_CANARY_ENDPOINT)
+    return tuple(modes)
+
+
 def ticket_execution_runtime_summary() -> str:
     parts = [f"primary={TICKET_EXECUTION_ENDPOINT}"]
     if TICKET_EXECUTION_FALLBACK_ENDPOINT:
@@ -329,10 +363,7 @@ def ticket_execution_runtime_summary() -> str:
         parts.append(f"shadow={TICKET_EXECUTION_SHADOW_ENDPOINT}")
     if TICKET_EXECUTION_CANARY_ENDPOINT:
         parts.append(f"canary={TICKET_EXECUTION_CANARY_ENDPOINT}")
-    if (
-        TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
-    ):
+    if "codex_support_exec" in ticket_execution_endpoint_modes():
         parts.append(f"codex_model={TICKET_EXECUTION_CODEX_MODEL or 'default'}")
         parts.append(
             "codex_reasoning="
@@ -365,10 +396,7 @@ def ticket_execution_runtime_warnings() -> list[str]:
 
 
 def validate_ticket_execution_runtime_config() -> None:
-    uses_codex_support = (
-        TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
-        or TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
-    )
+    uses_codex_support = "codex_support_exec" in ticket_execution_endpoint_modes()
     if uses_codex_support and not TICKET_EXECUTION_CODEX_HOME:
         raise ValueError(
             "codex_support_exec requires TICKET_EXECUTION_CODEX_HOME so the bot uses "
@@ -411,13 +439,19 @@ REPO_CONTEXT_CACHE_DIR = Path(
 REPO_CONTEXT_DB_PATH = Path(
     os.getenv("REPO_CONTEXT_DB_PATH", str(REPO_CONTEXT_CACHE_DIR / "repo_context.sqlite3"))
 )
-REPO_CONTEXT_TOP_K = int(os.getenv("REPO_CONTEXT_TOP_K", "6"))
-REPO_CONTEXT_MAX_SNIPPET_CHARS = int(os.getenv("REPO_CONTEXT_MAX_SNIPPET_CHARS", "1800"))
+REPO_CONTEXT_TOP_K = _env_int("REPO_CONTEXT_TOP_K", 6)
+REPO_CONTEXT_MAX_SNIPPET_CHARS = _env_int("REPO_CONTEXT_MAX_SNIPPET_CHARS", 1800)
 REPO_CONTEXT_INCLUDE_UI = _env_bool("REPO_CONTEXT_INCLUDE_UI", default=False)
-REPO_CONTEXT_MAX_AGE_HOURS = int(os.getenv("REPO_CONTEXT_MAX_AGE_HOURS", "168"))
+REPO_CONTEXT_MAX_AGE_HOURS = _env_int("REPO_CONTEXT_MAX_AGE_HOURS", 168)
 REPO_CONTEXT_REQUIRE_FRESH = _env_bool("REPO_CONTEXT_REQUIRE_FRESH", default=True)
-REPO_CONTEXT_MAX_SEARCH_CALLS_PER_RUN = int(os.getenv("REPO_CONTEXT_MAX_SEARCH_CALLS_PER_RUN", "8"))
-REPO_CONTEXT_MAX_SEARCHES_WITHOUT_FETCH = int(os.getenv("REPO_CONTEXT_MAX_SEARCHES_WITHOUT_FETCH", "4"))
+REPO_CONTEXT_MAX_SEARCH_CALLS_PER_RUN = _env_int(
+    "REPO_CONTEXT_MAX_SEARCH_CALLS_PER_RUN",
+    8,
+)
+REPO_CONTEXT_MAX_SEARCHES_WITHOUT_FETCH = _env_int(
+    "REPO_CONTEXT_MAX_SEARCHES_WITHOUT_FETCH",
+    4,
+)
 
 # --- Web3 & Chains ---
 def _alchemy_rpc_url(network_slug: str) -> str:

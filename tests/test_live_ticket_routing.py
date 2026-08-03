@@ -555,6 +555,19 @@ class RoutingTests(unittest.TestCase):
         finally:
             clear_ticket_investigation_job(channel_id)
 
+    def test_merge_explicit_evidence_does_not_infer_chain_from_substring(self) -> None:
+        channel_id = 30
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        try:
+            _merge_explicit_evidence_into_job(
+                investigation_job,
+                "The portfolio database is showing the wrong balance.",
+            )
+
+            self.assertIsNone(investigation_job.evidence.chain)
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
     def test_build_contextual_hints_reuses_known_chain_and_tx_hash(self) -> None:
         channel_id = 23
         investigation_job = get_or_create_ticket_investigation_job(channel_id)

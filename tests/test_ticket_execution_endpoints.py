@@ -911,14 +911,14 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow_outcome.raw_final_reply, "fallback-ok")
         self.assertEqual(updated_job.current_specialty, "docs")
 
-    async def test_failover_json_endpoint_falls_back_when_primary_returns_malformed_json(self) -> None:
+    async def test_failover_json_endpoint_falls_back_when_primary_returns_malformed_result(self) -> None:
         class _MalformedPrimaryEndpoint:
             async def execute_json_turn(
                 self,
                 request_json: str,
                 hooks: TicketExecutionHooks | None = None,
             ) -> str:
-                return "{not-json"
+                return "{}"
 
         class _FallbackJsonEndpoint:
             async def execute_json_turn(

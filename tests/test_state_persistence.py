@@ -46,6 +46,21 @@ from state import (
 
 
 class TicketStatePersistenceTests(unittest.TestCase):
+    def test_hydration_ignores_non_object_json_state(self) -> None:
+        channel_id = 100
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ticket_dir = Path(temp_dir) / "tickets"
+            ticket_dir.mkdir(parents=True)
+            (ticket_dir / f"{channel_id}.json").write_text(
+                "[]",
+                encoding="utf-8",
+            )
+            with patch.object(state, "_TICKET_STATE_DIR", ticket_dir):
+                hydrate_ticket_state(channel_id)
+
+            self.assertNotIn(channel_id, conversation_threads)
+            self.assertIsNone(state._read_json(ticket_dir / f"{channel_id}.json"))
+
     def test_ticket_state_round_trip_persists_history_job_and_flags(self) -> None:
         channel_id = 101
         with tempfile.TemporaryDirectory() as temp_dir:

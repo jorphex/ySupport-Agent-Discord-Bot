@@ -262,10 +262,7 @@ def build_ticket_execution_json_endpoint(
         )
         endpoint = FailoverTicketExecutionJsonEndpoint(primary, fallback)
     canary_mode = config.TICKET_EXECUTION_CANARY_ENDPOINT
-    if canary_mode and (
-        config.TICKET_EXECUTION_CANARY_CHANNEL_IDS
-        or config.TICKET_EXECUTION_CANARY_INTENTS
-    ):
+    if config.ticket_execution_canary_is_active():
         canary = _build_single_ticket_execution_json_endpoint(
             canary_mode,
             delegate,

@@ -344,9 +344,22 @@ class TicketExecutionTransportResult:
         cls,
         payload: dict[str, Any],
     ) -> "TicketExecutionTransportResult":
+        flow_outcome = dict(payload["flow_outcome"])
+        updated_job = dict(payload["updated_job"])
+        missing_flow_fields = {
+            "raw_final_reply",
+            "conversation_history",
+            "completed_agent_key",
+            "requires_human_handoff",
+        } - flow_outcome.keys()
+        if missing_flow_fields:
+            missing = ", ".join(sorted(missing_flow_fields))
+            raise ValueError(f"Ticket execution result is missing: {missing}")
+        if "channel_id" not in updated_job:
+            raise ValueError("Ticket execution result is missing: updated_job.channel_id")
         return cls(
-            flow_outcome=dict(payload.get("flow_outcome", {})),
-            updated_job=dict(payload.get("updated_job", {})),
+            flow_outcome=flow_outcome,
+            updated_job=updated_job,
         )
 
     def to_json(self) -> str:

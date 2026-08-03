@@ -20,6 +20,40 @@ from ticket_execution.status import (
 
 
 class ConfigSummaryTests(unittest.TestCase):
+    def test_invalid_boolean_env_keeps_safe_default_and_reports_error(self) -> None:
+        config._INVALID_ENV_ERRORS.pop("TEST_BOOLEAN_SETTING", None)
+        try:
+            with patch.dict(
+                os.environ,
+                {"TEST_BOOLEAN_SETTING": "treu"},
+            ):
+                value = config._env_bool("TEST_BOOLEAN_SETTING", default=True)
+
+            self.assertTrue(value)
+            self.assertEqual(
+                config._INVALID_ENV_ERRORS["TEST_BOOLEAN_SETTING"],
+                "TEST_BOOLEAN_SETTING must be a boolean",
+            )
+        finally:
+            config._INVALID_ENV_ERRORS.pop("TEST_BOOLEAN_SETTING", None)
+
+    def test_invalid_integer_env_keeps_default_and_reports_error(self) -> None:
+        config._INVALID_ENV_ERRORS.pop("TEST_INTEGER_SETTING", None)
+        try:
+            with patch.dict(
+                os.environ,
+                {"TEST_INTEGER_SETTING": "sixty"},
+            ):
+                value = config._env_int("TEST_INTEGER_SETTING", 60)
+
+            self.assertEqual(value, 60)
+            self.assertEqual(
+                config._INVALID_ENV_ERRORS["TEST_INTEGER_SETTING"],
+                "TEST_INTEGER_SETTING must be an integer",
+            )
+        finally:
+            config._INVALID_ENV_ERRORS.pop("TEST_INTEGER_SETTING", None)
+
     def test_ticket_execution_test_state_keeps_runs_ephemeral(self) -> None:
         self.assertEqual(
             config.TICKET_EXECUTION_STATE_ROOT,
@@ -164,6 +198,56 @@ class ConfigSummaryTests(unittest.TestCase):
             config.TICKET_EXECUTION_ENDPOINT = original_mode
             config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
             config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
+
+    def test_ticket_execution_runtime_validation_covers_active_shadow_codex(
+        self,
+    ) -> None:
+        with patch.multiple(
+            config,
+            TICKET_EXECUTION_ENDPOINT="local",
+            TICKET_EXECUTION_FALLBACK_ENDPOINT="",
+            TICKET_EXECUTION_SHADOW_ENDPOINT="codex_support_exec",
+            TICKET_EXECUTION_CANARY_ENDPOINT="",
+            TICKET_EXECUTION_CODEX_HOME=None,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "requires TICKET_EXECUTION_CODEX_HOME",
+            ):
+                config.validate_ticket_execution_runtime_config()
+
+    def test_ticket_execution_runtime_validation_covers_active_canary_codex(
+        self,
+    ) -> None:
+        with patch.multiple(
+            config,
+            TICKET_EXECUTION_ENDPOINT="local",
+            TICKET_EXECUTION_FALLBACK_ENDPOINT="",
+            TICKET_EXECUTION_SHADOW_ENDPOINT="",
+            TICKET_EXECUTION_CANARY_ENDPOINT="codex_support_exec",
+            TICKET_EXECUTION_CANARY_CHANNEL_IDS={"42"},
+            TICKET_EXECUTION_CANARY_INTENTS=set(),
+            TICKET_EXECUTION_CODEX_HOME=None,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "requires TICKET_EXECUTION_CODEX_HOME",
+            ):
+                config.validate_ticket_execution_runtime_config()
+
+    def test_unselected_canary_is_not_an_active_execution_mode(self) -> None:
+        with patch.multiple(
+            config,
+            TICKET_EXECUTION_ENDPOINT="local",
+            TICKET_EXECUTION_FALLBACK_ENDPOINT="",
+            TICKET_EXECUTION_SHADOW_ENDPOINT="",
+            TICKET_EXECUTION_CANARY_ENDPOINT="codex_support_exec",
+            TICKET_EXECUTION_CANARY_CHANNEL_IDS=set(),
+            TICKET_EXECUTION_CANARY_INTENTS=set(),
+            TICKET_EXECUTION_CODEX_HOME=None,
+        ):
+            self.assertEqual(config.ticket_execution_endpoint_modes(), ("local",))
+            config.validate_ticket_execution_runtime_config()
 
     def test_runtime_environment_validation_requires_core_bot_settings(self) -> None:
         original_openai = config.OPENAI_API_KEY

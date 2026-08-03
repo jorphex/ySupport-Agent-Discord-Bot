@@ -15,6 +15,10 @@ CHAIN_NAMES = (
     "sonic",
     "katana",
 )
+CHAIN_NAME_RE = re.compile(
+    rf"\b({'|'.join(re.escape(chain_name) for chain_name in CHAIN_NAMES)})\b",
+    re.IGNORECASE,
+)
 
 
 def contains_tx_hash(text: str) -> bool:
@@ -31,11 +35,9 @@ def merge_explicit_evidence(
     for tx_hash in TX_HASH_RE.findall(text):
         investigation_job.remember_tx_hash(tx_hash)
 
-    lowered = text.lower()
-    for chain_name in CHAIN_NAMES:
-        if chain_name in lowered:
-            investigation_job.remember_chain(chain_name)
-            break
+    chain_match = CHAIN_NAME_RE.search(text)
+    if chain_match is not None:
+        investigation_job.remember_chain(chain_match.group(1).lower())
 
 
 def build_contextual_hints(

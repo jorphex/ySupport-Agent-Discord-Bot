@@ -28,10 +28,7 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
         validation_error = str(exc)
 
     endpoint_build = _probe_endpoint_build()
-    uses_codex = (
-        config.TICKET_EXECUTION_ENDPOINT == "codex_support_exec"
-        or config.TICKET_EXECUTION_FALLBACK_ENDPOINT == "codex_support_exec"
-    )
+    uses_codex = "codex_support_exec" in config.ticket_execution_endpoint_modes()
     status = {
         "runtime_environment": {
             "validation_ok": runtime_validation_ok,
@@ -66,6 +63,14 @@ def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[
             "fallback_command_probe": _probe_command(
                 config.TICKET_EXECUTION_FALLBACK_ENDPOINT
             ),
+            "shadow_command_probe": _probe_command(
+                config.TICKET_EXECUTION_SHADOW_ENDPOINT
+            ),
+            "canary_command_probe": _probe_command(
+                config.TICKET_EXECUTION_CANARY_ENDPOINT
+            )
+            if config.ticket_execution_canary_is_active()
+            else None,
         },
         "repo_context": get_repo_context_status(),
     }
