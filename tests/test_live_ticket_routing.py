@@ -167,16 +167,18 @@ class RoutingTests(unittest.TestCase):
             "staff_summon_usage",
         )
 
-    def test_build_handoff_notice_includes_one_reply_instruction(self) -> None:
+    def test_build_handoff_notice_explains_reply_and_discord_takeover(self) -> None:
         notice = build_handoff_notice(
             reason="manual follow-up needed",
             summary="i need a human asap",
             channel_id=1506309610192113917,
             guild_id=734804446353031319,
         )
-        self.assertIn("Only one reply is accepted.", notice)
         self.assertIn(
-            "Reply to this message with what I should tell the user or do next.",
+            "Reply to this message with what I should tell the user or do next. "
+            "Your reply will be used for the next ticket update. "
+            "To dismiss the handoff and handle the ticket in Discord, click the "
+            "button below. The first reply or button action closes the handoff.",
             notice,
         )
         self.assertIn(

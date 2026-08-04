@@ -49,7 +49,8 @@ _DISMISS_HANDOFF_BUTTON_TEXT = "Dismiss and handle in Discord"
 _REPLY_ENABLED_FOOTER = (
     "Reply to this message with what I should tell the user or do next. "
     "Your reply will be used for the next ticket update. "
-    "Only one reply is accepted."
+    "To dismiss the handoff and handle the ticket in Discord, click the button below. "
+    "The first reply or button action closes the handoff."
 )
 
 _handoff_summary_async_client: AsyncOpenAI | None = None
