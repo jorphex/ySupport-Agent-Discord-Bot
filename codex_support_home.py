@@ -160,9 +160,6 @@ def _codex_support_config_lines(
         "apps = false",
         "multi_agent = false",
         "shell_tool = true",
-        "",
-        "[tools]",
-        "view_image = false",
     ]
     if ysupport_mcp_enabled:
         lines.extend(

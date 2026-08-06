@@ -3,6 +3,7 @@ import tests as _test_environment  # noqa: F401
 from pathlib import Path
 import unittest
 
+from bot_behavior import SECURITY_PROCESS_URL
 import config
 from ticket_investigation.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
@@ -14,9 +15,13 @@ from ticket_investigation.json_endpoint import build_ticket_execution_json_endpo
 
 from tests.codex_support_test_support import FakeExecutor as _FakeExecutor
 
+_STANDING_INSTRUCTIONS = (
+    Path(__file__).resolve().parents[1] / "ysupport_codex_instructions.md"
+).read_text(encoding="utf-8")
+
 
 class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
-    def test_codex_support_prompt_requests_fuller_prose_for_investigations(
+    def test_codex_support_prompt_keeps_only_volatile_turn_pointers(
         self,
     ) -> None:
         request_path = Path("support_request.json")
@@ -28,40 +33,48 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(str(request_path.resolve()), prompt_text)
         self.assertIn(str(schema_path.resolve()), prompt_text)
-        self.assertIn("Routine support: concise.", prompt_text)
-        self.assertIn("Investigations and report triage: enough prose", prompt_text)
+        self.assertLessEqual(len(prompt_text.split()), 30)
+        self.assertNotIn("current_turn_source", prompt_text)
+        self.assertNotIn("requires_human_handoff", prompt_text)
+
+    def test_standing_instructions_preserve_support_and_handoff_contract(self) -> None:
+        prompt_text = _STANDING_INSTRUCTIONS
+
+        self.assertLessEqual(len(prompt_text.split()), 1050)
+        self.assertIn("Keep routine support concise.", prompt_text)
+        self.assertIn("Give investigations and report triage enough prose", prompt_text)
         self.assertIn(
-            "Do not mention handoff if public evidence already answers the main question.",
+            "If public evidence answers the main question, answer and stop.",
             prompt_text,
         )
         self.assertIn(
-            "exhaust the relevant available documentation, live-data, repository, web, and image evidence",
+            "exhaust relevant available documentation, live data, repository, web, image, and linked-artifact evidence",
             prompt_text,
         )
         self.assertIn(
-            "does not by itself justify handoff",
+            "does not itself justify handoff",
             prompt_text,
         )
         self.assertIn(
-            "Never describe a required human or team action while returning requires_human_handoff=false.",
+            "If the answer says Yearn, its team, a strategist, or an operator must act or review, handoff must be true.",
             prompt_text,
         )
         self.assertIn(
-            "access_or_permission_action, fund_or_account_recovery, security_process, manual_strategy_action, private_internal_fact, or human_decision",
+            "`access_or_permission_action`, `fund_or_account_recovery`, `security_process`, `manual_strategy_action`, `private_internal_fact`, or `human_decision`",
             prompt_text,
         )
         self.assertIn(
-            "do not claim that you have escalated, handed off, or notified anyone",
+            "without claiming it was escalated, handed off, or notified",
             prompt_text,
         )
-        self.assertIn("Use `current_turn_source`", prompt_text)
-        self.assertIn("If `current_turn_source` is `internal_team`", prompt_text)
+        self.assertIn("`current_turn_source` identifies who authored", prompt_text)
+        self.assertIn("Treat `internal_team` as an internal team update", prompt_text)
         self.assertIn(
-            "synthesize a concise direct answer from the Yearn documentation excerpts",
+            "When Yearn documentation fully resolves a mechanics or product question",
             prompt_text,
         )
         self.assertIn(
-            "Do not expose retrieval metadata",
+            "do not expose retrieval metadata",
             prompt_text,
         )
         rewrite_prompt_text = _codex_support_transaction_safety_rewrite_prompt(
@@ -76,38 +89,29 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "Reaching this safety boundary does not by itself justify human handoff.",
                 rendered_prompt,
             )
-        self.assertNotIn(
-            "documentation tool already returns a complete answer",
-            prompt_text,
-        )
+        self.assertNotIn("support_request.json", _STANDING_INSTRUCTIONS)
 
     def test_codex_support_prompt_leads_ambiguous_bug_intake_with_security_path(
         self,
     ) -> None:
-        prompt_text = _codex_support_prompt(
-            support_request_path=Path("support_request.json"),
-            response_schema_path=Path("support_response_schema.json"),
-        )
+        prompt_text = _STANDING_INSTRUCTIONS
 
         security_path_index = prompt_text.index(
-            "begin the reply with https://github.com/yearn/yearn-security/blob/master/SECURITY.md"
+            f"make the first line exactly `{SECURITY_PROCESS_URL}`"
         )
         product_intake_index = prompt_text.index(
-            "Only after that, offer to accept ordinary product-bug details."
+            "offer ordinary product-bug intake."
         )
         self.assertLess(security_path_index, product_intake_index)
         self.assertIn(
-            "Do not stop or request human handoff solely because the user used generic bug-report wording.",
+            "Generic bug wording alone must not stop the turn or cause handoff.",
             prompt_text,
         )
 
     def test_codex_support_prompt_requires_complete_gas_sufficiency_evidence(
         self,
     ) -> None:
-        prompt_text = _codex_support_prompt(
-            support_request_path=Path("support_request.json"),
-            response_schema_path=Path("support_response_schema.json"),
-        )
+        prompt_text = _STANDING_INSTRUCTIONS
         rewrite_prompt_text = _codex_support_transaction_safety_rewrite_prompt(
             response_schema_path=Path("support_response_schema.json"),
         )
@@ -140,17 +144,14 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_codex_support_prompt_requires_economic_claim_reconciliation(self) -> None:
-        prompt_text = _codex_support_prompt(
-            support_request_path=Path("support_request.json"),
-            response_schema_path=Path("support_response_schema.json"),
-        )
+        prompt_text = _STANDING_INSTRUCTIONS
 
         self.assertIn(
-            "reconcile displayed balances with presently realizable wallet positions and available history",
+            "reconcile the display with realizable wallet positions and available history",
             prompt_text,
         )
         self.assertIn(
-            "whether the value was already redeemed, migrated, distributed, or represented elsewhere",
+            "redemption, migration, distribution, or replacement representation",
             prompt_text,
         )
         self.assertIn(

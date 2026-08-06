@@ -29,6 +29,7 @@ from ticket_investigation.codex_support_endpoint import (
 )
 from ticket_investigation.json_endpoint import _codex_env
 from ticket_investigation.codex_support_subprocess import (
+    _usage_from_codex_event,
     run_codex_support_json_subprocess,
 )
 
@@ -261,6 +262,76 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(metadata["stdout_truncated"])
             self.assertFalse(metadata["stderr_truncated"])
 
+    async def test_codex_support_stream_records_usage_and_timing_metrics(self) -> None:
+        response = {"answer": "grounded answer"}
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; "
+                "events=["
+                "{'type':'turn.started'},"
+                "{'type':'item.started','item':{'type':'command_execution'}},"
+                f"{{'type':'item.completed','item':{{'type':'agent_message','text':json.dumps({response!r})}}}},"
+                "{'type':'turn.completed','usage':{"
+                "'input_tokens':1200,'cached_input_tokens':900,"
+                "'cache_write_input_tokens':0,'output_tokens':50,"
+                "'reasoning_output_tokens':10}}]; "
+                "sys.stdout.write('\\n'.join(json.dumps(event) for event in events))"
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertLogs(level="INFO") as captured_logs:
+                output = await run_codex_support_json_subprocess(
+                    command=command,
+                    stdin_text="",
+                    cwd=None,
+                    env=dict(os.environ),
+                    timeout_seconds=5,
+                    max_output_chars=1000,
+                    max_error_chars=1000,
+                    timeout_message="timed out",
+                    empty_stdout_message="empty",
+                    oversized_stdout_message="oversized",
+                    metadata={},
+                    artifact_run_dir=Path(temp_dir),
+                    progress_callback=None,
+                )
+
+            self.assertEqual(output.final_response_text, json.dumps(response))
+            self.assertTrue(
+                any(
+                    "input_tokens=1200" in line
+                    and "cached_input_tokens=900" in line
+                    and "cache_write_input_tokens=0" in line
+                    for line in captured_logs.output
+                )
+            )
+            metadata = json.loads(
+                (Path(temp_dir) / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["input_tokens"], 1200)
+            self.assertEqual(metadata["cached_input_tokens"], 900)
+            self.assertEqual(metadata["cache_write_input_tokens"], 0)
+            self.assertIsInstance(metadata["first_item_ms"], int)
+            self.assertIsInstance(metadata["total_ms"], int)
+            self.assertGreaterEqual(metadata["total_ms"], metadata["first_item_ms"])
+
+    def test_codex_usage_parser_ignores_invalid_numeric_fields(self) -> None:
+        usage = _usage_from_codex_event(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": True,
+                    "cached_input_tokens": -1,
+                    "output_tokens": "50",
+                },
+            }
+        )
+
+        self.assertIsNone(usage)
+
     async def test_image_attachment_stream_enforces_size_without_content_length(
         self,
     ) -> None:
@@ -370,11 +441,13 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f'url = "{EXAMPLE_YSUPPORT_MCP_URL}"', config_text)
             self.assertIn('Authorization = "Bearer secret-key"', config_text)
             self.assertNotIn("command =", config_text)
-            self.assertIn("view_image = false", config_text)
+            self.assertNotIn("[tools]", config_text)
+            self.assertNotIn("view_image", config_text)
             self.assertNotIn("openai_docs", config_text)
-            self.assertIn(
-                "You are ySupport.",
-                home.instructions_path.read_text(encoding="utf-8"),
+            self.assertTrue(
+                home.instructions_path.read_text(encoding="utf-8").startswith(
+                    "You are ySupport,"
+                )
             )
             self.assertEqual(
                 home.auth_path.read_text(encoding="utf-8"),

@@ -4,9 +4,11 @@ import asyncio
 from dataclasses import dataclass
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import signal
+import time
 from typing import Awaitable, Callable, Sequence
 
 from ticket_execution.subprocess_utils import write_execution_artifacts
@@ -14,6 +16,13 @@ from ticket_execution.subprocess_utils import write_execution_artifacts
 _MAX_JSONL_EVENT_BYTES = 8 * 1024 * 1024
 _MAX_STDOUT_CAPTURE_CHARS = 4 * 1024 * 1024
 _MAX_STDERR_CAPTURE_CHARS = 256 * 1024
+_USAGE_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+)
 
 
 @dataclass
@@ -37,6 +46,7 @@ async def run_codex_support_json_subprocess(
     artifact_run_dir: Path | None,
     progress_callback: Callable[[str], Awaitable[None]] | None,
 ) -> CodexSupportExecutionOutput:
+    started_at = time.monotonic()
     creation_kwargs = (
         {"creationflags": 0} if os.name == "nt" else {"start_new_session": True}
     )
@@ -58,6 +68,8 @@ async def run_codex_support_json_subprocess(
     stderr_truncated = False
     saw_stdout = False
     final_response_text: str | None = None
+    usage: dict[str, int] | None = None
+    first_item_at: float | None = None
 
     async def feed_stdin() -> None:
         if process.stdin is None:
@@ -71,12 +83,14 @@ async def run_codex_support_json_subprocess(
             return
 
     async def read_stdout() -> None:
-        nonlocal final_response_text, saw_stdout, stdout_capture_chars, stdout_truncated
+        nonlocal final_response_text, first_item_at, saw_stdout
+        nonlocal stdout_capture_chars, stdout_truncated, usage
         if process.stdout is None:
             return
 
         async def handle_line(line: bytes) -> None:
-            nonlocal final_response_text, saw_stdout, stdout_capture_chars, stdout_truncated
+            nonlocal final_response_text, first_item_at, saw_stdout
+            nonlocal stdout_capture_chars, stdout_truncated, usage
             text = line.decode("utf-8", errors="replace").rstrip("\r")
             if not text:
                 return
@@ -95,6 +109,14 @@ async def run_codex_support_json_subprocess(
             event = parse_json_event(text)
             if event is None:
                 return
+            if first_item_at is None and event.get("type") in {
+                "item.started",
+                "item.completed",
+            }:
+                first_item_at = time.monotonic()
+            event_usage = _usage_from_codex_event(event)
+            if event_usage is not None:
+                usage = event_usage
             progress_text = progress_update_from_codex_event(event)
             if progress_text and progress_callback is not None:
                 await progress_callback(progress_text)
@@ -161,6 +183,17 @@ async def run_codex_support_json_subprocess(
         await asyncio.wait_for(execution_future, timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
         await _terminate_streamed_subprocess(process, process_group_id)
+        total_ms = _elapsed_ms(started_at, time.monotonic())
+        first_item_ms = _first_item_ms(started_at, first_item_at)
+        metrics = _execution_metrics(
+            usage=usage,
+            first_item_ms=first_item_ms,
+            total_ms=total_ms,
+        )
+        _log_execution_metrics(
+            outcome="timeout",
+            metrics=metrics,
+        )
         write_execution_artifacts(
             artifact_run_dir,
             stdout_text=stdout_capture.getvalue().strip(),
@@ -170,6 +203,7 @@ async def run_codex_support_json_subprocess(
                 "timed_out": True,
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": stderr_truncated,
+                **metrics,
             },
         )
         raise RuntimeError(timeout_message) from exc
@@ -192,6 +226,13 @@ async def run_codex_support_json_subprocess(
 
     stdout_text = stdout_capture.getvalue().strip()
     stderr_text = stderr_capture.getvalue().strip()
+    first_item_ms = _first_item_ms(started_at, first_item_at)
+    total_ms = _elapsed_ms(started_at, time.monotonic())
+    metrics = _execution_metrics(
+        usage=usage,
+        first_item_ms=first_item_ms,
+        total_ms=total_ms,
+    )
     write_execution_artifacts(
         artifact_run_dir,
         stdout_text=stdout_text,
@@ -202,7 +243,12 @@ async def run_codex_support_json_subprocess(
             "timed_out": False,
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
+            **metrics,
         },
+    )
+    _log_execution_metrics(
+        outcome="process_completed",
+        metrics=metrics,
     )
     if process.returncode != 0:
         error_text = (
@@ -236,6 +282,71 @@ def parse_codex_support_execution_output(
             "Codex support execution returned JSON events without a final agent message."
         )
     return CodexSupportExecutionOutput(final_response_text=final_response_text)
+
+
+def _usage_from_codex_event(event: dict[str, object]) -> dict[str, int] | None:
+    if event.get("type") != "turn.completed":
+        return None
+    raw_usage = event.get("usage")
+    if not isinstance(raw_usage, dict):
+        return None
+    usage = {
+        field: value
+        for field in _USAGE_FIELDS
+        if (value := _nonnegative_int(raw_usage.get(field))) is not None
+    }
+    return usage or None
+
+
+def _nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _elapsed_ms(started_at: float, ended_at: float) -> int:
+    return max(0, round((ended_at - started_at) * 1000))
+
+
+def _first_item_ms(started_at: float, first_item_at: float | None) -> int | None:
+    return (
+        _elapsed_ms(started_at, first_item_at)
+        if first_item_at is not None
+        else None
+    )
+
+
+def _execution_metrics(
+    *,
+    usage: dict[str, int] | None,
+    first_item_ms: int | None,
+    total_ms: int,
+) -> dict[str, int | None]:
+    return {
+        **{field: (usage or {}).get(field) for field in _USAGE_FIELDS},
+        "first_item_ms": first_item_ms,
+        "total_ms": total_ms,
+    }
+
+
+def _log_execution_metrics(
+    *,
+    outcome: str,
+    metrics: dict[str, int | None],
+) -> None:
+    logging.info(
+        "Codex support metrics outcome=%s input_tokens=%s cached_input_tokens=%s "
+        "cache_write_input_tokens=%s output_tokens=%s "
+        "reasoning_output_tokens=%s first_item_ms=%s total_ms=%s",
+        outcome,
+        metrics["input_tokens"],
+        metrics["cached_input_tokens"],
+        metrics["cache_write_input_tokens"],
+        metrics["output_tokens"],
+        metrics["reasoning_output_tokens"],
+        metrics["first_item_ms"],
+        metrics["total_ms"],
+    )
 
 
 def parse_json_event(text: str) -> dict[str, object] | None:

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from agents import Runner
 
+from agent_prompts import SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS
 from bot_behavior import (
     OUT_OF_SCOPE_SUPPORT_MESSAGE,
     SECURITY_PROCESS_URL,
@@ -48,6 +49,25 @@ class WalletConfirmationPolicyTests(unittest.TestCase):
 
 
 class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
+    def test_boundary_prompt_is_compact_and_preserves_taxonomy(self) -> None:
+        prompt = SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS
+
+        self.assertLessEqual(len(prompt.split()), 250)
+        for classification in (
+            "yearn_support",
+            "business_boundary",
+            "security_process_boundary",
+            "non_support_assistant",
+            "uncertain",
+        ):
+            self.assertIn(f"`{classification}`", prompt)
+        for subtype in ("listing", "general_bd", "vendor_security", "job_inquiry"):
+            self.assertIn(f"`{subtype}`", prompt)
+        self.assertIn("Immunefi or zkPassport submission blocker", prompt)
+        self.assertIn("Yearn code, repository, PoC, exploit, and contract", prompt)
+        self.assertIn("Greetings and neutral support openers", prompt)
+        self.assertIn("choose `yearn_support`", prompt)
+
     async def test_vendor_security_boundary_uses_firm_message(self) -> None:
         class FakeResult:
             def final_output_as(self, _output_type):
