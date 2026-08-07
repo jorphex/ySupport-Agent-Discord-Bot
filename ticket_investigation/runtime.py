@@ -322,12 +322,20 @@ class TicketInvestigationRuntime:
         )
 
     async def run_turn(self, request: TicketTurnRequest) -> TicketAgentFlowOutcome:
-        # Backend safety fallback: replay/direct runtime entry should still apply
-        # the same unified outer support boundary used by the live Discord shell.
+        # The Discord shell assigns internal_team only after staff or Telegram
+        # authorization. Outer user-boundary classification does not apply to
+        # those instructions. Direct external entries retain the same fallback
+        # check used by the live shell.
         boundary_output = request.precomputed_boundary
-        if boundary_output is None:
+        if request.turn_source == "internal_team":
+            boundary_output = None
+        elif boundary_output is None:
             boundary_output = await evaluate_support_boundary(request.aggregated_text)
-        if boundary_output.get("tripwire_triggered") and boundary_output.get("message"):
+        if (
+            boundary_output
+            and boundary_output.get("tripwire_triggered")
+            and boundary_output.get("message")
+        ):
             direct_boundary_reply = str(boundary_output["message"])
             return TicketAgentFlowOutcome(
                 raw_final_reply=direct_boundary_reply,

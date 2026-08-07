@@ -485,6 +485,64 @@ class TicketFlowTests(TicketFlowTestCase):
         self.assertEqual(outcome.raw_final_reply, OUT_OF_SCOPE_SUPPORT_MESSAGE)
         self.assertFalse(outcome.requires_human_handoff)
 
+    async def test_ticket_agent_flow_skips_outer_boundary_for_internal_team_turn(
+        self,
+    ) -> None:
+        channel_id = 372
+        investigation_job = get_or_create_ticket_investigation_job(channel_id)
+        fake_runner = _FakeRunner(
+            [
+                _FakeResult(
+                    final_output="The vault remains available through the Yearn app.",
+                    last_agent=yearn_docs_qa_agent,
+                    _history=[],
+                )
+            ]
+        )
+        context = BotRunContext(
+            channel_id=channel_id,
+            project_context="yearn",
+            initial_button_intent="docs_qa",
+        )
+
+        async def fail_boundary(_text: str):
+            raise AssertionError(
+                "Authorized internal-team turns must bypass the outer user boundary."
+            )
+
+        try:
+            with patch(
+                "ticket_investigation.runtime.evaluate_support_boundary",
+                new=fail_boundary,
+            ):
+                runtime = TicketInvestigationRuntime(fake_runner)
+                outcome = await runtime.run_turn(
+                    TicketTurnRequest(
+                        aggregated_text="Tell the user this vault is still available.",
+                        input_list=[
+                            {
+                                "role": "user",
+                                "content": "Tell the user this vault is still available.",
+                            }
+                        ],
+                        current_history=[],
+                        run_context=context,
+                        investigation_job=investigation_job,
+                        workflow_name="tests.internal_team_turn",
+                        turn_source="internal_team",
+                    )
+                )
+        finally:
+            clear_ticket_investigation_job(channel_id)
+
+        self.assertEqual(len(fake_runner.calls), 1)
+        self.assertIs(fake_runner.calls[0]["starting_agent"], yearn_docs_qa_agent)
+        self.assertEqual(outcome.completed_agent_key, "docs")
+        self.assertEqual(
+            outcome.raw_final_reply,
+            "The vault remains available through the Yearn app.",
+        )
+
     async def test_ticket_agent_flow_marks_specialist_reply_handoff_explicitly(
         self,
     ) -> None:
