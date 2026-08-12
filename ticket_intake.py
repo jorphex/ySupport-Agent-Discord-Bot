@@ -65,7 +65,13 @@ def known_yearn_address_hint(resolved_target) -> str:
         )
     if kind == "strategy":
         vault_label = getattr(resolved_target, "vault_label", None)
-        context = f" attached to {vault_label}" if vault_label else ""
+        vault_address = getattr(resolved_target, "vault_address", None)
+        if vault_label and vault_address:
+            context = f" attached to {vault_label} (`{vault_address}`)"
+        elif vault_label:
+            context = f" attached to {vault_label}"
+        else:
+            context = ""
         return (
             f"Resolved address is a known Yearn strategy{chain_text}: {label}{context}. "
             "Treat it as a strategy target, not as the user's wallet."

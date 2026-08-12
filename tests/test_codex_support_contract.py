@@ -81,6 +81,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             support_request.constraints["allowed_tools"],
             ["shell", "web_search", "ysupport_mcp"],
         )
+        self.assertEqual(support_request.support_state["current_turn_context"], [])
         support_request_without_mcp = SupportTurnRequest.from_ticket_execution_request(
             request,
             ysupport_mcp_enabled=False,
@@ -90,16 +91,68 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             ["shell", "web_search"],
         )
 
+    def test_support_turn_request_preserves_only_current_internal_context(self) -> None:
+        current_history = [
+            {"role": "system", "content": "old context"},
+            {"role": "user", "content": "earlier question"},
+        ]
+        request = TicketExecutionTransportRequest(
+            aggregated_text="0x7130570BCEfCedBe9d15B5b11A33006156460f8f",
+            input_list=[
+                *current_history,
+                {
+                    "role": "system",
+                    "content": (
+                        "Resolved address is a known Yearn strategy on ethereum: "
+                        "USDC to sUSDS Lender attached to USDC-1 yVault."
+                    ),
+                },
+                {"role": "user", "content": "0x7130570BCEfCedBe9d15B5b11A33006156460f8f"},
+            ],
+            current_history=current_history,
+            run_context={
+                "channel_id": 93,
+                "project_context": "yearn",
+                "initial_button_intent": "data_vault_search",
+            },
+            investigation_job={
+                "channel_id": 93,
+                "requested_intent": "data_vault_search",
+                "mode": "collecting",
+                "evidence": {"tx_hashes": []},
+            },
+            workflow_name="tests.current_turn_context",
+        )
+
+        support_request = SupportTurnRequest.from_ticket_execution_request(request)
+
+        self.assertEqual(
+            support_request.support_state["current_turn_context"],
+            [
+                "Resolved address is a known Yearn strategy on ethereum: "
+                "USDC to sUSDS Lender attached to USDC-1 yVault."
+            ],
+        )
+
     def test_support_turn_request_preserves_internal_turn_context(self) -> None:
+        turn_instruction = (
+            "This input is from the internal team, not from the user. "
+            "Write the next Discord update for the user."
+        )
+        current_history = [{"role": "user", "content": "please dump rewards"}]
         request = TicketExecutionTransportRequest(
             aggregated_text="thanks. we already have this queued pending sigs",
-            input_list=[],
-            current_history=[{"role": "user", "content": "please dump rewards"}],
+            input_list=[
+                *current_history,
+                {"role": "system", "content": turn_instruction},
+                {
+                    "role": "user",
+                    "content": "thanks. we already have this queued pending sigs",
+                },
+            ],
+            current_history=current_history,
             turn_source="internal_team",
-            turn_instruction=(
-                "This input is from the internal team, not from the user. "
-                "Write the next Discord update for the user."
-            ),
+            turn_instruction=turn_instruction,
             run_context={
                 "channel_id": 91,
                 "is_public_trigger": False,
@@ -124,6 +177,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             support_request.current_user_message,
             "thanks. we already have this queued pending sigs",
         )
+        self.assertEqual(support_request.support_state["current_turn_context"], [])
 
     def test_internal_team_result_does_not_append_team_reply_as_user_history(
         self,

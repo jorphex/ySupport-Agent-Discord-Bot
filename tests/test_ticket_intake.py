@@ -28,6 +28,7 @@ from state import (
 )
 from ticket_intake import (
     canonicalize_current_user_message as _canonicalize_current_user_message,
+    known_yearn_address_hint,
     prepare_ticket_turn_input,
 )
 from ticket_investigation.runtime import (
@@ -243,6 +244,10 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved.chain, "ethereum")
         self.assertEqual(resolved.label, "Morpho Looper")
         self.assertEqual(resolved.vault_label, "yvUSD")
+        self.assertIn(
+            "attached to yvUSD (`0x2222222222222222222222222222222222222222`)",
+            known_yearn_address_hint(resolved),
+        )
 
     async def test_resolve_yearn_address_target_falls_back_to_contract_profile(self) -> None:
         address = "0x3333333333333333333333333333333333333333"

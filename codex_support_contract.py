@@ -144,6 +144,7 @@ class SupportTurnRequest:
         investigation_job = request.investigation_job
         run_context = request.run_context
         evidence = dict(investigation_job.get("evidence", {}))
+        current_turn_context = _current_turn_system_context(request)
         initial_button_intent = run_context.get("initial_button_intent")
         requested_intent = investigation_job.get("requested_intent")
         withdrawal_target = None
@@ -171,6 +172,7 @@ class SupportTurnRequest:
                 "investigation_mode": investigation_job.get("mode"),
                 "human_handoff_active": investigation_job.get("mode")
                 == "escalated_to_human",
+                "current_turn_context": current_turn_context,
                 "current_specialty": investigation_job.get("current_specialty"),
                 "last_specialty": investigation_job.get("last_specialty"),
                 "known_targets": {
@@ -215,6 +217,22 @@ class SupportTurnRequest:
                 "allowed_tools": allowed_tools,
             },
         )
+
+
+def _current_turn_system_context(
+    request: TicketExecutionTransportRequest,
+) -> list[str]:
+    current_turn_items = request.input_list[len(request.current_history) :]
+    turn_instruction = _normalize_optional_text(request.turn_instruction)
+    return [
+        content.strip()
+        for item in current_turn_items
+        if isinstance(item, dict)
+        and item.get("role") == "system"
+        and isinstance((content := item.get("content")), str)
+        and content.strip()
+        and content.strip() != turn_instruction
+    ]
 
 
 @dataclass
