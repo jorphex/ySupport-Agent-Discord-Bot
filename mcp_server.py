@@ -264,6 +264,17 @@ async def support_dashboard_discover(
             ge=1,
         ),
     ] = None,
+    token_symbol: Annotated[
+        str,
+        Field(
+            default="",
+            description=(
+                "Optional exact token-symbol filter, such as USDC. Matching is "
+                "case-insensitive but does not treat wrappers or bridged variants as equivalent."
+            ),
+            max_length=64,
+        ),
+    ] = "",
     market: Annotated[
         Literal["all", "stablecoins", "eth", "bitcoin", "other"],
         Field(
@@ -283,6 +294,28 @@ async def support_dashboard_discover(
             ),
         ),
     ] = "core",
+    min_tvl_usd: Annotated[
+        float | None,
+        Field(
+            default=None,
+            description=(
+                "Optional minimum vault TVL in USD. Prefer the universe defaults unless "
+                "the support question requires a specific threshold."
+            ),
+            ge=0,
+        ),
+    ] = None,
+    min_points: Annotated[
+        int | None,
+        Field(
+            default=None,
+            description=(
+                "Optional minimum number of PPS observations. Prefer the universe defaults "
+                "unless the support question requires a specific threshold."
+            ),
+            ge=0,
+        ),
+    ] = None,
     sort_by: Annotated[
         Literal["tvl", "est_apy", "apy_30d", "momentum"],
         Field(
@@ -292,6 +325,13 @@ async def support_dashboard_discover(
             ),
         ),
     ] = "tvl",
+    direction: Annotated[
+        Literal["asc", "desc"],
+        Field(
+            default="desc",
+            description="Sort direction. Use descending unless the question requires the lowest values.",
+        ),
+    ] = "desc",
     limit: Annotated[
         int,
         Field(
@@ -327,9 +367,13 @@ async def support_dashboard_discover(
     try:
         return await support_dashboard_tools.core_support_dashboard_discover(
             chain_id=chain_id,
+            token_symbol=token_symbol or None,
             market=market,
             universe=universe,
+            min_tvl_usd=min_tvl_usd,
+            min_points=min_points,
             sort_by=sort_by,
+            direction=direction,
             limit=limit,
         )
     except Exception as e:
@@ -382,6 +426,16 @@ async def support_dashboard_reports(
             le=50,
         ),
     ] = 50,
+    meaningful_only: Annotated[
+        bool,
+        Field(
+            default=True,
+            description=(
+                "Return only reports with a nonzero gain, loss, fee, or refund. Keep true "
+                "for normal support; use false when accounting-only reports matter."
+            ),
+        ),
+    ] = True,
 ) -> str:
     """
     Fetch exact-vault StrategyReported events from the support dashboard.
@@ -390,12 +444,13 @@ async def support_dashboard_reports(
     vault emitted an on-chain StrategyReported event. It does not by itself prove that a
     traditional off-chain harvest job ran or that profit was realized. `realized_result`
     means at least one reported economic field was nonzero; `accounting_update` means all
-    available economic fields were zero.
+    available economic fields were zero. Normal support defaults to meaningful economic
+    results, while accounting-only rows remain available by setting meaningful_only=false.
 
     Raw gain, loss, fee, refund, and debt values are integer strings in token units. Scale
     them by token_decimals, preserve null as unavailable, and account for vault_version when
-    interpreting debt. The query intentionally includes accounting-only reports. Results are
-    the newest bounded rows with no continuation token, so an absent older report is inconclusive.
+    interpreting debt. Accounting-only reports require meaningful_only=false. Results are the
+    newest bounded rows with no continuation token, so an absent older report is inconclusive.
 
     Returns:
         A compact JSON-style report summary with event identity, economics, scaling,
@@ -407,6 +462,7 @@ async def support_dashboard_reports(
             vault_address=vault_address,
             days=days,
             limit=limit,
+            meaningful_only=meaningful_only,
         )
     except Exception as e:
         logging.error(f"Error in support_dashboard_reports: {e}")
@@ -414,36 +470,88 @@ async def support_dashboard_reports(
 
 
 @mcp.tool()
-async def support_dashboard_freshness(
-    threshold: Annotated[
-        Literal["24h", "7d", "30d"],
-        Field(
-            default="24h",
-            description=(
-                "System/cohort PPS staleness threshold. This does not establish the "
-                "freshness of one specific vault."
-            ),
-        ),
-    ] = "24h",
-) -> str:
+async def support_dashboard_status() -> str:
     """
-    Check system-wide and cohort-wide dashboard data freshness.
+    Check yHelper source health, freshness, coverage, and operational status.
 
-    Use this as a data-health preflight when a dashboard discrepancy could come from a
-    broadly stale ingestion pipeline. It reports global/cohort PPS ages, stale ratios,
-    ingestion jobs, and alerts. It cannot prove whether one specific vault has fresh PPS
-    data because yHelper does not currently expose that per-vault contract.
+    Use this before relying on dashboard results when diagnosing missing, delayed, or
+    inconsistent data. It reports compact protocol-source status, global/cohort PPS ages,
+    ingestion jobs, alerts, tracked scope, and coverage. It cannot prove whether one
+    specific vault has fresh PPS data.
 
     Returns:
-        A compact system/cohort freshness summary with the scope limitation included.
+        A compact operational status summary with the per-vault scope limitation included.
     """
     try:
-        return await support_dashboard_tools.core_support_dashboard_freshness(
-            threshold=threshold,
+        return await support_dashboard_tools.core_support_dashboard_status()
+    except Exception as e:
+        logging.error(f"Error in support_dashboard_status: {e}")
+        return f"Error querying support dashboard status: {str(e)}"
+
+
+@mcp.tool()
+async def support_dashboard_changes(
+    window: Annotated[
+        Literal["24h", "7d", "30d"],
+        Field(default="7d", description="Realized APY comparison window."),
+    ] = "7d",
+    stale_threshold: Annotated[
+        Literal["auto", "24h", "7d", "30d"],
+        Field(
+            default="auto",
+            description="Maximum acceptable comparison age. Auto follows the selected window.",
+        ),
+    ] = "auto",
+    universe: Annotated[
+        Literal["core", "extended", "raw"],
+        Field(default="core", description="Use core for normal support market context."),
+    ] = "core",
+    market: Annotated[
+        Literal["all", "stablecoins", "eth", "bitcoin", "other"],
+        Field(default="all", description="Optional vault-market filter."),
+    ] = "all",
+    min_tvl_usd: Annotated[
+        float | None,
+        Field(default=None, description="Optional minimum vault TVL in USD.", ge=0),
+    ] = None,
+    min_points: Annotated[
+        int | None,
+        Field(default=None, description="Optional minimum PPS observation count.", ge=0),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(
+            default=10,
+            description="Maximum risers and fallers to return per list.",
+            ge=1,
+            le=25,
+        ),
+    ] = 10,
+) -> str:
+    """
+    Fetch bounded realized-APY risers and fallers for market context.
+
+    Use this for questions about whether realized yield is broadly rising or falling. It is
+    not address-filterable and is not diagnostic evidence for deposits, withdrawals,
+    StrategyReported events, missing funds, or one specific vault failure. APYs and delta_apy
+    are decimal fractions, so 0.005 is a change of 0.5 percentage points.
+
+    Returns:
+        Compact riser, faller, summary, and freshness context.
+    """
+    try:
+        return await support_dashboard_tools.core_support_dashboard_changes(
+            window=window,
+            stale_threshold=stale_threshold,
+            universe=universe,
+            market=market,
+            min_tvl_usd=min_tvl_usd,
+            min_points=min_points,
+            limit=limit,
         )
     except Exception as e:
-        logging.error(f"Error in support_dashboard_freshness: {e}")
-        return f"Error querying support dashboard freshness: {str(e)}"
+        logging.error(f"Error in support_dashboard_changes: {e}")
+        return f"Error querying support dashboard changes: {str(e)}"
 
 
 @mcp.tool()

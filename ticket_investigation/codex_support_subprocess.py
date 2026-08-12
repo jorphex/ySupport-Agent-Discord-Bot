@@ -406,8 +406,10 @@ def _progress_from_tool_item(item: dict[str, object]) -> str:
         return "Checking screenshots"
     if "report" in raw_name:
         return "Checking recent vault reports"
-    if "freshness" in raw_name:
+    if "freshness" in raw_name or "dashboard_status" in raw_name:
         return "Checking dashboard data freshness"
+    if "dashboard_changes" in raw_name:
+        return "Checking recent yield changes"
     if "search_vaults" in raw_name or "discover" in raw_name or "vault" in raw_name:
         return "Checking vault state"
     if "repo" in raw_name or "artifact" in raw_name:

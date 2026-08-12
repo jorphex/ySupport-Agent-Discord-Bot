@@ -19,6 +19,7 @@ from ticket_investigation.codex_support_endpoint import (
 )
 from ticket_investigation.codex_support_subprocess import (
     CodexSupportExecutionOutput,
+    _progress_from_tool_item,
 )
 from ticket_investigation.executor import TicketExecutionHooks
 from ticket_investigation.transport import (
@@ -191,6 +192,16 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_job["mode"], "waiting_for_user")
         self.assertIsNone(updated_job["current_specialty"])
         self.assertIn("Checking recent vault reports", progress_updates)
+
+    def test_dashboard_progress_labels_distinguish_status_and_changes(self) -> None:
+        self.assertEqual(
+            _progress_from_tool_item({"tool_name": "support_dashboard_status"}),
+            "Checking dashboard data freshness",
+        )
+        self.assertEqual(
+            _progress_from_tool_item({"tool_name": "support_dashboard_changes"}),
+            "Checking recent yield changes",
+        )
 
     async def test_codex_support_endpoint_rewrites_unsafe_signed_transaction_output(
         self,

@@ -61,15 +61,26 @@ class MCPToolContractTests(unittest.IsolatedAsyncioTestCase):
         discover = tools["support_dashboard_discover"].inputSchema["properties"]
         reports_tool = tools["support_dashboard_reports"]
         reports = reports_tool.inputSchema["properties"]
-        freshness = tools["support_dashboard_freshness"].inputSchema["properties"]
+        status = tools["support_dashboard_status"].inputSchema["properties"]
+        changes = tools["support_dashboard_changes"].inputSchema["properties"]
         styfi = tools["support_dashboard_styfi"].inputSchema["properties"]
 
         self.assertNotIn("support_dashboard_harvests", tools)
-        self.assertNotIn("support_dashboard_changes", tools)
+        self.assertNotIn("support_dashboard_freshness", tools)
         self.assertNotIn("support_dashboard_token_venues", tools)
         self.assertEqual(
             set(discover),
-            {"chain_id", "market", "universe", "sort_by", "limit"},
+            {
+                "chain_id",
+                "token_symbol",
+                "market",
+                "universe",
+                "min_tvl_usd",
+                "min_points",
+                "sort_by",
+                "direction",
+                "limit",
+            },
         )
         self.assertEqual(
             discover["market"]["enum"],
@@ -77,7 +88,7 @@ class MCPToolContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             set(reports),
-            {"chain_id", "vault_address", "days", "limit"},
+            {"chain_id", "vault_address", "days", "limit", "meaningful_only"},
         )
         self.assertEqual(
             set(reports_tool.inputSchema["required"]),
@@ -85,8 +96,12 @@ class MCPToolContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(reports["days"]["minimum"], 7)
         self.assertEqual(reports["limit"]["default"], 50)
-        self.assertEqual(freshness["threshold"]["default"], "24h")
-        self.assertEqual(freshness["threshold"]["enum"], ["24h", "7d", "30d"])
+        self.assertTrue(reports["meaningful_only"]["default"])
+        self.assertEqual(status, {})
+        self.assertEqual(changes["window"]["default"], "7d")
+        self.assertEqual(changes["stale_threshold"]["default"], "auto")
+        self.assertEqual(changes["universe"]["default"], "core")
+        self.assertEqual(changes["limit"]["maximum"], 25)
         self.assertEqual(set(styfi), {"days", "epoch_limit"})
         self.assertEqual(styfi["days"]["default"], 7)
         self.assertEqual(styfi["days"]["maximum"], 122)

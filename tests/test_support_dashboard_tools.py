@@ -210,8 +210,8 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                     "token_symbol": "USDC",
                     "strategy_address": "0xstrategy",
                     "strategy_name": "Strategy",
-                    "report_type": "accounting_update",
-                    "gain": "0",
+                    "report_type": "realized_result",
+                    "gain": "1000000",
                     "loss": "0",
                     "fee_assets": None,
                     "refund_assets": None,
@@ -239,16 +239,45 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 "vault_address": "0xvault",
                 "days": 7,
                 "limit": 5,
-                "meaningful_only": False,
+                "meaningful_only": True,
             },
         )
         parsed = json.loads(result.split("\n", 1)[1])
         self.assertEqual(parsed["source"], "/api/reports")
-        self.assertFalse(parsed["filters"]["meaningful_only"])
-        self.assertEqual(parsed["recent"][0]["report_type"], "accounting_update")
+        self.assertTrue(parsed["filters"]["meaningful_only"])
+        self.assertEqual(parsed["recent"][0]["report_type"], "realized_result")
         self.assertEqual(parsed["recent"][0]["token_decimals"], 6)
         self.assertIsNone(parsed["recent"][0]["fee_assets"])
         self.assertIn("inconclusive", parsed["interpretation"]["history_limit"])
+        self.assertIn("Use false", parsed["interpretation"]["filter_semantics"])
+
+    async def test_reports_can_include_accounting_only_updates(self) -> None:
+        payload = {
+            "recent": [
+                {
+                    "report_type": "accounting_update",
+                    "gain": "0",
+                    "loss": "0",
+                    "fee_assets": None,
+                    "refund_assets": None,
+                }
+            ]
+        }
+        with mock.patch(
+            "support_dashboard_tools._fetch_dashboard_json",
+            new=mock.AsyncMock(return_value=payload),
+        ) as fetch_mock:
+            result = await support_dashboard_tools.core_support_dashboard_reports(
+                chain_id=1,
+                vault_address="0xvault",
+                meaningful_only=False,
+            )
+
+        self.assertFalse(
+            fetch_mock.await_args.args[1]["meaningful_only"]
+        )
+        parsed = json.loads(result.split("\n", 1)[1])
+        self.assertEqual(parsed["recent"][0]["report_type"], "accounting_update")
 
     async def test_reports_reject_empty_vault_address_before_provider_call(
         self,
@@ -276,6 +305,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                     "vault_address": "0xvault",
                     "chain_id": 1,
                     "symbol": "yvUSDC-1",
+                    "token_symbol": "USDC",
                     "tvl_usd": 123.0,
                     "est_apy": 0.02,
                     "realized_apy_30d": 0.03,
@@ -290,7 +320,11 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_discover(
                 chain_id=1,
+                token_symbol="USDC",
                 market="stablecoins",
+                min_tvl_usd=1_000_000,
+                min_points=45,
+                direction="asc",
                 limit=2,
             )
 
@@ -298,59 +332,144 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             "/api/discover",
             {
                 "chain_id": 1,
+                "token_symbol": "USDC",
                 "market": "stablecoins",
                 "universe": "core",
+                "min_tvl_usd": 1_000_000,
+                "min_points": 45,
                 "sort_by": "tvl",
-                "direction": "desc",
+                "direction": "asc",
                 "limit": 2,
             },
         )
         parsed = json.loads(result.split("\n", 1)[1])
         self.assertEqual(parsed["source"], "/api/discover")
         self.assertEqual(parsed["rows"][0]["symbol"], "yvUSDC-1")
+        self.assertEqual(parsed["rows"][0]["token_symbol"], "USDC")
 
-    async def test_freshness_is_compact_and_marks_system_only_scope(self) -> None:
+    async def test_status_is_compact_and_marks_system_only_scope(self) -> None:
         payload = {
-            "as_of_utc": "2026-08-03T00:00:00Z",
-            "threshold": "24h",
-            "stale_threshold_seconds": 86400,
-            "latest_pps_at": "2026-08-02T00:00:00Z",
-            "latest_pps_age_seconds": 86400,
-            "metrics_newest_point_at": "2026-08-02T00:00:00Z",
-            "metrics_newest_age_seconds": 86400,
-            "metrics_rows": 100,
-            "pps_vaults_total": 10,
-            "pps_vaults_stale": 2,
-            "pps_stale_ratio": 0.2,
-            "stale_by_chain": [{"chain_id": 1, "vaults": 10}],
-            "stale_by_category": [{"category": "core", "vaults": 10}],
-            "ingestion_jobs": {"kong_pps_metrics": {"running": False}},
-            "alerts": {
-                "ingestion_stale:kong_pps_metrics": {
-                    "status": "healthy",
-                    "is_firing": False,
-                    "last_success_at": "2026-08-03T00:00:00Z",
-                    "current_age_seconds": 10,
-                    "threshold_seconds": 3600,
-                    "notify_channels": ["private"],
+            "status": "ok",
+            "generated_at_utc": "2026-08-03T00:00:00Z",
+            "data_policy": {"worker_interval_sec": 900},
+            "protocol_context": {
+                "status": "ok",
+                "source": "defillama_yearn_parent",
+                "as_of_utc": "2026-08-03T00:00:00Z",
+                "protocol": {
+                    "tvl_usd": 123.0,
+                    "fetched_at": "2026-08-03T00:00:00Z",
+                    "age_seconds": 10,
+                    "freshness_status": "fresh",
+                    "components": ["excluded"],
+                },
+            },
+            "tracked_scope": {"active_vaults": 10},
+            "freshness": {
+                "stale_threshold_seconds": 86400,
+                "latest_pps_at": "2026-08-02T00:00:00Z",
+                "latest_pps_age_seconds": 86400,
+                "metrics_newest_point_at": "2026-08-02T00:00:00Z",
+                "metrics_newest_age_seconds": 86400,
+                "metrics_rows": 100,
+                "pps_vaults_total": 10,
+                "pps_vaults_stale": 2,
+                "pps_stale_ratio": 0.2,
+                "stale_by_chain": [{"chain_id": 1, "vaults": 10}],
+                "stale_by_category": [{"category": "core", "vaults": 10}],
+                "ingestion_jobs": {"kong_pps_metrics": {"running": False}},
+                "alerts": {
+                    "ingestion_stale:kong_pps_metrics": {
+                        "status": "healthy",
+                        "is_firing": False,
+                        "last_success_at": "2026-08-03T00:00:00Z",
+                        "current_age_seconds": 10,
+                        "threshold_seconds": 3600,
+                        "notify_channels": ["private"],
+                    }
                 }
+            },
+            "coverage": {
+                "as_of_utc": "2026-08-03T00:00:00Z",
+                "filters": {"min_points": 30},
+                "global": {"eligible_vaults": 10},
+                "by_chain": [{"chain_id": 1}],
             },
         }
         with mock.patch(
             "support_dashboard_tools._fetch_dashboard_json",
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
-            result = await support_dashboard_tools.core_support_dashboard_freshness()
+            result = await support_dashboard_tools.core_support_dashboard_status()
 
         fetch_mock.assert_awaited_once_with(
-            "/api/meta/freshness",
-            {"threshold": "24h"},
+            "/api/meta/status",
+            {},
         )
         parsed = json.loads(result.split("\n", 1)[1])
         self.assertIn("cannot prove", parsed["scope"])
-        self.assertEqual(parsed["pps_vaults_stale"], 2)
-        alert = parsed["alerts"]["ingestion_stale:kong_pps_metrics"]
+        self.assertEqual(parsed["source"], "/api/meta/status")
+        self.assertEqual(parsed["protocol_source"]["protocol_tvl_usd"], 123.0)
+        self.assertNotIn("components", parsed["protocol_source"])
+        self.assertEqual(parsed["freshness"]["pps_vaults_stale"], 2)
+        alert = parsed["freshness"]["alerts"]["ingestion_stale:kong_pps_metrics"]
         self.assertNotIn("notify_channels", alert)
+        self.assertNotIn("by_chain", parsed["coverage"])
+
+    async def test_changes_returns_bounded_market_context(self) -> None:
+        payload = {
+            "window": {"name": "7d"},
+            "realized_apy_policy": {"kind": "bounded"},
+            "summary": {"vaults_with_change": 1},
+            "freshness": {"current_comparisons": 1},
+            "movers": {
+                "risers": [
+                    {
+                        "vault_address": "0xvault",
+                        "chain_id": 1,
+                        "symbol": "yvUSDC",
+                        "token_symbol": "USDC",
+                        "tvl_usd": 2_000_000,
+                        "realized_apy_window": 0.03,
+                        "realized_apy_prev_window": 0.025,
+                        "delta_apy": 0.005,
+                        "age_seconds": 100,
+                        "provider_internal": "excluded",
+                    }
+                ],
+                "fallers": [],
+            },
+        }
+        with mock.patch(
+            "support_dashboard_tools._fetch_dashboard_json",
+            new=mock.AsyncMock(return_value=payload),
+        ) as fetch_mock:
+            result = await support_dashboard_tools.core_support_dashboard_changes(
+                window="7d",
+                stale_threshold="auto",
+                universe="core",
+                market="stablecoins",
+                min_tvl_usd=1_000_000,
+                min_points=45,
+                limit=5,
+            )
+
+        fetch_mock.assert_awaited_once_with(
+            "/api/changes",
+            {
+                "window": "7d",
+                "stale_threshold": "auto",
+                "universe": "core",
+                "market": "stablecoins",
+                "min_tvl_usd": 1_000_000,
+                "min_points": 45,
+                "limit": 5,
+            },
+        )
+        parsed = json.loads(result.split("\n", 1)[1])
+        self.assertIn("Market context only", parsed["scope"])
+        self.assertEqual(parsed["movers"]["risers"][0]["delta_apy"], 0.005)
+        self.assertNotIn("provider_internal", parsed["movers"]["risers"][0])
 
     async def test_styfi_returns_only_tolerant_support_subset(self) -> None:
         payload = {
