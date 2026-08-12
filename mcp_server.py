@@ -136,7 +136,7 @@ async def search_vaults(
     ] = "",
 ) -> str:
     """
-    Search for active Yearn vaults using the yDaemon API.
+    Search for Yearn vaults using Kong's current vault data.
 
     Args:
         query: Token symbol, vault name fragment, or vault/underlying address.

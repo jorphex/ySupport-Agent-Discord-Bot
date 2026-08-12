@@ -401,7 +401,7 @@ class LlmTicketFlowTests(LlmE2EBase):
             return (
                 "Vault: Yearn USDC (yvUSDC)\n"
                 f"Address: {self.vault_address}\n"
-                "Current Net APY (compounded): 4.20%"
+                "Current Estimated Net APY: 4.20%"
             )
 
         with patch.object(tool, "on_invoke_tool", new=fake_on_invoke_tool):

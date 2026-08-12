@@ -51,7 +51,7 @@ async def search_vaults_tool(
     recommended_only: bool = False,
 ) -> str:
     """
-    Search for active Yearn vaults (v2/v3) using yDaemon API.
+    Search for Yearn vaults (v2/v3) using Kong's current vault data.
     Provide a search query (like token symbol 'USDC', vault name fragment 'staked eth', or vault address).
     Optionally filter by 'chain' (e.g., 'ethereum', 'base').
     Optionally sort by 'highest_apr' or 'lowest_apr'.

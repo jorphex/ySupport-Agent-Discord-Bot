@@ -149,24 +149,20 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         vault_info = {
-            "chainID": 1,
+            "chainId": 1,
             "address": "0x1111111111111111111111111111111111111111",
             "decimals": 18,
         }
-
-        class _Response:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self):
-                return [vault_info]
 
         with (
             patch(
                 "vault_position_tools.ensure_web3_instances",
                 return_value={"ethereum": object()},
             ),
-            patch("vault_position_tools.requests.get", return_value=_Response()),
+            patch(
+                "vault_position_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[vault_info]),
+            ),
             patch(
                 "vault_position_tools._fetch_vault_and_gauge_balances",
                 new=AsyncMock(
@@ -189,26 +185,22 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         vault_info = {
-            "chainID": 1,
+            "chainId": 1,
             "address": "0x1111111111111111111111111111111111111111",
             "name": "Known Vault",
             "symbol": "yvTEST",
             "decimals": 2,
         }
 
-        class _Response:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self):
-                return [vault_info]
-
         with (
             patch(
                 "vault_position_tools.ensure_web3_instances",
                 return_value={"ethereum": object()},
             ),
-            patch("vault_position_tools.requests.get", return_value=_Response()),
+            patch(
+                "vault_position_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[vault_info]),
+            ),
             patch(
                 "vault_position_tools._fetch_vault_and_gauge_balances",
                 new=AsyncMock(
@@ -228,6 +220,45 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.complete)
         self.assertIn("1.250000 yvTEST", result.text)
         self.assertIn("positions above may be incomplete", result.text)
+
+    async def test_active_scan_includes_retired_vaults_with_stranded_positions(
+        self,
+    ) -> None:
+        vault_info = {
+            "chainId": 1,
+            "address": "0x1111111111111111111111111111111111111111",
+            "name": "Retired Vault",
+            "symbol": "yvOLD",
+            "decimals": 2,
+            "isRetired": True,
+        }
+        balance_check = AsyncMock(
+            return_value=vault_position_tools._VaultBalanceResult(
+                vault_info=vault_info,
+                wallet_balance=100,
+            )
+        )
+        with (
+            patch(
+                "vault_position_tools.ensure_web3_instances",
+                return_value={"ethereum": object()},
+            ),
+            patch(
+                "vault_position_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[vault_info]),
+            ),
+            patch(
+                "vault_position_tools._fetch_vault_and_gauge_balances",
+                new=balance_check,
+            ),
+        ):
+            result = await vault_position_tools.query_active_deposits_logic(
+                "0x3333333333333333333333333333333333333333"
+            )
+
+        self.assertTrue(result.found)
+        self.assertIn("Retired Vault", result.text)
+        balance_check.assert_awaited_once()
 
     async def test_v1_scan_reports_inconclusive_when_balance_call_fails(self) -> None:
         class _Call:
@@ -285,6 +316,59 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("deprecated Yearn V1 vault", result)
         self.assertIn(vault["name"], result)
         self.assertIn("withdraw", result)
+
+    async def test_v3_withdrawal_uses_exact_kong_snapshot(self) -> None:
+        vault_address = "0x1111111111111111111111111111111111111111"
+        fetch_snapshot = AsyncMock(
+            return_value={
+                "chainId": 1,
+                "address": vault_address,
+                "name": "USDC yVault",
+                "apiVersion": "3.0.4",
+                "origin": "yearn",
+            }
+        )
+        with (
+            patch("vault_position_tools.get_web3_instance", return_value=object()),
+            patch(
+                "vault_position_tools.fetch_kong_vault_snapshot",
+                new=fetch_snapshot,
+            ),
+        ):
+            result = await vault_position_tools.core_get_withdrawal_instructions(
+                None,
+                vault_address,
+                "ethereum",
+            )
+
+        self.assertIn("Find the **'redeem'** function", result)
+        fetch_snapshot.assert_awaited_once_with(1, vault_address)
+
+    async def test_withdrawal_rejects_non_yearn_kong_snapshot(self) -> None:
+        vault_address = "0x1111111111111111111111111111111111111111"
+        with (
+            patch("vault_position_tools.get_web3_instance", return_value=object()),
+            patch(
+                "vault_position_tools.fetch_kong_vault_snapshot",
+                new=AsyncMock(
+                    return_value={
+                        "chainId": 1,
+                        "address": vault_address,
+                        "name": "External Vault",
+                        "apiVersion": "3.0.4",
+                        "origin": None,
+                    }
+                ),
+            ),
+        ):
+            result = await vault_position_tools.core_get_withdrawal_instructions(
+                None,
+                vault_address,
+                "ethereum",
+            )
+
+        self.assertIn("Could not fetch vault details from the Yearn API", result)
+        self.assertNotIn("Find the **'redeem'** function", result)
 
     def test_v1_catalog_loads_outside_repository_working_directory(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

@@ -7,12 +7,11 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-import aiohttp
-import requests
 from web3 import Web3
 
 import chain_access
 import config
+from kong_vaults import fetch_kong_vault_catalog, fetch_kong_vault_snapshot
 
 
 ensure_web3_instances = chain_access.ensure_web3_instances
@@ -188,32 +187,19 @@ async def query_active_deposits_logic(
     else:
         chains_to_check = [c for c in web3_instances.keys() if c != "berachain"]
 
-    all_vaults_data = []
-
-    url = "https://ydaemon.yearn.fi/vaults/detected?hideAlways=false&strategiesDetails=withDetails&strategiesCondition=all&limit=2000"
-
     try:
-        response = await asyncio.to_thread(requests.get, url, timeout=30)
-        response.raise_for_status()
-        all_vaults_data = response.json()
-        if not isinstance(all_vaults_data, list):
-            logging.error(
-                "[Logic:query_active_deposits] Unexpected yDaemon response format."
-            )
-            return DepositScanResult(
-                text="Error: Received unexpected data format from vault API.",
-                found=False,
-                complete=False,
-            )
+        all_vaults_data = await fetch_kong_vault_catalog()
         logging.info(
-            f"[Logic:query_active_deposits] Successfully fetched {len(all_vaults_data)} vault definitions from yDaemon."
+            "[Logic:query_active_deposits] Fetched %s Yearn vault definitions from Kong.",
+            len(all_vaults_data),
         )
-    except Exception as e:
+    except Exception as exc:
         logging.error(
-            f"[Logic:query_active_deposits] Failed to fetch vault list from yDaemon: {e}"
+            "[Logic:query_active_deposits] Failed to fetch Kong vault list: %s",
+            exc,
         )
         return DepositScanResult(
-            text=f"Error: Could not fetch the list of active vaults: {e}",
+            text=f"Error: Could not fetch the list of active vaults: {exc}",
             found=False,
             complete=False,
         )
@@ -232,13 +218,17 @@ async def query_active_deposits_logic(
         if not chain_id:
             continue
 
-        chain_vaults = [v for v in all_vaults_data if v.get("chainID") == chain_id]
+        chain_vaults = [
+            vault
+            for vault in all_vaults_data
+            if vault.get("chainId") == chain_id
+        ]
         if token_symbol:
             token_lower = token_symbol.lower()
             chain_vaults = [
                 v
                 for v in chain_vaults
-                if token_lower in v.get("token", {}).get("symbol", "").lower()
+                if token_lower in v.get("asset", {}).get("symbol", "").lower()
             ]
 
         if not chain_vaults:
@@ -582,42 +572,24 @@ async def core_get_withdrawal_instructions(
                 f"Vault {vault_checksum_addr} not found in V1 list. Proceeding to check V2/V3."
             )
 
-    # --- Step 3: Fetch V2/V3 Details via yDaemon ---
+    # --- Step 3: Fetch exact V2/V3 details from Kong ---
     vault_details_json: Optional[Dict] = None
-    api_url = "https://ydaemon.yearn.fi/vaults/detected?limit=2000"  # Or a more targeted one if available
-    async with aiohttp.ClientSession() as session:
-        try:
-            logging.info(
-                f"[Tool:get_withdrawal_instructions] Fetching bulk data to find {vault_checksum_addr}"
-            )
-            async with session.get(api_url, timeout=25) as response:
-                response.raise_for_status()
-                all_vaults = await response.json()
-                if isinstance(all_vaults, list):
-                    for v_data in all_vaults:
-                        if (
-                            v_data.get("address", "").lower()
-                            == vault_checksum_addr.lower()
-                            and v_data.get("chainID") == chain_id
-                        ):
-                            vault_details_json = v_data
-                            break
-                    if vault_details_json:
-                        logging.info(
-                            f"Found details for {vault_checksum_addr} in bulk fetch."
-                        )
-                    else:
-                        logging.warning(
-                            f"Vault {vault_checksum_addr} not found in bulk fetch from {api_url}"
-                        )
-                else:
-                    logging.error("Unexpected format from bulk vault fetch.")
-        except Exception as e:
-            logging.error(f"Error fetching bulk vault data for withdrawal tool: {e}")
+    try:
+        vault_details_json = await fetch_kong_vault_snapshot(
+            chain_id,
+            vault_checksum_addr,
+        )
+    except Exception as exc:
+        logging.error(
+            "Error fetching Kong vault snapshot for withdrawal tool: %s",
+            exc,
+        )
 
-    if not vault_details_json:
+    if not vault_details_json or vault_details_json.get("origin") != "yearn":
         logging.warning(
-            f"Failed to fetch V2/V3 vault details for {vault_checksum_addr} on chain {chain_id} via yDaemon."
+            "Failed to fetch V2/V3 vault details for %s on chain %s via Kong.",
+            vault_checksum_addr,
+            chain_id,
         )
         return (
             f"Could not fetch vault details from the Yearn API for `{vault_checksum_addr}` on {chain.capitalize()} "
@@ -627,7 +599,7 @@ async def core_get_withdrawal_instructions(
         )
 
     # --- Step 4: Determine V2/V3 Version and Format Instructions ---
-    api_version_str = vault_details_json.get("version", "")
+    api_version_str = vault_details_json.get("apiVersion", "")
     vault_name = vault_details_json.get("name", vault_checksum_addr)
     yearn_ui_link = f"https://yearn.fi/vaults/{chain_id}/{vault_checksum_addr}"
 

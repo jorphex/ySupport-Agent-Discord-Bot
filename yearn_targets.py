@@ -4,19 +4,18 @@ import re
 from time import monotonic
 from typing import Any, Literal
 
-import aiohttp
 from web3 import Web3
 
 import config
 from chain_access import get_web3_instance, inspect_contract_profile
+from kong_vaults import fetch_kong_address_catalog
 
 
 LOGGER = logging.getLogger(__name__)
 
-_YDAEMON_ADDRESS_CACHE_TTL_SECONDS = 300.0
-_YDAEMON_VAULT_CATALOG_CACHE: dict[str, Any] = {
+_KONG_ADDRESS_CACHE_TTL_SECONDS = 300.0
+_KONG_ADDRESS_INDEX_CACHE: dict[str, Any] = {
     "fetched_at": 0.0,
-    "vaults": None,
     "address_index": None,
 }
 
@@ -60,10 +59,22 @@ def _describe_vault_entry(vault_data: dict[str, Any]) -> str:
     return name or symbol or "Yearn vault"
 
 
-def _build_ydaemon_address_index(
-    vaults: list[dict[str, Any]],
+def _build_kong_address_index(
+    catalog: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
     index: dict[str, list[dict[str, Any]]] = {}
+    vaults = catalog.get("vaults", [])
+    strategies = catalog.get("strategies", [])
+    strategies_by_key = {
+        (strategy.get("chainId"), checksum.lower()): strategy
+        for strategy in strategies
+        if (checksum := _safe_checksum_address(strategy.get("address"))) is not None
+    }
+    vault_labels_by_key = {
+        (vault.get("chainId"), checksum.lower()): _describe_vault_entry(vault)
+        for vault in vaults
+        if (checksum := _safe_checksum_address(vault.get("address"))) is not None
+    }
 
     def add_entry(address: str | None, entry: dict[str, Any]) -> None:
         checksum = _safe_checksum_address(address)
@@ -74,7 +85,8 @@ def _build_ydaemon_address_index(
         index.setdefault(checksum, []).append(payload)
 
     for vault in vaults:
-        chain_name = _normalize_chain(config.ID_TO_CHAIN_NAME.get(vault.get("chainID"), ""))
+        chain_id = vault.get("chainId")
+        chain_name = _normalize_chain(config.ID_TO_CHAIN_NAME.get(chain_id, ""))
         vault_address = _safe_checksum_address(vault.get("address"))
         vault_label = _describe_vault_entry(vault)
         if vault_address is not None:
@@ -89,13 +101,23 @@ def _build_ydaemon_address_index(
                 },
             )
 
-        for strategy in vault.get("strategies") or []:
+        for strategy_address in vault.get("strategies") or []:
+            checksum_strategy = _safe_checksum_address(strategy_address)
+            if checksum_strategy is None:
+                continue
+            strategy = strategies_by_key.get(
+                (chain_id, checksum_strategy.lower()),
+                {},
+            )
+            strategy_label = strategy.get("name") or vault_labels_by_key.get(
+                (chain_id, checksum_strategy.lower())
+            )
             add_entry(
-                strategy.get("address"),
+                checksum_strategy,
                 {
                     "kind": "strategy",
                     "chain": chain_name or None,
-                    "label": str(strategy.get("name") or "Yearn strategy").strip(),
+                    "label": str(strategy_label or "Yearn strategy").strip(),
                     "vault_address": vault_address,
                     "vault_label": vault_label,
                 },
@@ -118,37 +140,16 @@ def _build_ydaemon_address_index(
     return index
 
 
-async def _fetch_ydaemon_vault_catalog() -> list[dict[str, Any]]:
-    cache_age = monotonic() - float(_YDAEMON_VAULT_CATALOG_CACHE["fetched_at"] or 0.0)
-    cached_vaults = _YDAEMON_VAULT_CATALOG_CACHE.get("vaults")
-    if isinstance(cached_vaults, list) and cache_age < _YDAEMON_ADDRESS_CACHE_TTL_SECONDS:
-        return cached_vaults
-
-    api_url = (
-        "https://ydaemon.yearn.fi/vaults/detected"
-        "?hideAlways=false&strategiesDetails=withDetails&strategiesCondition=all&limit=2000"
-    )
-    timeout = aiohttp.ClientTimeout(total=25)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(api_url) as response:
-            response.raise_for_status()
-            vaults = await response.json()
-    if not isinstance(vaults, list):
-        raise ValueError("Unexpected yDaemon vault catalog response.")
-    _YDAEMON_VAULT_CATALOG_CACHE["vaults"] = vaults
-    _YDAEMON_VAULT_CATALOG_CACHE["address_index"] = _build_ydaemon_address_index(vaults)
-    _YDAEMON_VAULT_CATALOG_CACHE["fetched_at"] = monotonic()
-    return vaults
-
-
-async def _get_ydaemon_address_index() -> dict[str, list[dict[str, Any]]]:
-    cache_age = monotonic() - float(_YDAEMON_VAULT_CATALOG_CACHE["fetched_at"] or 0.0)
-    cached_index = _YDAEMON_VAULT_CATALOG_CACHE.get("address_index")
-    if isinstance(cached_index, dict) and cache_age < _YDAEMON_ADDRESS_CACHE_TTL_SECONDS:
+async def _get_kong_address_index() -> dict[str, list[dict[str, Any]]]:
+    cache_age = monotonic() - float(_KONG_ADDRESS_INDEX_CACHE["fetched_at"] or 0.0)
+    cached_index = _KONG_ADDRESS_INDEX_CACHE.get("address_index")
+    if isinstance(cached_index, dict) and cache_age < _KONG_ADDRESS_CACHE_TTL_SECONDS:
         return cached_index
-    await _fetch_ydaemon_vault_catalog()
-    refreshed_index = _YDAEMON_VAULT_CATALOG_CACHE.get("address_index")
-    return refreshed_index if isinstance(refreshed_index, dict) else {}
+    catalog = await fetch_kong_address_catalog()
+    address_index = _build_kong_address_index(catalog)
+    _KONG_ADDRESS_INDEX_CACHE["address_index"] = address_index
+    _KONG_ADDRESS_INDEX_CACHE["fetched_at"] = monotonic()
+    return address_index
 
 
 def _select_yearn_address_entry(
@@ -172,6 +173,11 @@ def _select_yearn_address_entry(
             candidates = filtered
     if len(candidates) == 1:
         return candidates[0]
+    vault_candidates = [
+        entry for entry in candidates if entry.get("kind") == "vault"
+    ]
+    if len(vault_candidates) == 1:
+        return vault_candidates[0]
     return None
 
 
@@ -185,10 +191,10 @@ async def resolve_yearn_address_target(
         return None
 
     try:
-        address_index = await _get_ydaemon_address_index()
+        address_index = await _get_kong_address_index()
     except Exception as exc:
         LOGGER.warning(
-            "Failed to fetch yDaemon address index for %s: %s",
+            "Failed to fetch Kong address index for %s: %s",
             checksum_address,
             exc,
         )

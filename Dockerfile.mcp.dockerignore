@@ -3,6 +3,7 @@
 !requirements-mcp.lock
 !mcp_server.py
 !vault_search_tools.py
+!kong_vaults.py
 !docs_repo_tools.py
 !support_dashboard_tools.py
 !repo_context.py

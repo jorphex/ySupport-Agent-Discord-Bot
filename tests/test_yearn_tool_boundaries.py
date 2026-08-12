@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 import onchain_tools
@@ -247,50 +247,96 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Decoded 1 approval event(s).", investigation)
 
 
+
+
 class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _vault(
+        *,
+        address: str,
+        name: str,
+        symbol: str,
+        chain_id: int = 1,
+        asset_symbol: str = "USDC",
+        tvl=1_000_000,
+        net_apy=0.04,
+        kind: str = "Multi Strategy",
+        strategies_count: int = 2,
+        retired: bool = False,
+        highlighted: bool = False,
+    ) -> dict:
+        return {
+            "chainId": chain_id,
+            "address": address,
+            "name": name,
+            "symbol": symbol,
+            "apiVersion": "3.0.4",
+            "decimals": 6,
+            "asset": {
+                "name": asset_symbol,
+                "symbol": asset_symbol,
+                "address": "0x2222222222222222222222222222222222222222",
+            },
+            "tvl": tvl,
+            "performance": {
+                "oracle": {"netAPY": net_apy},
+                "historical": {
+                    "net": net_apy,
+                    "weeklyNet": net_apy,
+                    "monthlyNet": net_apy,
+                    "inceptionNet": net_apy,
+                },
+            },
+            "fees": {"performanceFee": 1000, "managementFee": 0},
+            "kind": kind,
+            "inclusion": {"isYearn": True},
+            "strategiesCount": strategies_count,
+            "riskLevel": 1,
+            "isRetired": retired,
+            "isHidden": False,
+            "isHighlighted": highlighted,
+            "origin": "yearn",
+            "migration": False,
+            "pricePerShare": 1_000_000,
+        }
+
     async def test_core_search_vaults_rejects_unknown_chain(self) -> None:
-        with patch.object(
-            vault_search_tools.aiohttp,
-            "ClientSession",
-            return_value=_VaultSearchSession([]),
-        ) as session_mock:
+        fetch_catalog = AsyncMock(return_value=[])
+        with patch(
+            "vault_search_tools.fetch_kong_vault_catalog",
+            new=fetch_catalog,
+        ):
             result = await vault_search_tools.core_search_vaults(
                 "USDC", chain="mainnet"
             )
 
         self.assertIn("Unsupported chain: 'mainnet'", result)
         self.assertNotIn("Found", result)
-        session_mock.assert_not_called()
+        fetch_catalog.assert_not_awaited()
 
-    async def test_core_search_vaults_rejects_non_list_provider_response(self) -> None:
-        with patch.object(
-            vault_search_tools.aiohttp,
-            "ClientSession",
-            return_value=_VaultSearchSession({"rows": []}),
+    async def test_core_search_vaults_reports_provider_failure(self) -> None:
+        with patch(
+            "vault_search_tools.fetch_kong_vault_catalog",
+            new=AsyncMock(side_effect=ValueError("invalid catalog")),
         ):
             result = await vault_search_tools.core_search_vaults("USDC")
 
         self.assertEqual(
-            result, "Error: Received unexpected data format from vault API."
+            result,
+            "Error: An unexpected error occurred while fetching vault data: "
+            "invalid catalog.",
         )
 
-    async def test_core_search_vaults_does_not_recommend_excluded_fallback(self) -> None:
-        excluded_vault = {
-            "chainID": 1,
-            "address": "0x1111111111111111111111111111111111111111",
-            "name": "Retired Yearn Vault",
-            "symbol": "yvOLD",
-            "kind": "Multi Strategy",
-            "token": {"name": "USD Coin", "symbol": "USDC"},
-            "apr": {"netAPR": 0.1},
-            "tvl": {"tvl": 1000},
-            "info": {"isRetired": True},
-            "strategies": [{"name": "One"}, {"name": "Two"}],
-        }
-        with patch.object(
-            vault_search_tools.aiohttp,
-            "ClientSession",
-            return_value=_VaultSearchSession([excluded_vault]),
+    async def test_core_search_vaults_does_not_recommend_retired_vault(self) -> None:
+        retired = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Retired Yearn Vault",
+            symbol="yvOLD",
+            retired=True,
+        )
+        with patch(
+            "vault_search_tools.fetch_kong_vault_catalog",
+            new=AsyncMock(return_value=[retired]),
         ):
             result = await vault_search_tools.core_search_vaults(
                 "all", recommended_only=True
@@ -302,24 +348,22 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_core_search_vaults_tolerates_malformed_numeric_fields(self) -> None:
-        vault = {
-            "chainID": 1,
-            "address": "0x1111111111111111111111111111111111111111",
-            "name": "Yearn USDC",
-            "symbol": "yvUSDC",
-            "version": "3.0.4",
-            "kind": "Multi Strategy",
-            "featuringScore": "unknown",
-            "token": {"name": "USD Coin", "symbol": "USDC"},
-            "apr": {"netAPR": "unknown"},
-            "tvl": {"tvl": "unknown"},
-            "info": {"riskLevel": "unknown"},
-            "strategies": [{"name": "One"}, {"name": "Two"}],
-        }
-        with patch.object(
-            vault_search_tools.aiohttp,
-            "ClientSession",
-            return_value=_VaultSearchSession([vault]),
+        vault = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Yearn USDC",
+            symbol="yvUSDC",
+            tvl="unknown",
+            net_apy="unknown",
+        )
+        with (
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[vault]),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=AsyncMock(return_value=[None]),
+            ),
         ):
             result = await vault_search_tools.core_search_vaults(
                 "all", recommended_only=True
@@ -327,161 +371,68 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Vault: Yearn USDC (yvUSDC)", result)
 
-    def test_format_single_vault_data_handles_nullable_apr_fields(self) -> None:
-        formatted = vault_search_tools.format_single_vault_data_for_llm(
+    def test_format_single_vault_data_handles_nullable_fields(self) -> None:
+        vault = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Nullable Vault",
+            symbol="yvNULL",
+            tvl=None,
+            net_apy=None,
+        )
+        vault.update(
             {
-                "name": "Nullable Vault",
-                "symbol": "yvNULL",
-                "address": "0x1111111111111111111111111111111111111111",
-                "version": "3.0.4",
-                "kind": "Multi Strategy",
-                "description": "Test vault",
-                "token": {
-                    "name": "USD Coin",
-                    "symbol": "USDC",
-                    "address": "0x2222222222222222222222222222222222222222",
-                },
-                "tvl": {"price": None, "tvl": None},
-                "apr": {
-                    "netAPR": None,
-                    "type": "v3:averaged",
-                    "forwardAPR": {"netAPR": None, "type": "projection"},
-                    "fees": {"performance": None, "management": None},
-                    "points": {"weekAgo": None, "monthAgo": None, "inception": None},
-                },
-                "featuringScore": None,
-                "info": {
-                    "riskLevel": None,
-                    "isRetired": False,
-                    "isBoosted": False,
-                    "isHighlighted": False,
-                },
-                "migration": {"available": False},
-                "strategies": [
+                "fees": {"performanceFee": None, "managementFee": None},
+                "composition": [
                     {
                         "name": "Strat One",
                         "address": "0x3333333333333333333333333333333333333333",
                         "status": "active",
-                        "netAPR": None,
-                        "details": {"lastReport": None},
+                        "performance": {"historical": {"net": None}},
+                        "currentDebtUsd": None,
+                        "lastReport": None,
                     }
                 ],
                 "staking": {
                     "available": True,
-                    "source": "veYFI",
+                    "source": "VeYFI",
                     "address": "0x4444444444444444444444444444444444444444",
-                    "rewards": [
-                        {
-                            "name": "Reward",
-                            "symbol": "RWD",
-                            "address": "0x5555555555555555555555555555555555555555",
-                            "apr": None,
-                            "isFinished": False,
-                            "finishedAt": None,
-                        }
-                    ],
                 },
-            },
-            1,
+            }
         )
 
-        self.assertIn("Current Net APY (compounded): N/A", formatted)
+        formatted = vault_search_tools.format_single_vault_data_for_llm(vault, 1)
+
+        self.assertIn("Current Estimated Net APY: N/A", formatted)
         self.assertIn("Vault Fees: Performance=N/A, Management=N/A", formatted)
-        self.assertIn(
-            "Historical Net APY: Week Ago=N/A, Month Ago=N/A, Inception=N/A", formatted
-        )
-        self.assertIn("Individual APY: N/A", formatted)
-        self.assertIn("APY: N/A", formatted)
+        self.assertIn("Historical Realized Net APY: Week=N/A, Month=N/A", formatted)
+        self.assertIn("Realized APY: N/A", formatted)
+        self.assertIn("Staking Opportunity: Yes", formatted)
 
     async def test_core_search_vaults_supports_all_query(self) -> None:
-        class FakeResponse:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            def raise_for_status(self) -> None:
-                return None
-
-            async def json(self):
-                return [
-                    {
-                        "chainID": 1,
-                        "address": "0x1111111111111111111111111111111111111111",
-                        "name": "Yearn USDC",
-                        "symbol": "yvUSDC",
-                        "token": {
-                            "name": "USD Coin",
-                            "symbol": "USDC",
-                            "address": "0x2222222222222222222222222222222222222222",
-                            "decimals": 6,
-                            "price": 1.0,
-                        },
-                        "apr": {
-                            "netAPR": 0.042,
-                            "points": {
-                                "weekAgo": 0.04,
-                                "monthAgo": 0.041,
-                                "inception": 0.05,
-                            },
-                            "fees": {"performance": 0.1, "management": 0.02},
-                        },
-                        "tvl": {"tvl": 1000000},
-                        "info": {
-                            "riskLevel": 1,
-                            "isRetired": False,
-                            "isBoosted": False,
-                            "isHighlighted": True,
-                        },
-                        "migration": {"available": False},
-                        "strategies": [],
-                    },
-                    {
-                        "chainID": 42161,
-                        "address": "0x3333333333333333333333333333333333333333",
-                        "name": "Yearn DAI",
-                        "symbol": "yvDAI",
-                        "token": {
-                            "name": "Dai Stablecoin",
-                            "symbol": "DAI",
-                            "address": "0x4444444444444444444444444444444444444444",
-                            "decimals": 18,
-                            "price": 1.0,
-                        },
-                        "apr": {
-                            "netAPR": 0.031,
-                            "points": {
-                                "weekAgo": 0.029,
-                                "monthAgo": 0.03,
-                                "inception": 0.032,
-                            },
-                            "fees": {"performance": 0.1, "management": 0.02},
-                        },
-                        "tvl": {"tvl": 500000},
-                        "info": {
-                            "riskLevel": 2,
-                            "isRetired": False,
-                            "isBoosted": False,
-                            "isHighlighted": False,
-                        },
-                        "migration": {"available": False},
-                        "strategies": [],
-                    },
-                ]
-
-        class FakeSession:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            def get(self, *args, **kwargs):
-                return FakeResponse()
-
-        with patch.object(
-            vault_search_tools.aiohttp, "ClientSession", return_value=FakeSession()
+        vaults = [
+            self._vault(
+                address="0x1111111111111111111111111111111111111111",
+                name="Yearn USDC",
+                symbol="yvUSDC",
+            ),
+            self._vault(
+                address="0x3333333333333333333333333333333333333333",
+                name="Yearn DAI",
+                symbol="yvDAI",
+                chain_id=42161,
+                asset_symbol="DAI",
+                tvl=500_000,
+            ),
+        ]
+        with (
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=vaults),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=AsyncMock(return_value=[None, None]),
+            ),
         ):
             result = await vault_search_tools.core_search_vaults("all")
 
@@ -489,101 +440,73 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Vault: Yearn USDC (yvUSDC)", result)
         self.assertIn("Vault: Yearn DAI (yvDAI)", result)
 
-    async def test_core_search_vaults_recommended_only_filters_single_strategy_ys_vaults(
-        self,
-    ) -> None:
-        class FakeResponse:
-            async def __aenter__(self):
-                return self
+    async def test_core_search_vaults_enriches_match_with_exact_snapshot(self) -> None:
+        vault = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Catalog Name",
+            symbol="yvUSDC",
+        )
+        snapshot = dict(vault)
+        snapshot["name"] = "Snapshot Name"
+        fetch_snapshots = AsyncMock(return_value=[snapshot])
+        with (
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[vault]),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=fetch_snapshots,
+            ),
+        ):
+            result = await vault_search_tools.core_search_vaults("USDC")
 
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
+        self.assertIn("Vault: Snapshot Name (yvUSDC)", result)
+        fetch_snapshots.assert_awaited_once_with([(1, vault["address"])])
 
-            def raise_for_status(self) -> None:
-                return None
+    async def test_core_search_vaults_falls_back_when_snapshot_fails(self) -> None:
+        vault = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Catalog Name",
+            symbol="yvUSDC",
+        )
+        with (
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[vault]),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=AsyncMock(return_value=[RuntimeError("snapshot unavailable")]),
+            ),
+        ):
+            result = await vault_search_tools.core_search_vaults("USDC")
 
-            async def json(self):
-                return [
-                    {
-                        "chainID": 1,
-                        "address": "0x1111111111111111111111111111111111111111",
-                        "name": "Yearn Saver Strategy",
-                        "symbol": "ysUSDC",
-                        "kind": "Single Strategy",
-                        "featuringScore": 0.10,
-                        "token": {
-                            "name": "USD Coin",
-                            "symbol": "USDC",
-                            "address": "0x2222222222222222222222222222222222222222",
-                            "decimals": 6,
-                            "price": 1.0,
-                        },
-                        "apr": {
-                            "netAPR": 0.089,
-                            "points": {
-                                "weekAgo": 0.08,
-                                "monthAgo": 0.085,
-                                "inception": 0.09,
-                            },
-                            "fees": {"performance": 0.1, "management": 0.02},
-                        },
-                        "tvl": {"tvl": 300000},
-                        "info": {
-                            "riskLevel": 3,
-                            "isRetired": False,
-                            "isBoosted": False,
-                            "isHighlighted": False,
-                        },
-                        "migration": {"available": False},
-                        "strategies": [{"name": "Only Strategy"}],
-                    },
-                    {
-                        "chainID": 1,
-                        "address": "0x3333333333333333333333333333333333333333",
-                        "name": "Yearn USDC",
-                        "symbol": "yvUSDC",
-                        "kind": "Multi Strategy",
-                        "featuringScore": 0.95,
-                        "token": {
-                            "name": "USD Coin",
-                            "symbol": "USDC",
-                            "address": "0x4444444444444444444444444444444444444444",
-                            "decimals": 6,
-                            "price": 1.0,
-                        },
-                        "apr": {
-                            "netAPR": 0.042,
-                            "points": {
-                                "weekAgo": 0.04,
-                                "monthAgo": 0.041,
-                                "inception": 0.05,
-                            },
-                            "fees": {"performance": 0.1, "management": 0.02},
-                        },
-                        "tvl": {"tvl": 1000000},
-                        "info": {
-                            "riskLevel": 1,
-                            "isRetired": False,
-                            "isBoosted": False,
-                            "isHighlighted": True,
-                        },
-                        "migration": {"available": False},
-                        "strategies": [{"name": "Strat One"}, {"name": "Strat Two"}],
-                    },
-                ]
+        self.assertIn("Vault: Catalog Name (yvUSDC)", result)
 
-        class FakeSession:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            def get(self, *args, **kwargs):
-                return FakeResponse()
-
-        with patch.object(
-            vault_search_tools.aiohttp, "ClientSession", return_value=FakeSession()
+    async def test_core_search_vaults_recommended_only_filters_single_strategy(self) -> None:
+        saver = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Yearn Saver Strategy",
+            symbol="ysUSDC",
+            kind="Single Strategy",
+            strategies_count=1,
+        )
+        multi = self._vault(
+            address="0x3333333333333333333333333333333333333333",
+            name="Yearn USDC",
+            symbol="yvUSDC",
+            highlighted=True,
+        )
+        with (
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[saver, multi]),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=AsyncMock(return_value=[None]),
+            ),
         ):
             result = await vault_search_tools.core_search_vaults(
                 "all", recommended_only=True

@@ -222,7 +222,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_yearn_address_target_prefers_known_strategy_match(self) -> None:
         address = "0x1111111111111111111111111111111111111111"
         with patch(
-            "yearn_targets._get_ydaemon_address_index",
+            "yearn_targets._get_kong_address_index",
             return_value={
                 "0x1111111111111111111111111111111111111111": [
                     {
@@ -247,7 +247,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_yearn_address_target_falls_back_to_contract_profile(self) -> None:
         address = "0x3333333333333333333333333333333333333333"
         with (
-            patch("yearn_targets._get_ydaemon_address_index", return_value={}),
+            patch("yearn_targets._get_kong_address_index", return_value={}),
             patch("yearn_targets.get_web3_instance", return_value=object()),
             patch(
                 "yearn_targets.inspect_contract_profile",
