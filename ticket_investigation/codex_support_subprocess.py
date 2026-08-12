@@ -11,7 +11,10 @@ import signal
 import time
 from typing import Awaitable, Callable, Sequence
 
-from ticket_execution.subprocess_utils import write_execution_artifacts
+from ticket_execution.subprocess_utils import (
+    create_isolated_subprocess,
+    write_execution_artifacts,
+)
 
 _MAX_JSONL_EVENT_BYTES = 8 * 1024 * 1024
 _MAX_STDOUT_CAPTURE_CHARS = 4 * 1024 * 1024
@@ -47,19 +50,11 @@ async def run_codex_support_json_subprocess(
     progress_callback: Callable[[str], Awaitable[None]] | None,
 ) -> CodexSupportExecutionOutput:
     started_at = time.monotonic()
-    creation_kwargs = (
-        {"creationflags": 0} if os.name == "nt" else {"start_new_session": True}
-    )
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    process, process_group_id = await create_isolated_subprocess(
+        command=command,
         cwd=cwd,
         env=env,
-        **creation_kwargs,
     )
-    process_group_id = process.pid if os.name != "nt" else None
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
     stdout_capture_chars = 0

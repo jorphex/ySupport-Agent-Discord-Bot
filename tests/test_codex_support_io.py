@@ -37,6 +37,22 @@ from ticket_investigation.codex_support_subprocess import (
 from tests.codex_support_test_support import EXAMPLE_YSUPPORT_MCP_URL
 
 
+def _process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        try:
+            state = proc_stat.read_text(encoding="utf-8").split()[2]
+        except FileNotFoundError:
+            return False
+        return state != "Z"
+    return True
+
+
 class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
     def test_codex_environment_excludes_bot_and_provider_secrets(self) -> None:
         environment = {
@@ -83,6 +99,14 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_codex_execution_kills_spawned_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             child_pid_path = Path(temp_dir) / "child_pid.txt"
+            creation_release = asyncio.Event()
+            create_subprocess_exec = asyncio.create_subprocess_exec
+
+            async def delayed_creation(*args, **kwargs):
+                process = await create_subprocess_exec(*args, **kwargs)
+                await creation_release.wait()
+                return process
+
             command = [
                 sys.executable,
                 "-c",
@@ -95,41 +119,45 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     "time.sleep(60)"
                 ),
             ]
-            task = asyncio.create_task(
-                run_codex_support_json_subprocess(
-                    command=command,
-                    stdin_text="",
-                    cwd=None,
-                    env=dict(os.environ),
-                    timeout_seconds=60,
-                    max_output_chars=1000,
-                    max_error_chars=1000,
-                    timeout_message="timed out",
-                    empty_stdout_message="empty",
-                    oversized_stdout_message="oversized",
-                    metadata={},
-                    artifact_run_dir=None,
-                    progress_callback=None,
+            with mock.patch(
+                "ticket_execution.subprocess_utils.asyncio.create_subprocess_exec",
+                side_effect=delayed_creation,
+            ):
+                task = asyncio.create_task(
+                    run_codex_support_json_subprocess(
+                        command=command,
+                        stdin_text="",
+                        cwd=None,
+                        env=dict(os.environ),
+                        timeout_seconds=60,
+                        max_output_chars=1000,
+                        max_error_chars=1000,
+                        timeout_message="timed out",
+                        empty_stdout_message="empty",
+                        oversized_stdout_message="oversized",
+                        metadata={},
+                        artifact_run_dir=None,
+                        progress_callback=None,
+                    )
                 )
-            )
+
+                deadline = asyncio.get_running_loop().time() + 5
+                while (
+                    not child_pid_path.exists()
+                    and asyncio.get_running_loop().time() < deadline
+                ):
+                    await asyncio.sleep(0.05)
+                self.assertTrue(child_pid_path.exists())
+                child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+                task.cancel()
+                asyncio.get_running_loop().call_later(0.05, creation_release.set)
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
 
             deadline = asyncio.get_running_loop().time() + 5
-            while (
-                not child_pid_path.exists()
-                and asyncio.get_running_loop().time() < deadline
-            ):
-                await asyncio.sleep(0.05)
-            self.assertTrue(child_pid_path.exists())
-            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-
             while asyncio.get_running_loop().time() < deadline:
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
+                if not _process_is_running(child_pid):
                     break
                 await asyncio.sleep(0.05)
             else:
@@ -172,9 +200,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             child_pid = int(child_pid_path.read_text(encoding="utf-8"))
             deadline = asyncio.get_running_loop().time() + 5
             while asyncio.get_running_loop().time() < deadline:
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
+                if not _process_is_running(child_pid):
                     break
                 await asyncio.sleep(0.05)
             else:

@@ -77,6 +77,33 @@ def safe_export_workspace_copy(
         return None
 
 
+async def create_isolated_subprocess(
+    *,
+    command: Sequence[str],
+    cwd: str | None,
+    env: dict[str, str],
+) -> tuple[asyncio.subprocess.Process, int | None]:
+    creation_task = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            **_subprocess_creation_kwargs(),
+        )
+    )
+    try:
+        process = await asyncio.shield(creation_task)
+    except asyncio.CancelledError:
+        process = await creation_task
+        process_group_id = _capture_process_group_id(process)
+        await _terminate_subprocess(process, process_group_id)
+        raise
+    return process, _capture_process_group_id(process)
+
+
 async def run_bounded_subprocess(
     *,
     command: Sequence[str],
@@ -92,17 +119,11 @@ async def run_bounded_subprocess(
     metadata: dict[str, Any],
     artifact_run_dir: Path | None,
 ) -> str:
-    creation_kwargs = _subprocess_creation_kwargs()
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    process, process_group_id = await create_isolated_subprocess(
+        command=command,
         cwd=cwd,
         env=env,
-        **creation_kwargs,
     )
-    process_group_id = _capture_process_group_id(process)
     stdout_capture = _BoundedStreamCapture(max_output_chars, fail_on_limit=True)
     stderr_capture = _BoundedStreamCapture(max_error_chars, fail_on_limit=False)
     tasks = {
