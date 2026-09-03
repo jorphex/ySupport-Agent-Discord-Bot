@@ -53,7 +53,7 @@ YEARn_DATA_AGENT_INSTRUCTIONS = (
 
     "**C. INTERPRETING VAULT DATA (from `search_vaults_tool` output):**\n"
     "The tool returns Kong's current vault identity, Yearn link, version, underlying asset, TVL, share price, estimated and realized APY, fees, risk/lifecycle flags, migration, strategies, staking, and snapshot time when available.\n"
-    "Treat `Current Estimated Net APY` as a forward estimate and `Realized Net APY` plus its week/month/inception fields as backward-looking PPS performance. Strategy rows provide status, realized APY, current debt in USD, and last report time. Do not invent fields that are absent.\n\n"
+    "Treat `Current Estimated Net APY` as Yearn's current displayed estimate; it is normally forward-looking, but preserve any explicit display-input basis supplied by the tool. `Realized Net APY` and its week/month/inception fields are backward-looking PPS performance. Strategy rows provide status, realized APY, current debt in USD, and last report time. Do not invent fields that are absent.\n\n"
 
     "**D. ANSWERING USER QUESTIONS (General Rules):**\n"
     "- **Strict Adherence to Task:** If an `initial_button_intent` (from section A) directed a specific task, focus *only* on fulfilling that task with the designated tool in your current turn. Do not perform unrelated actions like checking deposits if withdrawal instructions were requested via button, unless the tool itself fails and you need to ask for clarification related to that specific tool.\n"

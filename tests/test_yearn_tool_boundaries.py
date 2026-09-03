@@ -408,6 +408,156 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Realized APY: N/A", formatted)
         self.assertIn("Staking Opportunity: Yes", formatted)
 
+    def test_ybold_uses_higher_staked_weekly_apy_for_both_product_addresses(
+        self,
+    ) -> None:
+        staked = self._vault(
+            address=vault_search_tools._STAKED_YBOLD_ADDRESS,
+            name="Staked yBOLD",
+            symbol="ysyBOLD",
+            net_apy=0.0347,
+        )
+        staked["performance"]["historical"]["weeklyNet"] = 0.1772
+
+        for address, symbol in (
+            (vault_search_tools._YBOLD_ADDRESS, "yBOLD"),
+            (vault_search_tools._STAKED_YBOLD_ADDRESS, "ysyBOLD"),
+        ):
+            with self.subTest(symbol=symbol):
+                vault = self._vault(
+                    address=address,
+                    name=symbol,
+                    symbol=symbol,
+                    net_apy=0.0386,
+                )
+                formatted = vault_search_tools.format_single_vault_data_for_llm(
+                    vault,
+                    1,
+                    staked_ybold=staked,
+                )
+
+                self.assertIn("Current Estimated Net APY: 17.72%", formatted)
+                self.assertIn(
+                    "yBOLD Display Inputs (staked product): "
+                    "Oracle=3.47%, 7-day PPS=17.72%",
+                    formatted,
+                )
+
+    def test_ybold_display_apy_uses_available_max_without_affecting_other_vaults(
+        self,
+    ) -> None:
+        base = self._vault(
+            address=vault_search_tools._YBOLD_ADDRESS,
+            name="Yearn BOLD",
+            symbol="yBOLD",
+            net_apy=0.0386,
+        )
+        staked = self._vault(
+            address=vault_search_tools._STAKED_YBOLD_ADDRESS,
+            name="Staked yBOLD",
+            symbol="ysyBOLD",
+            net_apy=0.05,
+        )
+        staked["performance"]["historical"]["weeklyNet"] = 0.04
+        self.assertEqual(vault_search_tools._net_apy(base, staked), 0.05)
+
+        staked["performance"]["historical"]["weeklyNet"] = None
+        self.assertEqual(vault_search_tools._net_apy(base, staked), 0.05)
+
+        base_without_companion = (
+            vault_search_tools.format_single_vault_data_for_llm(base, 1)
+        )
+        self.assertIn("Current Estimated Net APY: 3.86%", base_without_companion)
+        self.assertNotIn("yBOLD Display Inputs", base_without_companion)
+
+        ordinary = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Yearn USDC",
+            symbol="yvUSDC",
+            net_apy=0.03,
+        )
+        self.assertEqual(vault_search_tools._net_apy(ordinary, staked), 0.03)
+        formatted = vault_search_tools.format_single_vault_data_for_llm(
+            ordinary,
+            1,
+            staked_ybold=staked,
+        )
+        self.assertIn("Current Estimated Net APY: 3.00%", formatted)
+        self.assertNotIn("yBOLD Display Inputs", formatted)
+
+    async def test_core_search_vaults_reuses_staked_ybold_catalog_row(self) -> None:
+        base = self._vault(
+            address=vault_search_tools._YBOLD_ADDRESS,
+            name="Yearn BOLD",
+            symbol="yBOLD",
+            net_apy=0.0386,
+        )
+        staked = self._vault(
+            address=vault_search_tools._STAKED_YBOLD_ADDRESS,
+            name="Staked yBOLD",
+            symbol="ysyBOLD",
+            net_apy=0.0347,
+        )
+        staked["performance"]["historical"]["weeklyNet"] = 0.1772
+        fetch_snapshots = AsyncMock(return_value=[base])
+        with (
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[base, staked]),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=fetch_snapshots,
+            ),
+        ):
+            result = await vault_search_tools.core_search_vaults(base["address"])
+
+        fetch_snapshots.assert_awaited_once_with(
+            [(1, vault_search_tools._YBOLD_ADDRESS)]
+        )
+        self.assertIn("Current Estimated Net APY: 17.72%", result)
+
+    async def test_highest_apy_ranking_uses_ybold_display_value(self) -> None:
+        base = self._vault(
+            address=vault_search_tools._YBOLD_ADDRESS,
+            name="Yearn BOLD",
+            symbol="yBOLD",
+            net_apy=0.0386,
+        )
+        staked = self._vault(
+            address=vault_search_tools._STAKED_YBOLD_ADDRESS,
+            name="Staked yBOLD",
+            symbol="ysyBOLD",
+            net_apy=0.0347,
+        )
+        staked["performance"]["historical"]["weeklyNet"] = 0.1772
+        staked["isHidden"] = True
+        ordinary = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Yearn USDC",
+            symbol="yvUSDC",
+            net_apy=0.10,
+        )
+        with (
+            patch.object(vault_search_tools.config, "MAX_RESULTS_TO_SHOW", 1),
+            patch(
+                "vault_search_tools.fetch_kong_vault_catalog",
+                new=AsyncMock(return_value=[ordinary, base, staked]),
+            ),
+            patch(
+                "vault_search_tools.fetch_kong_vault_snapshots",
+                new=AsyncMock(return_value=[base]),
+            ),
+        ):
+            result = await vault_search_tools.core_search_vaults(
+                "all",
+                sort_by="highest_apr",
+            )
+
+        self.assertIn("Vault: Yearn BOLD (yBOLD)", result)
+        self.assertNotIn("Vault: Yearn USDC (yvUSDC)", result)
+        self.assertIn("Current Estimated Net APY: 17.72%", result)
+
     async def test_core_search_vaults_supports_all_query(self) -> None:
         vaults = [
             self._vault(

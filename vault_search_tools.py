@@ -10,6 +10,12 @@ import config
 from kong_vaults import fetch_kong_vault_catalog, fetch_kong_vault_snapshots
 
 
+_YBOLD_CHAIN_ID = 1
+_YBOLD_ADDRESS = "0x9f4330700a36b29952869fac9b33f45eedd8a3d8"
+_STAKED_YBOLD_ADDRESS = "0x23346b04a7f55b8760e5860aa5a77383d63491cd"
+_YBOLD_PRODUCT_ADDRESSES = {_YBOLD_ADDRESS, _STAKED_YBOLD_ADDRESS}
+
+
 def format_timestamp_to_readable(timestamp: int | float | str | None) -> str:
     if timestamp is None:
         return "N/A"
@@ -55,7 +61,53 @@ def _tvl_usd(data: dict[str, Any]) -> float:
     return _safe_float(tvl, 0.0) or 0.0
 
 
-def _net_apy(data: dict[str, Any]) -> float:
+def _is_ybold_product(data: dict[str, Any]) -> bool:
+    return (
+        data.get("chainId") == _YBOLD_CHAIN_ID
+        and str(data.get("address") or "").lower() in _YBOLD_PRODUCT_ADDRESSES
+    )
+
+
+def _staked_ybold(vaults: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next(
+        (
+            vault
+            for vault in vaults
+            if vault.get("chainId") == _YBOLD_CHAIN_ID
+            and str(vault.get("address") or "").lower() == _STAKED_YBOLD_ADDRESS
+        ),
+        None,
+    )
+
+
+def _ybold_display_apy(
+    data: dict[str, Any],
+    staked_ybold: dict[str, Any] | None,
+) -> tuple[float, float | None, float | None] | None:
+    if not _is_ybold_product(data):
+        return None
+    address = str(data.get("address") or "").lower()
+    if staked_ybold is None and address != _STAKED_YBOLD_ADDRESS:
+        return None
+    source = staked_ybold or data
+    performance = source.get("performance") or {}
+    oracle = performance.get("oracle") or {}
+    historical = performance.get("historical") or {}
+    oracle_apy = _safe_float(oracle.get("netAPY"), None)
+    weekly_apy = _safe_float(historical.get("weeklyNet"), None)
+    available = [value for value in (oracle_apy, weekly_apy) if value is not None]
+    if not available:
+        return None
+    return max(available), oracle_apy, weekly_apy
+
+
+def _net_apy(
+    data: dict[str, Any],
+    staked_ybold: dict[str, Any] | None = None,
+) -> float:
+    ybold_apy = _ybold_display_apy(data, staked_ybold)
+    if ybold_apy is not None:
+        return ybold_apy[0]
     performance = data.get("performance") or {}
     oracle = performance.get("oracle") or {}
     historical = performance.get("historical") or {}
@@ -68,6 +120,8 @@ def _net_apy(data: dict[str, Any]) -> float:
 def format_single_vault_data_for_llm(
     data: dict[str, Any],
     chain_id_for_url: int,
+    *,
+    staked_ybold: dict[str, Any] | None = None,
 ) -> str:
     """Format a Kong vault list row or exact snapshot for model consumption."""
     meta = _metadata(data)
@@ -124,11 +178,13 @@ def format_single_vault_data_for_llm(
     performance = data.get("performance") or {}
     oracle = performance.get("oracle") or {}
     historical = performance.get("historical") or {}
+    ybold_apy = _ybold_display_apy(data, staked_ybold)
+    displayed_net_apy = ybold_apy[0] if ybold_apy is not None else oracle.get("netAPY")
     output_lines.extend(
         [
             "",
             "APY Information:",
-            f"  Current Estimated Net APY: {_format_percent_field(oracle.get('netAPY'))}",
+            f"  Current Estimated Net APY: {_format_percent_field(displayed_net_apy)}",
             f"  Realized Net APY: {_format_percent_field(historical.get('net'))}",
             "  Historical Realized Net APY: "
             f"Week={_format_percent_field(historical.get('weeklyNet'))}, "
@@ -136,6 +192,12 @@ def format_single_vault_data_for_llm(
             f"Inception={_format_percent_field(historical.get('inceptionNet'))}",
         ]
     )
+    if ybold_apy is not None:
+        output_lines.append(
+            "  yBOLD Display Inputs (staked product): "
+            f"Oracle={_format_percent_field(ybold_apy[1])}, "
+            f"7-day PPS={_format_percent_field(ybold_apy[2])}"
+        )
     fees = data.get("fees") or {}
     output_lines.append(
         "  Vault Fees: "
@@ -281,20 +343,30 @@ async def core_search_vaults(
             return "No recommendation-grade active Yearn vaults found matching your criteria."
         return "No Yearn vaults found matching your criteria."
 
+    staked_ybold_catalog = _staked_ybold(catalog)
+
     def active(vault: dict[str, Any]) -> bool:
         return not vault.get("isRetired") and not vault.get("isHidden")
 
+    def display_net_apy(vault: dict[str, Any]) -> float:
+        return _net_apy(vault, staked_ybold_catalog)
+
     if sort_by == "highest_apr":
-        matches.sort(key=lambda vault: (active(vault), _net_apy(vault)), reverse=True)
+        matches.sort(
+            key=lambda vault: (active(vault), display_net_apy(vault)),
+            reverse=True,
+        )
     elif sort_by == "lowest_apr":
-        matches.sort(key=lambda vault: (not active(vault), _net_apy(vault)))
+        matches.sort(
+            key=lambda vault: (not active(vault), display_net_apy(vault))
+        )
     elif recommended_only:
         matches.sort(
             key=lambda vault: (
                 bool(vault.get("isHighlighted")),
                 -(_safe_float(vault.get("riskLevel"), 999.0) or 999.0),
                 _tvl_usd(vault),
-                _net_apy(vault),
+                display_net_apy(vault),
             ),
             reverse=True,
         )
@@ -321,8 +393,14 @@ async def core_search_vaults(
             details.append(vault)
         else:
             details.append(snapshot or vault)
+
+    staked_ybold_details = _staked_ybold(details) or staked_ybold_catalog
     formatted = [
-        format_single_vault_data_for_llm(data, int(vault["chainId"]))
+        format_single_vault_data_for_llm(
+            data,
+            int(vault["chainId"]),
+            staked_ybold=staked_ybold_details,
+        )
         for vault, data in zip(top_vaults, details, strict=True)
     ]
     num_total = len(matches)
