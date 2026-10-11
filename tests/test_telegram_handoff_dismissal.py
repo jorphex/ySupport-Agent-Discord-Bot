@@ -30,6 +30,7 @@ from handoff import (
 from ysupport import (
     TicketBot,
 )
+from views import take_over_ticket_for_staff
 
 from tests.ticket_flow_test_support import TicketFlowTestCase
 
@@ -121,6 +122,7 @@ class TicketFlowTests(TicketFlowTestCase):
             retired_messages.append((chat_id, message_id, fallback_message_text))
             return True
 
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
         bot = TicketBot(intents=discord.Intents.none())
         try:
             with (
@@ -356,6 +358,23 @@ class TicketFlowTests(TicketFlowTestCase):
             self.assertTrue(persisted["stopped"])
             self.assertIsNotNone(persisted["team_handoff_notice"])
             warning.assert_called_once()
+
+            # Retained cleanup metadata must not become a live handoff again when
+            # staff subsequently acknowledges the Discord ticket.
+            await take_over_ticket_for_staff(channel_id)
+            with (
+                patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
+                patch("telegram_handoff_controller._run_internal_instruction_turn") as run,
+            ):
+                await bot.telegram_handoffs._handle_telegram_handoff_update({
+                    "message": {
+                        "message_id": 999, "chat": {"id": "123"},
+                        "reply_to_message": {"message_id": 456},
+                        "text": "Tell the user the withdrawal is queued.",
+                    }
+                })
+            run.assert_not_awaited()
+            self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
 
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)

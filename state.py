@@ -30,7 +30,7 @@ InvestigationMode = Literal[
     "waiting_for_user",
     "escalated_to_human",
 ]
-TicketStopReason = Literal["manual_stop", "boundary_stop", "runtime_error"]
+TicketStopReason = Literal["manual_stop", "staff_takeover", "boundary_stop", "runtime_error"]
 
 
 # State & Context Definitions
@@ -267,6 +267,7 @@ def hydrate_ticket_state(channel_id: int) -> None:
         stop_reason = payload.get("stop_reason")
         if isinstance(stop_reason, str) and stop_reason in {
             "manual_stop",
+            "staff_takeover",
             "boundary_stop",
             "runtime_error",
         }:

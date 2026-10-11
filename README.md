@@ -19,6 +19,12 @@ The repo also contains:
 - the ticket investigation runtime and execution boundary
 - transcript-fetch tooling for ticket review
 
+When support staff joins a Discord ticket, automatic bot replies pause. Any pending
+Telegram handoff stays open, with its ticket context preserved. A later substantive
+Telegram reply produces one Discord update and closes that handoff; the bot stays
+paused afterward. Telegram dismissal or an explicit Discord **Stop Bot** action
+closes the handoff and prevents further team-reply delivery.
+
 Documentation ingestion:
 - `yearn_rag/update_docs.sh` is the tracked daily refresh entrypoint
 - the refresh uses the repository `.venv` and fails closed if that environment is missing

@@ -84,7 +84,9 @@ from state import (
     reset_public_codex_session,
     reset_ticket_codex_session,
     stop_ticket_channel,
+    stop_reasons_by_channel,
     stopped_channels,
+    team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
 )
 from ticket_intake import prepare_ticket_turn_input
@@ -109,7 +111,7 @@ from ticket_investigation.executor import (
 from views import (
     InitialInquiryView,
     StopBotView,
-    stop_ticket_for_manual_support,
+    take_over_ticket_for_staff,
 )
 from utils import send_long_message
 
@@ -607,7 +609,10 @@ class TicketBot(discord.Client):
                 view=StopBotView() if not was_stopped else None,
             )
             last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
-            if not was_stopped:
+            if (
+                not was_stopped
+                or stop_reasons_by_channel.get(channel_id) == "staff_takeover"
+            ):
                 conversation_threads[channel_id] = turn_result.conversation_history
                 persist_ticket_state(channel_id)
         except asyncio.CancelledError:
@@ -642,7 +647,11 @@ class TicketBot(discord.Client):
                     exc_info=True,
                 )
         finally:
-            if was_stopped and not stop_ticket_channel(channel_id):
+            if was_stopped and not (
+                persist_ticket_state(channel_id)
+                if stop_reasons_by_channel.get(channel_id) == "staff_takeover"
+                else stop_ticket_channel(channel_id)
+            ):
                 logging.error(
                     "Could not preserve stopped state after staff-directed turn "
                     "in ticket %s.",
@@ -745,6 +754,12 @@ class TicketBot(discord.Client):
         )
 
         if action == "ignore":
+            if (
+                message.author.id == ticket_owner_user_id
+                and stop_reasons_by_channel.get(channel_id) == "staff_takeover"
+                and channel_id in team_handoff_notice_by_channel
+            ):
+                _record_waiting_for_team_followup(channel_id, message)
             logging.info(
                 "Ignoring ticket message in %s from %s. owner=%s stopped=%s staff=%s",
                 channel_id,
@@ -756,7 +771,17 @@ class TicketBot(discord.Client):
             return
 
         if action == "staff_takeover":
-            stopped_durably = await stop_ticket_for_manual_support(channel_id)
+            if channel_id in team_handoff_notice_by_channel:
+                conversation_threads.setdefault(channel_id, []).append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "Internal support staff message: "
+                            f"{_message_text_for_turn(message)}"
+                        ),
+                    }
+                )
+            stopped_durably = await take_over_ticket_for_staff(channel_id)
             logging.info(
                 "Support staff took manual control of ticket %s; persisted=%s.",
                 channel_id,

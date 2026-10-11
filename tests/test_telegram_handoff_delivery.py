@@ -35,6 +35,7 @@ from handoff import (
 from ysupport import (
     TicketBot,
 )
+from views import take_over_ticket_for_staff
 from tests.ticket_flow_test_support import TicketFlowTestCase
 from tests.test_ticket_intake import (
     _FakeDiscordChannel,
@@ -42,6 +43,52 @@ from tests.test_ticket_intake import (
 
 
 class TicketFlowTests(TicketFlowTestCase):
+    async def test_staff_takeover_during_team_reply_keeps_delivery_authorized(self) -> None:
+        channel_id = 304
+        channel = _FakeDiscordChannel(channel_id)
+        channel.category = SimpleNamespace(id=1)
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="Team review needed.",
+            status="pending_delivery",
+            pending_reply_text="Tell the user the withdrawal is queued.",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _: channel
+
+        async def take_over_during_synthesis(**kwargs):
+            await take_over_ticket_for_staff(channel_id)
+            return InternalInstructionTurnResult(
+                reply="The withdrawal is queued.",
+                input_history=[],
+                conversation_history=[
+                    {"role": "assistant", "content": "The withdrawal is queued."}
+                ],
+            )
+
+        try:
+            with (
+                patch("telegram_handoff_controller.edit_handoff_notice", return_value=True),
+                patch(
+                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    new=take_over_during_synthesis,
+                ),
+            ):
+                delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
+                    channel_id=channel_id,
+                    notice=notice,
+                    team_reply_text=notice.pending_reply_text,
+                )
+            self.assertTrue(delivered)
+            self.assertEqual(channel.sent_messages, ["The withdrawal is queued."])
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(state.stop_reasons_by_channel[channel_id], "staff_takeover")
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
     async def test_telegram_handoff_reply_rejects_vague_team_message(self) -> None:
         channel_id = 195
         fake_channel = _FakeDiscordChannel(channel_id)
@@ -105,7 +152,7 @@ class TicketFlowTests(TicketFlowTestCase):
             clear_ticket_investigation_job(channel_id)
             last_bot_reply_ts_by_channel.pop(channel_id, None)
 
-    async def test_pending_telegram_handoff_reply_resumes_and_posts_update(
+    async def test_pending_telegram_reply_resumes_after_staff_takeover(
         self,
     ) -> None:
         channel_id = 96
@@ -136,6 +183,7 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         job = get_or_create_ticket_investigation_job(channel_id)
         job.mark_escalated_to_human()
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
         channel_intent_after_button[channel_id] = "investigate_issue"
         edited_messages: list[tuple[str, int, str]] = []
 
@@ -188,17 +236,14 @@ class TicketFlowTests(TicketFlowTestCase):
                 fake_channel.sent_messages,
                 ["The transaction has been queued and is pending multisig signatures."],
             )
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(state.stop_reasons_by_channel[channel_id], "staff_takeover")
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
             self.assertEqual(
                 ticket_investigation_jobs[channel_id].mode, "waiting_for_user"
             )
         finally:
-            conversation_threads.pop(channel_id, None)
-            ticket_owner_user_id_by_channel.pop(channel_id, None)
-            channel_intent_after_button.pop(channel_id, None)
-            clear_team_handoff_notice(channel_id)
-            clear_ticket_investigation_job(channel_id)
-            last_bot_reply_ts_by_channel.pop(channel_id, None)
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
 
     async def test_failed_discord_delivery_does_not_commit_team_reply(self) -> None:
         channel_id = 296
@@ -217,6 +262,7 @@ class TicketFlowTests(TicketFlowTestCase):
         get_or_create_ticket_investigation_job(
             channel_id
         ).mark_escalated_to_human()
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
         bot = TicketBot(intents=discord.Intents.none())
         bot.get_channel = lambda _channel_id: channel
 
@@ -257,6 +303,8 @@ class TicketFlowTests(TicketFlowTestCase):
                     team_reply_text="tell the user it is queued",
                 )
 
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(state.stop_reasons_by_channel[channel_id], "staff_takeover")
             self.assertFalse(delivered)
             self.assertEqual(conversation_threads[channel_id], previous_history)
             self.assertEqual(notice.status, "pending_delivery")
@@ -270,6 +318,7 @@ class TicketFlowTests(TicketFlowTestCase):
         channel_id = 197
         fake_channel = _FakeDiscordChannel(channel_id)
         fake_channel.category = SimpleNamespace(id=1)
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
         bot = TicketBot(intents=discord.Intents.none())
         bot.get_channel = lambda _channel_id: fake_channel
         notice = TeamHandoffNotice(
@@ -301,6 +350,8 @@ class TicketFlowTests(TicketFlowTestCase):
                     team_reply_text="internal shorthand only",
                 )
 
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(state.stop_reasons_by_channel[channel_id], "staff_takeover")
             self.assertFalse(delivered)
             send_message.assert_not_called()
             self.assertEqual(notice.status, "pending_delivery")
@@ -391,6 +442,7 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         team_handoff_notice_by_channel[channel_id] = notice
         get_or_create_ticket_investigation_job(channel_id).mark_escalated_to_human()
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
         bot = TicketBot(intents=discord.Intents.none())
         bot.get_channel = lambda _channel_id: fake_channel
 
@@ -443,6 +495,7 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         team_handoff_notice_by_channel[channel_id] = notice
         get_or_create_ticket_investigation_job(channel_id).mark_escalated_to_human()
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
         bot = TicketBot(intents=discord.Intents.none())
         bot.get_channel = lambda _channel_id: fake_channel
 

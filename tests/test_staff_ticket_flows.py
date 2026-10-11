@@ -9,6 +9,7 @@ from unittest.mock import patch
 import discord
 
 import config
+import state
 from state import (
     active_ticket_executor_tasks,
     active_ticket_payloads,
@@ -32,6 +33,7 @@ from ticket_investigation.runtime import (
 )
 from views import StopBotView
 from discord_support_runtime import (
+    InternalInstructionTurnResult,
     _build_staff_summon_history,
 )
 from ysupport import (
@@ -47,6 +49,52 @@ from tests.test_ticket_intake import (
 
 
 class TicketFlowTests(TicketFlowTestCase):
+    async def test_staff_summon_keeps_pending_handoff_and_stopped_state(self) -> None:
+        channel_id = 219
+        channel = _FakeDiscordChannel(channel_id)
+        message = SimpleNamespace(
+            id=220,
+            channel=channel,
+            author=SimpleNamespace(name="contributor"),
+            attachments=[],
+        )
+        notice = TeamHandoffNotice(
+            telegram_chat_id="123",
+            telegram_message_id=456,
+            reason="Team review needed.",
+        )
+        team_handoff_notice_by_channel[channel_id] = notice
+        state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
+        history = [{"role": "assistant", "content": "An operator is reviewing this."}]
+        bot = TicketBot(intents=discord.Intents.none())
+        try:
+            with (
+                patch("ysupport._build_staff_summon_history", return_value=[]),
+                patch(
+                    "ysupport._run_internal_instruction_turn",
+                    return_value=InternalInstructionTurnResult(
+                        reply="An operator is reviewing this.",
+                        conversation_history=history,
+                        input_history=[],
+                    ),
+                ),
+            ):
+                await bot._handle_ticket_staff_summon(
+                    message,
+                    BotRunContext(channel_id=channel_id, project_context="yearn"),
+                    "Tell the user we are reviewing this",
+                    was_stopped=True,
+                )
+            self.assertEqual(channel.sent_messages, ["An operator is reviewing this."])
+            self.assertIs(team_handoff_notice_by_channel[channel_id], notice)
+            self.assertEqual(conversation_threads[channel_id], history)
+            payload = state._read_json(state._TICKET_STATE_DIR / f"{channel_id}.json")
+            self.assertTrue(payload["stopped"])
+            self.assertEqual(payload["stop_reason"], "staff_takeover")
+            self.assertEqual(payload["team_handoff_notice"]["status"], "open")
+        finally:
+            clear_ticket_channel_state(channel_id, delete_persisted=True)
+
     async def test_stopped_staff_summon_failure_stays_in_discord(self) -> None:
         channel_id = 207
         channel = _FakeDiscordChannel(channel_id)
@@ -167,7 +215,7 @@ class TicketFlowTests(TicketFlowTestCase):
             ],
         )
 
-    async def test_plain_staff_message_takes_over_and_retires_handoff(self) -> None:
+    async def test_staff_takeover_preserves_handoff_for_later_telegram_reply(self) -> None:
         channel_id = 209
         channel = _FakeDiscordChannel(channel_id)
         channel.category = SimpleNamespace(id=1)
@@ -183,7 +231,7 @@ class TicketFlowTests(TicketFlowTestCase):
         message = SimpleNamespace(
             id=210,
             author=staff,
-            content="Please add more ETH for gas and try again.",
+            content="Thanks, will take a look.",
             channel=channel,
             reference=None,
             created_at=datetime.now(timezone.utc),
@@ -196,14 +244,52 @@ class TicketFlowTests(TicketFlowTestCase):
         active_task = asyncio.create_task(active_turn())
         pending_tasks[channel_id] = active_task
         active_ticket_executor_tasks[channel_id] = active_task
+        pending_messages[channel_id] = "The queue also contains another detail."
         ticket_owner_user_id_by_channel[channel_id] = owner_id
+        conversation_threads[channel_id] = [
+            {"role": "user", "content": "My withdrawal failed."}
+        ]
+        job = state.get_or_create_ticket_investigation_job(channel_id)
+        job.mark_escalated_to_human()
+        job.remember_chain("polygon")
+        attachments = [
+            {
+                "filename": "error.png",
+                "url": "https://cdn.example/error.png",
+                "is_image": True,
+            }
+        ]
         team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
             telegram_chat_id="123",
             telegram_message_id=456,
             reason="manual follow-up needed",
             message_text="Team review needed.",
+            followup_attachments=attachments,
         )
         bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _channel_id: channel
+        requests = []
+
+        class _Executor:
+            async def execute_turn(self, request, hooks=None):
+                requests.append(request)
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply="The withdrawal is queued for signatures.",
+                        conversation_history=request.current_history
+                        + [
+                            {
+                                "role": "assistant",
+                                "content": "The withdrawal is queued for signatures.",
+                            }
+                        ],
+                        completed_agent_key=None,
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        bot.investigation_executor = _Executor()
 
         try:
             with (
@@ -214,15 +300,92 @@ class TicketFlowTests(TicketFlowTestCase):
                 await bot.on_message(message)
 
             self.assertIn(channel_id, stopped_channels)
-            self.assertEqual(stop_reasons_by_channel[channel_id], "manual_stop")
+            self.assertEqual(stop_reasons_by_channel[channel_id], "staff_takeover")
             self.assertEqual(ticket_owner_user_id_by_channel[channel_id], owner_id)
             self.assertNotIn(channel_id, pending_tasks)
             self.assertNotIn(channel_id, active_ticket_executor_tasks)
-            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            self.assertEqual(team_handoff_notice_by_channel[channel_id].status, "open")
+            self.assertIs(ticket_investigation_jobs[channel_id], job)
             self.assertEqual(channel.sent_messages, [])
-            retire.assert_awaited_once()
+            retire.assert_not_awaited()
             with self.assertRaises(asyncio.CancelledError):
                 await active_task
+
+            owner_message = SimpleNamespace(
+                **{
+                    **vars(message),
+                    "author": SimpleNamespace(id=owner_id, bot=False, name="owner"),
+                    "content": "The error persists today.",
+                }
+            )
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+            ):
+                await bot.on_message(owner_message)
+            self.assertEqual(channel.sent_messages, [])
+            self.assertEqual(requests, [])
+
+            # Simulate a process restart without overwriting the durable snapshot.
+            with patch("state.persist_ticket_state", return_value=True):
+                clear_ticket_channel_state(channel_id)
+            state.hydrate_ticket_state(channel_id)
+            self.assertEqual(stop_reasons_by_channel[channel_id], "staff_takeover")
+            self.assertEqual(
+                ticket_investigation_jobs[channel_id].evidence.chain, "polygon"
+            )
+            self.assertEqual(
+                team_handoff_notice_by_channel[channel_id].followup_attachments, attachments
+            )
+
+            update = {
+                "message": {
+                    "message_id": 999,
+                    "chat": {"id": "123"},
+                    "text": "Tell the user the withdrawal is queued for signatures.",
+                    "reply_to_message": {"message_id": 456},
+                }
+            }
+            with (
+                patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
+                patch("telegram_handoff_controller.edit_handoff_notice", return_value=True),
+            ):
+                await bot.telegram_handoffs._handle_telegram_handoff_update(update)
+                await bot.telegram_handoffs._handle_telegram_handoff_update(update)
+
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].turn_source, "internal_team")
+            self.assertEqual(requests[0].attachments, attachments)
+            self.assertIn(
+                {"role": "user", "content": "The queue also contains another detail."},
+                requests[0].current_history,
+            )
+            self.assertIn(
+                {
+                    "role": "system",
+                    "content": "Internal support staff message: Thanks, will take a look.",
+                },
+                requests[0].current_history,
+            )
+            self.assertIn(
+                {"role": "user", "content": "The error persists today."},
+                requests[0].current_history,
+            )
+            self.assertEqual(
+                channel.sent_messages, ["The withdrawal is queued for signatures."]
+            )
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
+            payload = state._read_json(state._TICKET_STATE_DIR / f"{channel_id}.json")
+            self.assertTrue(payload["stopped"])
+            self.assertEqual(payload["stop_reason"], "staff_takeover")
+            self.assertIsNone(payload["team_handoff_notice"])
+            with (
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+            ):
+                await bot.on_message(owner_message)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(len(channel.sent_messages), 1)
         finally:
             pending_tasks.pop(channel_id, None)
             if not active_task.done():

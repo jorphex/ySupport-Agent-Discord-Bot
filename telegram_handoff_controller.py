@@ -44,6 +44,7 @@ from state import (
     persist_ticket_state,
     reset_ticket_codex_session,
     stop_ticket_channel,
+    stop_reasons_by_channel,
     stopped_channels,
     TeamHandoffNotice,
     team_handoff_notice_by_channel,
@@ -65,6 +66,12 @@ class TelegramHandoffController:
         self.task: asyncio.Task[None] | None = None
         self._telegram_update_offset = load_telegram_update_offset()
         self._telegram_recovery_attempts: set[tuple[int, int, str]] = set()
+
+    def _can_deliver_handoff(self, channel_id: int, notice: TeamHandoffNotice) -> bool:
+        return team_handoff_notice_by_channel.get(channel_id) is notice and (
+            channel_id not in stopped_channels
+            or stop_reasons_by_channel.get(channel_id) == "staff_takeover"
+        )
 
     def start(self) -> bool:
         if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_YSUPPORT_CHAT:
@@ -122,11 +129,7 @@ class TelegramHandoffController:
                     notice=notice,
                     team_reply_text=notice.pending_reply_text,
                 )
-                if (
-                    not delivered
-                    and channel_id not in stopped_channels
-                    and team_handoff_notice_by_channel.get(channel_id) is notice
-                ):
+                if not delivered and self._can_deliver_handoff(channel_id, notice):
                     await edit_handoff_notice(
                         chat_id=notice.telegram_chat_id,
                         message_id=notice.telegram_message_id,
@@ -187,7 +190,7 @@ class TelegramHandoffController:
             return
         if matched_notice.status != "open":
             return
-        if matched_channel_id in stopped_channels:
+        if not self._can_deliver_handoff(matched_channel_id, matched_notice):
             return
         if not is_substantive_team_reply(text):
             await send_telegram_message(
@@ -302,7 +305,7 @@ class TelegramHandoffController:
         notice: TeamHandoffNotice,
         team_reply_text: str,
     ) -> bool:
-        if channel_id in stopped_channels:
+        if not self._can_deliver_handoff(channel_id, notice):
             return False
         if notice.status == "pending_delivery":
             await edit_handoff_notice(
@@ -312,7 +315,7 @@ class TelegramHandoffController:
                     notice.message_text or "Reply received. Delivering update..."
                 ),
             )
-            if channel_id in stopped_channels:
+            if not self._can_deliver_handoff(channel_id, notice):
                 return False
 
         channel = self.bot.get_channel(channel_id)
@@ -348,6 +351,11 @@ class TelegramHandoffController:
             "Do not mention Telegram, internal notes, or handoff mechanics. "
             "Do not make stronger claims than the team message supports."
         )
+        if channel_id in stopped_channels:
+            instruction_text += (
+                " Staff controls this ticket. Send this one update only; do not "
+                "promise automatic follow-up or ask the user to reply to the bot."
+            )
         try:
             async with channel.typing():
                 try:
@@ -356,7 +364,7 @@ class TelegramHandoffController:
                         channel,
                         handoff_attachments,
                     )
-                    if channel_id in stopped_channels:
+                    if not self._can_deliver_handoff(channel_id, notice):
                         return False
                     turn_result = await _run_internal_instruction_turn(
                         executor=self.bot.investigation_executor,
@@ -368,7 +376,7 @@ class TelegramHandoffController:
                         workflow_suffix="team handoff reply",
                         attachments=attachments,
                     )
-                    if channel_id in stopped_channels:
+                    if not self._can_deliver_handoff(channel_id, notice):
                         reset_ticket_codex_session(channel_id)
                         return False
                 except Exception as exc:
@@ -390,7 +398,7 @@ class TelegramHandoffController:
             )
             return False
 
-        if channel_id in stopped_channels:
+        if not self._can_deliver_handoff(channel_id, notice):
             reset_ticket_codex_session(channel_id)
             return False
 
@@ -438,6 +446,8 @@ class TelegramHandoffController:
         channel_id: int,
         notice: TeamHandoffNotice,
     ) -> bool:
+        if not self._can_deliver_handoff(channel_id, notice):
+            return False
         edited = await edit_handoff_notice(
             chat_id=notice.telegram_chat_id,
             message_id=notice.telegram_message_id,
@@ -450,6 +460,8 @@ class TelegramHandoffController:
                 "Failed to close Telegram handoff notice for channel %s after Discord delivery.",
                 channel_id,
             )
+            return False
+        if not self._can_deliver_handoff(channel_id, notice):
             return False
         clear_team_handoff_notice(channel_id)
         return True
