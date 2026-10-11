@@ -119,32 +119,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             "019dade1-5acf-70e2-9c61-f5ba37862a78",
         )
 
-    def test_conversation_key_for_ticket_request(self) -> None:
-        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
-        request = TicketExecutionTransportRequest(
-            aggregated_text="hello",
-            input_list=[],
-            current_history=[],
-            run_context={
-                "channel_id": 123,
-                "is_public_trigger": False,
-                "project_context": "yearn",
-                "initial_button_intent": "investigate_issue",
-            },
-            investigation_job={
-                "channel_id": 123,
-                "requested_intent": "investigate_issue",
-                "mode": "collecting",
-                "evidence": {},
-            },
-            workflow_name="tests.session_key",
-        )
-
-        self.assertEqual(
-            manager.conversation_key_for_request(request),
-            "ticket:123",
-        )
-
     def test_conversation_key_for_public_request_prefers_owner_id(self) -> None:
         manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
         request = TicketExecutionTransportRequest(

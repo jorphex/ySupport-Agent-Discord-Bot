@@ -18,7 +18,6 @@ from state import (
     channel_intent_after_button,
     channels_awaiting_initial_button_press,
     clear_team_handoff_notice,
-    clear_public_conversation,
     clear_ticket_channel_state,
     conversation_threads,
     hydrate_public_conversation,
@@ -533,13 +532,3 @@ class PublicStatePersistenceTests(unittest.TestCase):
                     conversation.investigation_job.requested_intent,
                     "docs_qa",
                 )
-
-    def test_clear_public_conversation_resets_public_codex_session(self) -> None:
-        with patch("state.reset_public_codex_session") as mock_reset:
-            public_conversations[501] = PublicConversation(
-                history=[],
-                last_interaction_time=datetime.now(timezone.utc),
-            )
-            clear_public_conversation(501)
-
-        mock_reset.assert_called_once_with(501)

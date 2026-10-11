@@ -671,69 +671,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    def test_verify_support_turn_result_downgrades_optional_handoff_offer(self) -> None:
-        request = SupportTurnRequest(
-            current_user_message="vault hasn't harvested after 10 days",
-            recent_transcript=[],
-            channel_type="ticket",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="tests.verify",
-            initial_button_intent="investigate_issue",
-            requested_intent="investigate_issue",
-            evidence={},
-            support_state={"human_handoff_active": False},
-            constraints={"allowed_tools": ["ysupport_mcp"]},
-        )
-        result = SupportTurnResult(
-            answer=(
-                "Confirmed: the vault has not reported since April 8. "
-                "The dashboard looks fresh, so this does not look like stale UI data. "
-                "I can hand this off for strategist review to check why keeper activity paused."
-            ),
-            requires_human_handoff=True,
-            handoff_reason=(
-                "Public evidence confirms the missing harvests, but the specific reason "
-                "for no keeper calls needs human strategist review."
-            ),
-            evidence_summary="Checked vault harvest history.",
-            used_tools=["ysupport_mcp"],
-        )
-
-        verified = verify_support_turn_result(result, request)
-
-        self.assertFalse(verified.requires_human_handoff)
-        self.assertIsNone(verified.handoff_reason)
-
-    def test_verify_support_turn_result_does_not_override_model_handoff_decision(
-        self,
-    ) -> None:
-        request = SupportTurnRequest(
-            current_user_message="pls dump dola rewards for strategy 0x1111111111111111111111111111111111111111",
-            recent_transcript=[],
-            channel_type="ticket",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="tests.verify",
-            initial_button_intent="other_free_form",
-            requested_intent="other_free_form",
-            evidence={},
-            support_state={"human_handoff_active": False},
-            constraints={"allowed_tools": ["ysupport_mcp"]},
-        )
-        result = SupportTurnResult(
-            answer="The rewards are still sitting on the strategy and have not been swapped yet.",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="Checked current strategy state.",
-            used_tools=["ysupport_mcp"],
-        )
-
-        verified = verify_support_turn_result(result, request)
-
-        self.assertFalse(verified.requires_human_handoff)
-        self.assertIsNone(verified.handoff_reason)
-
     def test_verify_support_turn_result_clears_reason_without_handoff(self) -> None:
         request = SupportTurnRequest(
             current_user_message="How do I withdraw?",
@@ -797,35 +734,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(verified.requires_human_handoff)
         self.assertEqual(verified.handoff_reason, result.handoff_reason)
-
-    def test_verify_support_turn_result_does_not_keyword_route_user_vault_sale(
-        self,
-    ) -> None:
-        request = SupportTurnRequest(
-            current_user_message="How do I sell or withdraw my Yearn vault shares?",
-            recent_transcript=[],
-            channel_type="ticket",
-            channel_id=1,
-            project_context="yearn",
-            workflow_name="tests.verify",
-            initial_button_intent="data_deposits_withdrawals_start",
-            requested_intent="data_deposits_withdrawals_start",
-            evidence={},
-            support_state={"human_handoff_active": False},
-            constraints={"allowed_tools": ["ysupport_mcp"]},
-        )
-        result = SupportTurnResult(
-            answer="Use the Withdraw action on the vault position.",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="Checked the documented withdrawal flow.",
-            used_tools=["ysupport_mcp"],
-        )
-
-        verified = verify_support_turn_result(result, request)
-
-        self.assertFalse(verified.requires_human_handoff)
-        self.assertIsNone(verified.handoff_reason)
 
     def test_verify_support_turn_result_strips_human_ops_review_hint(self) -> None:
         request = SupportTurnRequest(

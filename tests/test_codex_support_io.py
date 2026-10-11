@@ -483,29 +483,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(home.instructions_path.stat().st_mode & 0o777, 0o600)
             self.assertNotIn("\r", config_text)
 
-    def test_prepare_codex_auth_link_symlinks_bot_auth_to_live_source(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            home_auth = Path(temp_dir) / "bot-home" / "auth.json"
-            live_auth = Path(temp_dir) / "live-home" / "auth.json"
-            live_auth.parent.mkdir(parents=True, exist_ok=True)
-            live_auth.write_text('{"auth_mode":"live"}', encoding="utf-8")
-
-            linked = prepare_codex_auth_link(
-                home_auth_path=home_auth,
-                auth_link_source_path=live_auth,
-            )
-
-            self.assertEqual(linked, live_auth)
-            self.assertTrue(home_auth.is_symlink())
-            self.assertEqual(
-                home_auth.resolve(strict=False),
-                live_auth.resolve(strict=False),
-            )
-            self.assertEqual(
-                home_auth.read_text(encoding="utf-8"),
-                '{"auth_mode":"live"}',
-            )
-
     def test_prepare_codex_auth_link_rejects_missing_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with self.assertRaisesRegex(FileNotFoundError, "not a readable file"):

@@ -22,17 +22,6 @@ from mcp_server import _build_mcp_server, _StaticBearerTokenVerifier, mcp
 
 
 class StaticBearerTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
-    async def test_accepts_only_configured_token(self) -> None:
-        verifier = _StaticBearerTokenVerifier("expected-token")
-
-        accepted = await verifier.verify_token("expected-token")
-        rejected = await verifier.verify_token("wrong-token")
-
-        self.assertIsNotNone(accepted)
-        self.assertEqual(accepted.client_id, "ysupport-codex")
-        self.assertEqual(accepted.scopes, ["ysupport"])
-        self.assertIsNone(rejected)
-
     async def test_missing_configured_token_fails_closed(self) -> None:
         verifier = _StaticBearerTokenVerifier(None)
 

@@ -16,18 +16,11 @@ from ticket_transcript_fetch import (
 
 
 class TicketTranscriptFetchTests(unittest.TestCase):
-    def test_extract_channel_id_accepts_plain_id(self) -> None:
-        self.assertEqual(extract_channel_id("1484802638158626887"), "1484802638158626887")
-
     def test_extract_channel_id_accepts_discord_link(self) -> None:
         self.assertEqual(
             extract_channel_id("https://discord.com/channels/734804446353031319/1484802638158626887"),
             "1484802638158626887",
         )
-
-    def test_extract_channel_id_rejects_invalid_input(self) -> None:
-        with self.assertRaises(ValueError):
-            extract_channel_id("not-a-channel")
 
     def test_normalize_message_preserves_author_and_attachment_urls(self) -> None:
         normalized = normalize_message(

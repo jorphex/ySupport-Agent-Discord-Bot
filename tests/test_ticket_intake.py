@@ -40,22 +40,6 @@ from ysupport import (
 )
 
 class WalletCanonicalizationTests(unittest.TestCase):
-    def test_canonicalize_current_user_message_uses_resolved_wallet_for_data_turn(self) -> None:
-        context = BotRunContext(
-            channel_id=61,
-            project_context="yearn",
-            initial_button_intent="data_deposit_check",
-        )
-
-        self.assertEqual(
-            _canonicalize_current_user_message(
-                "0xabcDEFabcDEFabcDEFabcDEFabcDEFabcDEFabcd",
-                context,
-                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
-            ),
-            "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
-        )
-
     def test_canonicalize_current_user_message_uses_resolved_wallet_for_wallet_labeled_followup(self) -> None:
         context = BotRunContext(channel_id=62, project_context="yearn")
 

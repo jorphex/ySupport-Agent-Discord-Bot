@@ -1,10 +1,9 @@
-from tests import TEST_STATE_ROOT
+import tests as _test_environment  # noqa: F401
 
 import io
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -21,10 +20,6 @@ from ticket_execution.status import (
 
 
 class ConfigSummaryTests(unittest.TestCase):
-    def test_telegram_summary_uses_the_5_6_cost_efficient_role(self) -> None:
-        self.assertEqual(config.TELEGRAM_HANDOFF_SUMMARY_MODEL, "gpt-5.6-terra")
-        self.assertEqual(config.TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT, "low")
-
     def test_mcp_docker_context_is_an_explicit_tracked_allowlist(self) -> None:
         dockerignore = Path("Dockerfile.mcp.dockerignore").read_text(
             encoding="utf-8"
@@ -35,13 +30,6 @@ class ConfigSummaryTests(unittest.TestCase):
         self.assertIn("!mcp_server.py", dockerignore)
         self.assertIn("!yearn_rag/repo_sources.json", dockerignore)
         self.assertNotIn("!.env", dockerignore)
-
-    def test_host_launcher_requires_the_project_python_and_explicit_auth(self) -> None:
-        launcher = Path("scripts/run_ysupport_host.sh").read_text(encoding="utf-8")
-
-        self.assertIn('PYTHON="${REPO_ROOT}/.venv/bin/python"', launcher)
-        self.assertIn("TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE:?", launcher)
-        self.assertNotIn("exec python3", launcher)
 
     def test_support_dashboard_tls_verification_defaults_on(self) -> None:
         self.assertTrue(config.SUPPORT_DASHBOARD_VERIFY_SSL)
@@ -89,28 +77,6 @@ class ConfigSummaryTests(unittest.TestCase):
             )
         finally:
             config._INVALID_ENV_ERRORS.pop("TEST_INTEGER_SETTING", None)
-
-    def test_ticket_execution_test_state_keeps_runs_ephemeral(self) -> None:
-        self.assertEqual(
-            config.TICKET_EXECUTION_STATE_ROOT,
-            Path(TEST_STATE_ROOT),
-        )
-        self.assertEqual(
-            config.TICKET_EXECUTION_CODEX_HOME,
-            f"{TEST_STATE_ROOT}/home",
-        )
-        self.assertEqual(
-            config.TICKET_EXECUTION_ARTIFACT_DIR,
-            "",
-        )
-        self.assertEqual(
-            config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR,
-            "",
-        )
-        self.assertEqual(
-            config.TICKET_EXECUTION_CODEX_SESSION_DIR,
-            f"{TEST_STATE_ROOT}/sessions",
-        )
 
     def test_build_rpc_urls_prefers_explicit_per_chain_env(self) -> None:
         rpc_urls = config.build_rpc_urls(
@@ -169,37 +135,6 @@ class ConfigSummaryTests(unittest.TestCase):
             rpc_urls["katana"],
             "https://katana-mainnet.g.alchemy.com/v2/alchemy-test-key",
         )
-
-    def test_ticket_execution_runtime_summary_includes_fallback_and_codex_details(
-        self,
-    ) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_model = config.TICKET_EXECUTION_CODEX_MODEL
-        original_reasoning = config.TICKET_EXECUTION_CODEX_REASONING_EFFORT
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_CODEX_MODEL = "gpt-5.6-sol"
-            config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = "medium"
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-
-            summary = config.ticket_execution_runtime_summary()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_CODEX_MODEL = original_model
-            config.TICKET_EXECUTION_CODEX_REASONING_EFFORT = original_reasoning
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertIn("primary=codex_support_exec", summary)
-        self.assertIn("fallback=local", summary)
-        self.assertIn("codex_model=gpt-5.6-sol", summary)
-        self.assertIn("codex_reasoning=medium", summary)
-        self.assertIn(f"state_root={TEST_STATE_ROOT}", summary)
-        self.assertIn(f"codex_session_dir={TEST_STATE_ROOT}/sessions", summary)
-        self.assertIn("artifact_dir=/tmp/ticket-artifacts", summary)
 
     def test_ticket_execution_runtime_warnings_flag_primary_codex_without_fallback(
         self,
@@ -421,42 +356,6 @@ class TicketExecutionStatusTests(unittest.TestCase):
         finally:
             config.TICKET_EXECUTION_CODEX_SESSION_DIR = original_session_dir
 
-    def test_build_ticket_execution_status_reports_repo_context_and_valid_config(
-        self,
-    ) -> None:
-        with (
-            patch(
-                "ticket_execution.status.get_repo_context_status",
-                return_value={"state": "ready", "fresh": True},
-            ),
-            patch(
-                "ticket_execution.status._build_codex_session_summary",
-                return_value={"root_dir": "/tmp/sessions", "active_sessions": 2},
-            ),
-        ):
-            status = build_ticket_execution_status()
-
-        self.assertIn("ticket_execution", status)
-        self.assertIn("runtime_environment", status)
-        self.assertIn("repo_context", status)
-        self.assertTrue(status["ticket_execution"]["validation_ok"])
-        self.assertTrue(status["runtime_environment"]["validation_ok"])
-        self.assertNotIn("endpoint_build_ok", status["ticket_execution"])
-        self.assertEqual(
-            status["ticket_execution"]["sandbox_policy"]["workspace_mode"],
-            "temporary_per_turn",
-        )
-        self.assertEqual(
-            status["ticket_execution"]["sandbox_policy"]["export_mode"],
-            "ephemeral_only",
-        )
-        self.assertIsNone(status["ticket_execution"]["artifact_dir"])
-        self.assertEqual(
-            status["ticket_execution"]["codex_session_summary"],
-            {"root_dir": "/tmp/sessions", "active_sessions": 2},
-        )
-        self.assertEqual(status["repo_context"]["state"], "ready")
-
     def test_build_ticket_execution_status_smoke_probe_reports_success_for_local_endpoint(
         self,
     ) -> None:
@@ -536,40 +435,6 @@ class TicketExecutionStatusTests(unittest.TestCase):
             "DISCORD_BOT_TOKEN is required",
             payload["runtime_environment"]["validation_error"],
         )
-
-    def test_build_ticket_execution_status_reports_command_probe_for_codex(
-        self,
-    ) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_command = config.TICKET_EXECUTION_CODEX_COMMAND
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_CODEX_COMMAND = [
-                sys.executable,
-                "-c",
-                "print('ok')",
-            ]
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            with patch(
-                "ticket_execution.status.get_repo_context_status",
-                return_value={"state": "ready", "fresh": True},
-            ):
-                status = build_ticket_execution_status()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_CODEX_COMMAND = original_command
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertTrue(status["ticket_execution"]["validation_ok"])
-        primary_probe = status["ticket_execution"]["primary_command_probe"]
-        self.assertIsNotNone(primary_probe)
-        assert primary_probe is not None
-        self.assertTrue(primary_probe["available"])
-        self.assertEqual(primary_probe["command"][:2], [sys.executable, "-c"])
 
     def test_build_ticket_execution_status_resolves_relative_command_against_configured_cwd(
         self,

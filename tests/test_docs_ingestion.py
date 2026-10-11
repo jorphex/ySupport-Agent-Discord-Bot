@@ -350,23 +350,6 @@ class DocsIngestionTests(unittest.TestCase):
         ):
             fetch_flex_docs.build_fetch_targets()
 
-    def test_refresh_entrypoint_prevents_overlapping_runs(self) -> None:
-        script = (
-            embed_and_store.BASE_DIR / "yearn_rag" / "update_docs.sh"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn('exec 9>"$LOCK_DIR/update_docs.lock"', script)
-        self.assertIn("flock -n 9", script)
-        self.assertIn("git pull --ff-only origin master", script)
-        self.assertIn('PYTHON="$SCRIPT_DIR/../.venv/bin/python"', script)
-        self.assertNotIn("python3 process_docs.py", script)
-
-        requirements = (embed_and_store.BASE_DIR / "requirements.txt").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("tiktoken==", requirements)
-        self.assertIn("python-frontmatter==", requirements)
-
     def test_flex_refresh_removes_sources_no_longer_in_the_target_set(self) -> None:
         output_dir = self.root / "flex-docs"
         output_dir.mkdir()

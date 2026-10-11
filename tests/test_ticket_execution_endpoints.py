@@ -22,7 +22,6 @@ from ticket_investigation.json_endpoint import (
 from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
 from ticket_investigation.executor import (
     LocalTicketInvestigationExecutor,
-    LoopbackTicketExecutionTransport,
     LoopbackTransportTicketInvestigationExecutor,
     TicketExecutionTransport,
     TicketExecutionHooks,
@@ -155,7 +154,10 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         result = await executor.execute_turn(request)
 
+        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(worker.requests[0].run_context.channel_id, 93)
         self.assertEqual(result.flow_outcome.raw_final_reply, "ok")
+        self.assertEqual(result.flow_outcome.completed_agent_key, "docs")
         self.assertEqual(result.updated_job.current_specialty, "docs")
         self.assertEqual(result.updated_job.mode, "investigating")
 
@@ -212,36 +214,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.flow_outcome.raw_final_reply, "transport-ok")
         self.assertEqual(result.updated_job.current_specialty, "bug")
         self.assertEqual(result.updated_job.mode, "investigating")
-
-    async def test_loopback_transport_rehydrates_request_for_delegate(self) -> None:
-        worker = _FakeWorker(requests=[])
-        transport = LoopbackTicketExecutionTransport(
-            LocalTicketInvestigationExecutor(worker)
-        )
-        request = TicketExecutionTransportRequest(
-            aggregated_text="help",
-            input_list=[{"role": "user", "content": "help"}],
-            current_history=[],
-            run_context={
-                "channel_id": 96,
-                "project_context": "yearn",
-                "repo_last_search_artifact_refs": [],
-            },
-            investigation_job={
-                "channel_id": 96,
-                "mode": "idle",
-                "evidence": {"tx_hashes": []},
-            },
-            workflow_name="tests.transport.loopback",
-        )
-
-        result = await transport.execute_transport_turn(request)
-        flow_outcome, updated_job = result.to_execution_parts()
-
-        self.assertEqual(len(worker.requests), 1)
-        self.assertEqual(worker.requests[0].run_context.channel_id, 96)
-        self.assertEqual(flow_outcome.raw_final_reply, "ok")
-        self.assertEqual(updated_job.current_specialty, "docs")
 
     async def test_executor_backed_json_endpoint_round_trips_request_and_result(self) -> None:
         worker = _FakeWorker(requests=[])

@@ -11,15 +11,12 @@ from ticket_investigation.json_endpoint import (
     FailoverTicketExecutionJsonEndpoint,
     build_ticket_execution_json_endpoint,
 )
-from ticket_investigation.runtime import TicketAgentFlowOutcome, TicketTurnRequest
+from ticket_investigation.runtime import TicketTurnRequest
 from ticket_investigation.subprocess_endpoint import (
     SubprocessTicketExecutionJsonEndpoint,
 )
 from ticket_investigation.transport import (
-    TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA,
-    TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA,
     TicketExecutionTransportRequest,
-    TicketExecutionTransportResult,
 )
 
 
@@ -177,71 +174,6 @@ class TicketExecutionEndpointFactoryTests(unittest.TestCase):
 
 
 class TicketTransportTests(unittest.TestCase):
-    def test_transport_schemas_cover_required_top_level_fields(self) -> None:
-        self.assertEqual(
-            TICKET_EXECUTION_TRANSPORT_REQUEST_SCHEMA["required"],
-            [
-                "aggregated_text",
-                "input_list",
-                "current_history",
-                "attachments",
-                "run_context",
-                "investigation_job",
-                "workflow_name",
-            ],
-        )
-        self.assertEqual(
-            TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA["required"],
-            ["flow_outcome", "updated_job"],
-        )
-
-    def test_transport_request_round_trip_preserves_job_and_context(self) -> None:
-        request = TicketTurnRequest(
-            aggregated_text="help",
-            input_list=[{"role": "user", "content": "help"}],
-            current_history=[{"role": "assistant", "content": "context"}],
-            run_context=BotRunContext(
-                channel_id=94,
-                category_id=12,
-                project_context="yearn",
-                initial_button_intent="investigate_issue",
-            ),
-            investigation_job=TicketInvestigationJob(channel_id=94),
-            workflow_name="tests.transport",
-            precomputed_boundary={
-                "classification": "yearn_support",
-                "business_subtype": None,
-                "tripwire_triggered": False,
-            },
-        )
-        request.investigation_job.begin_collecting("investigate_issue")
-        request.investigation_job.remember_chain("katana")
-        request.investigation_job.remember_tx_hash(
-            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
-        )
-
-        transport = TicketExecutionTransportRequest.from_turn_request(request)
-        hydrated = transport.to_turn_request()
-
-        self.assertEqual(hydrated.run_context.channel_id, 94)
-        self.assertEqual(
-            hydrated.run_context.initial_button_intent, "investigate_issue"
-        )
-        self.assertEqual(hydrated.investigation_job.mode, "collecting")
-        self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
-        self.assertEqual(
-            hydrated.investigation_job.evidence.tx_hashes,
-            ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
-        )
-        self.assertEqual(
-            hydrated.precomputed_boundary,
-            {
-                "classification": "yearn_support",
-                "business_subtype": None,
-                "tripwire_triggered": False,
-            },
-        )
-
     def test_transport_request_json_round_trip_preserves_job_and_context(self) -> None:
         request = TicketTurnRequest(
             aggregated_text="help",
@@ -264,6 +196,9 @@ class TicketTransportTests(unittest.TestCase):
         )
         request.investigation_job.begin_collecting("investigate_issue")
         request.investigation_job.remember_chain("katana")
+        request.investigation_job.remember_tx_hash(
+            "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        )
         transport = TicketExecutionTransportRequest.from_turn_request(request)
 
         hydrated = TicketExecutionTransportRequest.from_json(
@@ -271,6 +206,11 @@ class TicketTransportTests(unittest.TestCase):
         ).to_turn_request()
 
         self.assertEqual(hydrated.run_context.channel_id, 97)
+        self.assertEqual(hydrated.run_context.initial_button_intent, "investigate_issue")
+        self.assertEqual(
+            hydrated.investigation_job.evidence.tx_hashes,
+            ["0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"],
+        )
         self.assertEqual(hydrated.investigation_job.mode, "collecting")
         self.assertEqual(hydrated.investigation_job.evidence.chain, "katana")
         self.assertEqual(
@@ -285,70 +225,3 @@ class TicketTransportTests(unittest.TestCase):
         self.assertIsNone(
             TicketExecutionTransportRequest.from_json(transport.to_json()).smoke_mode
         )
-
-    def test_transport_request_json_round_trip_preserves_smoke_mode(self) -> None:
-        transport = TicketExecutionTransportRequest(
-            aggregated_text="smoke",
-            input_list=[],
-            current_history=[],
-            run_context={
-                "channel_id": 99,
-                "project_context": "yearn",
-                "repo_last_search_artifact_refs": [],
-            },
-            investigation_job={
-                "channel_id": 99,
-                "mode": "idle",
-                "evidence": {"tx_hashes": []},
-            },
-            workflow_name="tests.transport.smoke",
-            smoke_mode="ping",
-        )
-
-        hydrated = TicketExecutionTransportRequest.from_json(transport.to_json())
-
-        self.assertEqual(hydrated.smoke_mode, "ping")
-
-    def test_transport_result_round_trip_preserves_flow_and_job(self) -> None:
-        job = TicketInvestigationJob(channel_id=95)
-        job.begin_investigating()
-        job.complete_specialist_turn("bug")
-        result = TicketExecutionTransportResult.from_execution_parts(
-            TicketAgentFlowOutcome(
-                raw_final_reply="ok",
-                conversation_history=[{"role": "assistant", "content": "ok"}],
-                completed_agent_key="bug",
-                requires_human_handoff=False,
-            ),
-            job,
-        )
-
-        flow_outcome, updated_job = result.to_execution_parts()
-
-        self.assertEqual(flow_outcome.raw_final_reply, "ok")
-        self.assertEqual(flow_outcome.completed_agent_key, "bug")
-        self.assertEqual(updated_job.mode, "investigating")
-        self.assertEqual(updated_job.current_specialty, "bug")
-
-    def test_transport_result_json_round_trip_preserves_flow_and_job(self) -> None:
-        job = TicketInvestigationJob(channel_id=98)
-        job.begin_investigating()
-        job.complete_specialist_turn("data")
-        transport_result = TicketExecutionTransportResult.from_execution_parts(
-            TicketAgentFlowOutcome(
-                raw_final_reply="answer",
-                conversation_history=[{"role": "assistant", "content": "answer"}],
-                completed_agent_key="data",
-                requires_human_handoff=False,
-            ),
-            job,
-        )
-
-        flow_outcome, updated_job = TicketExecutionTransportResult.from_json(
-            transport_result.to_json()
-        ).to_execution_parts()
-
-        self.assertEqual(flow_outcome.raw_final_reply, "answer")
-        self.assertEqual(flow_outcome.completed_agent_key, "data")
-        self.assertEqual(updated_job.mode, "investigating")
-        self.assertEqual(updated_job.current_specialty, "data")

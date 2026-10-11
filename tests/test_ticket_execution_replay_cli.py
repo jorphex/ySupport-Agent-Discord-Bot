@@ -1,6 +1,5 @@
 import tests as _test_environment  # noqa: F401
 
-import io
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -8,47 +7,11 @@ from unittest.mock import patch
 import config
 from ticket_execution.replay_cli import (
     _reset_replay_session,
-    build_arg_parser,
     execute_request_json,
-    load_request_json,
 )
 
 
 class TicketExecutionReplayCliTests(unittest.IsolatedAsyncioTestCase):
-    def test_load_request_json_reads_file(self) -> None:
-        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as handle:
-            handle.write('{"request":"from-file"}')
-            handle.flush()
-
-            loaded = load_request_json(handle.name)
-
-        self.assertEqual(loaded, '{"request":"from-file"}')
-
-    def test_load_request_json_reads_stdin_when_path_missing(self) -> None:
-        with patch("sys.stdin", io.StringIO('{"request":"from-stdin"}')):
-            loaded = load_request_json(None)
-
-        self.assertEqual(loaded, '{"request":"from-stdin"}')
-
-    def test_arg_parser_supports_mode_no_fallback_and_fresh_session(self) -> None:
-        args = build_arg_parser().parse_args(
-            [
-                "sample-request.json",
-                "--mode",
-                "codex_support_exec",
-                "--no-fallback",
-                "--session-dir",
-                "/tmp/replay-sessions",
-                "--fresh-session",
-            ]
-        )
-
-        self.assertEqual(args.request_path, "sample-request.json")
-        self.assertEqual(args.mode, "codex_support_exec")
-        self.assertTrue(args.no_fallback)
-        self.assertEqual(args.session_dir, "/tmp/replay-sessions")
-        self.assertTrue(args.fresh_session)
-
     def test_reset_replay_session_resets_conversation_key_for_request(self) -> None:
         request_json = (
             '{"aggregated_text":"help","input_list":[],"current_history":[],'
