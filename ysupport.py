@@ -584,6 +584,7 @@ class TicketBot(discord.Client):
 
         current_task = asyncio.current_task()
         turn_result = None
+        preserve_handoff_history = channel_id in team_handoff_notice_by_channel
         try:
             current_history = await _build_staff_summon_history(
                 message.channel,
@@ -613,7 +614,14 @@ class TicketBot(discord.Client):
                 not was_stopped
                 or stop_reasons_by_channel.get(channel_id) == "staff_takeover"
             ):
-                conversation_threads[channel_id] = turn_result.conversation_history
+                if preserve_handoff_history:
+                    # The summon uses a short Discord transcript. Keep the durable
+                    # handoff history, including followups received during this turn.
+                    conversation_threads.setdefault(channel_id, []).append(
+                        {"role": "assistant", "content": turn_result.reply}
+                    )
+                else:
+                    conversation_threads[channel_id] = turn_result.conversation_history
                 persist_ticket_state(channel_id)
         except asyncio.CancelledError:
             logging.info(
@@ -752,6 +760,14 @@ class TicketBot(discord.Client):
             ticket_owner_user_id=ticket_owner_user_id,
             stopped=channel_id in stopped_channels,
         )
+
+        if (
+            action in {"staff_takeover", "staff_summon"}
+            and channel_id in team_handoff_notice_by_channel
+        ):
+            staff_attachments = _attachment_payloads_from_message(message)
+            if staff_attachments:
+                remember_team_handoff_followup_attachments(channel_id, staff_attachments)
 
         if action == "ignore":
             if (

@@ -22,3 +22,21 @@ Verification: 80 focused tests passed. Full discovery ran 434 tests: 390 passed,
 44 live E2E skipped. Relevant Ruff safe fixes and non-mutating checks passed;
 final diff review and whitespace check passed. No deployment, restart, or live
 messages were performed.
+
+## Review fixes
+
+Goal: keep pending handoff context intact across Discord staff summons and include
+staff attachments when a later Telegram reply is composed.
+
+Acceptance: a `y:` reply preserves older history and owner messages received during
+generation/delivery; staff attachments survive restart and reach the Telegram turn.
+Stopped state and explicit dismissal behavior remain covered by the existing tests.
+
+- [x] Extend the existing flow tests to reproduce both context gaps.
+- [x] Preserve live handoff history and collect staff attachments at message intake.
+- [x] Run focused and full offline checks, review the diff, and commit separately.
+
+Results: both extended regression tests failed before the fix and passed afterward.
+The 80 focused tests passed. Full discovery: 434 tests, 390 passed and 44 live E2E
+skipped. Ruff safe fixes, the final non-mutating check, and diff review passed.
+No deployment, restart, or live messages were performed.

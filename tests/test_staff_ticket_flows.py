@@ -33,7 +33,6 @@ from ticket_investigation.runtime import (
 )
 from views import StopBotView
 from discord_support_runtime import (
-    InternalInstructionTurnResult,
     _build_staff_summon_history,
 )
 from ysupport import (
@@ -49,14 +48,33 @@ from tests.test_ticket_intake import (
 
 
 class TicketFlowTests(TicketFlowTestCase):
-    async def test_staff_summon_keeps_pending_handoff_and_stopped_state(self) -> None:
+    async def test_staff_summon_preserves_handoff_history_and_concurrent_followups(
+        self,
+    ) -> None:
         channel_id = 219
         channel = _FakeDiscordChannel(channel_id)
+        channel.category = SimpleNamespace(id=1)
+        owner_id = 777
+        ticket_owner_user_id_by_channel[channel_id] = owner_id
         message = SimpleNamespace(
             id=220,
             channel=channel,
-            author=SimpleNamespace(name="contributor"),
-            attachments=[],
+            author=SimpleNamespace(
+                id=888,
+                bot=False,
+                name="contributor",
+                guild_permissions=SimpleNamespace(administrator=True),
+            ),
+            content="y: Tell the user we are reviewing this",
+            reference=None,
+            attachments=[
+                SimpleNamespace(
+                    filename="staff.png",
+                    url="https://cdn.example/staff.png",
+                    content_type="image/png",
+                    size=123,
+                )
+            ],
         )
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
@@ -65,33 +83,102 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         team_handoff_notice_by_channel[channel_id] = notice
         state.mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
-        history = [{"role": "assistant", "content": "An operator is reviewing this."}]
+        older_detail = {
+            "role": "user",
+            "content": "The original error was a reverted withdrawal.",
+        }
+        recent_history = [{"role": "user", "content": "Please check again."}]
+        conversation_threads[channel_id] = [older_detail] + recent_history
+        during_generation = "Correction: this happened on Arbitrum."
+        during_delivery = "The same error affects my second wallet."
+        staff_reply = "An operator is reviewing this."
         bot = TicketBot(intents=discord.Intents.none())
+        bot.get_channel = lambda _: channel
+        requests = []
+
+        async def owner_followup(text):
+            await bot.on_message(
+                SimpleNamespace(
+                    id=221,
+                    channel=channel,
+                    reference=None,
+                    content=text,
+                    author=SimpleNamespace(id=owner_id, bot=False, name="owner"),
+                    attachments=[],
+                )
+            )
+
+        class _Executor:
+            async def execute_turn(self, request, hooks=None):
+                requests.append(request)
+                if len(requests) == 1:
+                    await owner_followup(during_generation)
+                return SimpleNamespace(
+                    flow_outcome=TicketAgentFlowOutcome(
+                        raw_final_reply=staff_reply,
+                        conversation_history=request.current_history
+                        + [{"role": "assistant", "content": staff_reply}],
+                        completed_agent_key=None,
+                        requires_human_handoff=False,
+                    ),
+                    updated_job=request.investigation_job,
+                )
+
+        async def send_staff_reply(target, text, **kwargs):
+            await target.send(text, **kwargs)
+            await owner_followup(during_delivery)
+
+        bot.investigation_executor = _Executor()
         try:
             with (
-                patch("ysupport._build_staff_summon_history", return_value=[]),
-                patch(
-                    "ysupport._run_internal_instruction_turn",
-                    return_value=InternalInstructionTurnResult(
-                        reply="An operator is reviewing this.",
-                        conversation_history=history,
-                        input_history=[],
-                    ),
-                ),
+                patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
+                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch("ysupport._build_staff_summon_history", return_value=recent_history),
+                patch("ysupport.send_long_message", new=send_staff_reply),
             ):
-                await bot._handle_ticket_staff_summon(
-                    message,
-                    BotRunContext(channel_id=channel_id, project_context="yearn"),
-                    "Tell the user we are reviewing this",
-                    was_stopped=True,
-                )
-            self.assertEqual(channel.sent_messages, ["An operator is reviewing this."])
+                await bot.on_message(message)
+                await pending_tasks[channel_id]
+            history = (
+                [older_detail]
+                + recent_history
+                + [
+                    {"role": "user", "content": during_generation},
+                    {"role": "user", "content": during_delivery},
+                    {"role": "assistant", "content": staff_reply},
+                ]
+            )
+            self.assertEqual(channel.sent_messages, [staff_reply])
             self.assertIs(team_handoff_notice_by_channel[channel_id], notice)
             self.assertEqual(conversation_threads[channel_id], history)
             payload = state._read_json(state._TICKET_STATE_DIR / f"{channel_id}.json")
+            self.assertEqual(payload["history"], history)
             self.assertTrue(payload["stopped"])
             self.assertEqual(payload["stop_reason"], "staff_takeover")
             self.assertEqual(payload["team_handoff_notice"]["status"], "open")
+            self.assertEqual(
+                [item["url"] for item in notice.followup_attachments],
+                ["https://cdn.example/staff.png"],
+            )
+            with (
+                patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
+                patch("telegram_handoff_controller.edit_handoff_notice", return_value=True),
+            ):
+                await bot.telegram_handoffs._handle_telegram_handoff_update(
+                    {
+                        "message": {
+                            "message_id": 999,
+                            "chat": {"id": "123"},
+                            "text": "Tell the user an operator is reviewing this.",
+                            "reply_to_message": {"message_id": 456},
+                        }
+                    }
+                )
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(requests[1].current_history, history)
+            self.assertEqual(requests[1].attachments, notice.followup_attachments)
+            self.assertIn(channel_id, stopped_channels)
+            self.assertEqual(stop_reasons_by_channel[channel_id], "staff_takeover")
+            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
@@ -264,7 +351,32 @@ class TicketFlowTests(TicketFlowTestCase):
             telegram_message_id=456,
             reason="manual follow-up needed",
             message_text="Team review needed.",
-            followup_attachments=attachments,
+            followup_attachments=list(attachments),
+        )
+        staff_image_message = SimpleNamespace(
+            **{
+                **vars(message),
+                "id": 211,
+                "content": "",
+                "attachments": [
+                    SimpleNamespace(
+                        filename="staff-error.png",
+                        url="https://cdn.example/staff-error.png",
+                        content_type="image/png",
+                        size=456,
+                    )
+                ],
+            }
+        )
+        attachments.append(
+            {
+                "filename": "staff-error.png",
+                "url": "https://cdn.example/staff-error.png",
+                "content_type": "image/png",
+                "size": 456,
+                "is_image": True,
+                "source_message_id": 211,
+            }
         )
         bot = TicketBot(intents=discord.Intents.none())
         bot.get_channel = lambda _channel_id: channel
@@ -298,6 +410,7 @@ class TicketFlowTests(TicketFlowTestCase):
                 patch("views.retire_handoff_notice", return_value=True) as retire,
             ):
                 await bot.on_message(message)
+                await bot.on_message(staff_image_message)
 
             self.assertIn(channel_id, stopped_channels)
             self.assertEqual(stop_reasons_by_channel[channel_id], "staff_takeover")
