@@ -1,42 +1,39 @@
-# Preserve pending Telegram handoffs during Discord staff takeover
+# Correct projected APY evidence for ticket support
 
-Goal: staff can take over Discord while another teammate can still answer the
-pending Telegram handoff; a delivered team update must leave Discord stopped.
+Goal: provide available Kong projections to the bot and distinguish estimated
+yield, realized performance, and unverified frontend explanations.
 
 Acceptance:
-- Staff messages pause automatic replies and preserve handoff context and controls.
-- Explicit Telegram replies work after takeover and restart, once per notice.
-- Dismissal and explicit Stop Bot still block late delivery and clear the handoff.
-- Processing/delivery failures preserve recoverable state and the stopped flag.
-- Relevant tests, full offline suite, Ruff, and diff review pass.
+- Vault details and search ranking use available `performance.estimated.apy`.
+- A valid zero projection is preserved; missing projections remain unavailable.
+- Existing oracle-based vaults and the yBOLD display rule remain covered.
+- The production instructions distinguish metrics and require evidence for claims
+  about frontend fallbacks or deposit/harvest thresholds.
+- A controlled two-turn production-backend replay covers the ticket question and
+  follow-up; missing-estimate evidence is evaluated separately.
+- Focused checks, full offline tests, Ruff, and final review pass.
 
-Constraints: keep the prior test cleanup in its own commit; no live messages,
-service restart, deployment, or changes to unrelated projects.
+Constraints: minimal source changes; no live Discord/Telegram messages,
+production state changes, deployment, unrelated cleanup, or retained eval data.
 
-- [x] Commit prior test cleanup (c1e2c6a); baseline 432 tests, 44 live E2E skipped.
-- [x] Separate staff takeover from explicit stop/dismissal and update Telegram guards.
-- [x] Cover takeover, persistence, delivery, failures, and concurrent stop behavior.
-- [x] Verify and commit the handoff change separately.
+- [x] Add focused regressions that fail against the current implementation.
+- [x] Share projected-APY selection across details and ranking; tighten grounding.
+- [x] Run focused/full checks and attempt isolated production-backend evaluations.
+- [x] Review the final change, fix findings, remove temporary evaluation data,
+      and commit locally.
 
-Verification: 80 focused tests passed. Full discovery ran 434 tests: 390 passed,
-44 live E2E skipped. Relevant Ruff safe fixes and non-mutating checks passed;
-final diff review and whitespace check passed. No deployment, restart, or live
-messages were performed.
+Results: the two added regression methods failed before the change. The initial
+60 focused tests passed; full discovery ran 436 tests (392 passed, 44 opt-in live
+E2E skipped). After review, the final 32 focused tests and Ruff/diff checks passed.
+A read-only live Kong check confirmed that the actual projection now reaches
+both the rendered estimate and ranking.
 
-## Review fixes
-
-Goal: keep pending handoff context intact across Discord staff summons and include
-staff attachments when a later Telegram reply is composed.
-
-Acceptance: a `y:` reply preserves older history and owner messages received during
-generation/delivery; staff attachments survive restart and reach the Telegram turn.
-Stopped state and explicit dismissal behavior remain covered by the existing tests.
-
-- [x] Extend the existing flow tests to reproduce both context gaps.
-- [x] Preserve live handoff history and collect staff attachments at message intake.
-- [x] Run focused and full offline checks, review the diff, and commit separately.
-
-Results: both extended regression tests failed before the fix and passed afterward.
-The 80 focused tests passed. Full discovery: 434 tests, 390 passed and 44 live E2E
-skipped. Ruff safe fixes, the final non-mutating check, and diff review passed.
-No deployment, restart, or live messages were performed.
+Model evaluation used the production model/settings, isolated service-owned
+homes/sessions, frozen formatter output, and no Discord/Telegram delivery. The
+available-estimate conversation completed both turns; the missing-estimate case
+completed its first turn. Review caught an unsupported UI-field guess and
+tightened the grounding instruction. Completion of the missing follow-up and
+retesting the final wording were blocked by persistent HTTP 429 responses after
+cooldown/retries. This semantic validation remains incomplete; the source and
+offline checks pass. Temporary replay state/artifacts were removed. No deployment
+or service restart was performed.

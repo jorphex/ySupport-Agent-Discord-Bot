@@ -101,6 +101,21 @@ def _ybold_display_apy(
     return max(available), oracle_apy, weekly_apy
 
 
+def _estimated_apy(data: dict[str, Any]) -> tuple[float | None, str | None]:
+    performance = data.get("performance") or {}
+    # yBOLD uses its separate oracle/PPS display rule, including the base-only fallback.
+    estimated = {} if _is_ybold_product(data) else performance.get("estimated") or {}
+    oracle = performance.get("oracle") or {}
+    for source, value in (
+        ("performance.estimated.apy", estimated.get("apy")),
+        ("performance.oracle.netAPY", oracle.get("netAPY")),
+    ):
+        numeric_value = _safe_float(value, None)
+        if numeric_value is not None:
+            return numeric_value, source
+    return None, None
+
+
 def _net_apy(
     data: dict[str, Any],
     staked_ybold: dict[str, Any] | None = None,
@@ -109,9 +124,8 @@ def _net_apy(
     if ybold_apy is not None:
         return ybold_apy[0]
     performance = data.get("performance") or {}
-    oracle = performance.get("oracle") or {}
     historical = performance.get("historical") or {}
-    value = _safe_float(oracle.get("netAPY"), None)
+    value, _ = _estimated_apy(data)
     if value is None:
         value = _safe_float(historical.get("net"), 0.0)
     return value or 0.0
@@ -176,10 +190,11 @@ def format_single_vault_data_for_llm(
         output_lines.append(f"  Vault Token Price Per Share (Raw): {raw_pps or 'N/A'}")
 
     performance = data.get("performance") or {}
-    oracle = performance.get("oracle") or {}
     historical = performance.get("historical") or {}
     ybold_apy = _ybold_display_apy(data, staked_ybold)
-    displayed_net_apy = ybold_apy[0] if ybold_apy is not None else oracle.get("netAPY")
+    displayed_net_apy, estimated_source = _estimated_apy(data)
+    if ybold_apy is not None:
+        displayed_net_apy = ybold_apy[0]
     output_lines.extend(
         [
             "",
@@ -198,6 +213,8 @@ def format_single_vault_data_for_llm(
             f"Oracle={_format_percent_field(ybold_apy[1])}, "
             f"7-day PPS={_format_percent_field(ybold_apy[2])}"
         )
+    elif estimated_source is not None:
+        output_lines.append(f"  Estimated APY Source: {estimated_source}")
     fees = data.get("fees") or {}
     output_lines.append(
         "  Vault Fees: "

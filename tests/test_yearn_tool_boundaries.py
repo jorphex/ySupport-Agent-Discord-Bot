@@ -408,6 +408,79 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Realized APY: N/A", formatted)
         self.assertIn("Staking Opportunity: Yes", formatted)
 
+    def test_estimated_apy_distinguishes_projection_zero_and_missing(self) -> None:
+        for projected, oracle, expected, source in (
+            ("0.12", None, "12.00%", "performance.estimated.apy"),
+            (0.12, 0.03, "12.00%", "performance.estimated.apy"),
+            (0.0, 0.03, "0.00%", "performance.estimated.apy"),
+            (None, 0.03, "3.00%", "performance.oracle.netAPY"),
+            ("unknown", 0.03, "3.00%", "performance.oracle.netAPY"),
+            (None, None, "N/A", None),
+        ):
+            with self.subTest(projected=projected, oracle=oracle):
+                vault = self._vault(
+                    address="0x0141E81fB74C11CfD2308212D9C9a6a052Db3A98",
+                    name="Curve ZCHF-crvUSD Factory yVault",
+                    symbol="yvCurve-ZCHF-crvUSD-f",
+                    net_apy=oracle,
+                    kind="Legacy",
+                )
+                vault["apiVersion"] = "0.4.6"
+                vault["performance"]["estimated"] = {"apy": projected}
+                vault["performance"]["historical"]["net"] = 0.07
+
+                formatted = vault_search_tools.format_single_vault_data_for_llm(vault, 1)
+
+                self.assertIn(f"Current Estimated Net APY: {expected}", formatted)
+                self.assertIn("Realized Net APY: 7.00%", formatted)
+                if source is None:
+                    self.assertNotIn("Estimated APY Source:", formatted)
+                else:
+                    self.assertIn(f"Estimated APY Source: {source}", formatted)
+
+    async def test_projected_apy_controls_search_order_and_rendered_estimate(self) -> None:
+        projected = self._vault(
+            address="0x1111111111111111111111111111111111111111",
+            name="Projected Vault",
+            symbol="yvPROJECTED",
+            net_apy=None,
+        )
+        projected["performance"]["estimated"] = {"apy": 0.12}
+        zero = self._vault(
+            address="0x3333333333333333333333333333333333333333",
+            name="Zero Projection Vault",
+            symbol="yvZERO",
+            net_apy=0.20,
+        )
+        zero["performance"]["estimated"] = {"apy": 0.0}
+        ordinary = self._vault(
+            address="0x4444444444444444444444444444444444444444",
+            name="Oracle Vault",
+            symbol="yvORACLE",
+            net_apy=0.05,
+        )
+        for direction, winner, value in (
+            ("highest_apr", projected, "12.00%"),
+            ("lowest_apr", zero, "0.00%"),
+        ):
+            with self.subTest(direction=direction):
+                snapshots = AsyncMock(return_value=[winner])
+                with (
+                    patch.object(vault_search_tools.config, "MAX_RESULTS_TO_SHOW", 1),
+                    patch(
+                        "vault_search_tools.fetch_kong_vault_catalog",
+                        new=AsyncMock(return_value=[ordinary, zero, projected]),
+                    ),
+                    patch("vault_search_tools.fetch_kong_vault_snapshots", new=snapshots),
+                ):
+                    result = await vault_search_tools.core_search_vaults(
+                        "all", sort_by=direction
+                    )
+
+                snapshots.assert_awaited_once_with([(1, winner["address"])])
+                self.assertIn(f"Vault: {winner['name']}", result)
+                self.assertIn(f"Current Estimated Net APY: {value}", result)
+
     def test_ybold_uses_higher_staked_weekly_apy_for_both_product_addresses(
         self,
     ) -> None:
@@ -418,6 +491,7 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
             net_apy=0.0347,
         )
         staked["performance"]["historical"]["weeklyNet"] = 0.1772
+        staked["performance"]["estimated"] = {"apy": 0.99}
 
         for address, symbol in (
             (vault_search_tools._YBOLD_ADDRESS, "yBOLD"),
@@ -430,6 +504,7 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
                     symbol=symbol,
                     net_apy=0.0386,
                 )
+                vault["performance"]["estimated"] = {"apy": 0.99}
                 formatted = vault_search_tools.format_single_vault_data_for_llm(
                     vault,
                     1,
@@ -452,6 +527,7 @@ class SearchVaultsTests(unittest.IsolatedAsyncioTestCase):
             symbol="yBOLD",
             net_apy=0.0386,
         )
+        base["performance"]["estimated"] = {"apy": 0.99}
         staked = self._vault(
             address=vault_search_tools._STAKED_YBOLD_ADDRESS,
             name="Staked yBOLD",
