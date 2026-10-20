@@ -7,7 +7,6 @@ from unittest.mock import patch
 import discord
 
 import config
-from handoff import TelegramSentMessage
 import yearn_targets
 from state import (
     BotRunContext,
@@ -27,7 +26,6 @@ from state import (
     ticket_owner_user_id_by_channel,
 )
 from ticket_intake import (
-    canonicalize_current_user_message as _canonicalize_current_user_message,
     known_yearn_address_hint,
     prepare_ticket_turn_input,
 )
@@ -38,32 +36,6 @@ from ticket_investigation.runtime import (
 from ysupport import (
     TicketBot,
 )
-
-class WalletCanonicalizationTests(unittest.TestCase):
-    def test_canonicalize_current_user_message_uses_resolved_wallet_for_wallet_labeled_followup(self) -> None:
-        context = BotRunContext(channel_id=62, project_context="yearn")
-
-        self.assertEqual(
-            _canonicalize_current_user_message(
-                "wallet 0xabcDEFabcDEFabcDEFabcDEFabcDEFabcDEFabcd",
-                context,
-                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
-            ),
-            "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
-        )
-
-    def test_canonicalize_current_user_message_preserves_non_address_text(self) -> None:
-        context = BotRunContext(channel_id=63, project_context="yearn")
-
-        self.assertEqual(
-            _canonicalize_current_user_message(
-                "How do I withdraw from this vault?",
-                context,
-                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD",
-            ),
-            "How do I withdraw from this vault?",
-        )
-
 
 class WalletConfirmationTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_replacement_wallet_updates_structured_ticket_evidence(
@@ -687,137 +659,6 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                         await bot.process_ticket_message(channel_id, run_context)
             self.assertEqual(fake_channel.sent_messages, ["Boundary reply"])
             self.assertIn(channel_id, stopped_channels)
-        finally:
-            pending_messages.pop(channel_id, None)
-            conversation_threads.pop(channel_id, None)
-            last_bot_reply_ts_by_channel.pop(channel_id, None)
-            stopped_channels.discard(channel_id)
-            clear_ticket_investigation_job(channel_id)
-
-    async def test_access_handoff_runs_executor_and_retains_reply_bridge(self) -> None:
-        channel_id = 66
-        fake_channel = _FakeDiscordChannel(channel_id)
-
-        updated_job = TicketInvestigationJob(channel_id=channel_id)
-        updated_job.mark_escalated_to_human()
-
-        class _AccessExecutor:
-            def __init__(self) -> None:
-                self.calls = []
-
-            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
-                self_inner.calls.append(request)
-                return type(
-                    "_Result",
-                    (),
-                    {
-                        "flow_outcome": TicketAgentFlowOutcome(
-                            raw_final_reply=(
-                                "The documented verification steps are complete, "
-                                "so a moderator must inspect the remaining access state."
-                            ),
-                            conversation_history=[],
-                            completed_agent_key=None,
-                            requires_human_handoff=True,
-                        ),
-                        "updated_job": updated_job,
-                    },
-                )()
-
-        bot = TicketBot(intents=discord.Intents.none())
-        bot.get_channel = lambda _channel_id: fake_channel
-        bot.investigation_executor = _AccessExecutor()
-
-        run_context = BotRunContext(
-            channel_id=channel_id,
-            project_context="yearn",
-            initial_button_intent="other_free_form",
-        )
-
-        pending_messages[channel_id] = "I finished verification but still cannot access the Discord."
-        conversation_threads[channel_id] = []
-        last_bot_reply_ts_by_channel.pop(channel_id, None)
-        clear_ticket_investigation_job(channel_id)
-
-        async def fake_send_long_message(channel, message, **kwargs):
-            await channel.send(message, **kwargs)
-
-        try:
-            with (
-                patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch(
-                    "discord_support_runtime.send_handoff_notice",
-                    return_value=TelegramSentMessage(
-                        chat_id="123",
-                        message_id=456,
-                    ),
-                ),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-            ):
-                await bot.process_ticket_message(channel_id, run_context)
-
-            self.assertEqual(len(bot.investigation_executor.calls), 1)
-            self.assertEqual(len(fake_channel.sent_messages), 1)
-            self.assertIn("moderator", fake_channel.sent_messages[0])
-            self.assertIn("notified", fake_channel.sent_messages[0])
-            self.assertNotIn(channel_id, stopped_channels)
-            self.assertIn(channel_id, team_handoff_notice_by_channel)
-            self.assertEqual(
-                team_handoff_notice_by_channel[channel_id].telegram_message_id,
-                456,
-            )
-        finally:
-            pending_messages.pop(channel_id, None)
-            conversation_threads.pop(channel_id, None)
-            last_bot_reply_ts_by_channel.pop(channel_id, None)
-            stopped_channels.discard(channel_id)
-            clear_team_handoff_notice(channel_id)
-            clear_ticket_investigation_job(channel_id)
-
-    async def test_process_ticket_message_keeps_security_process_boundary_ticket_active(self) -> None:
-        channel_id = 67
-        fake_channel = _FakeDiscordChannel(channel_id)
-
-        class _FailingExecutor:
-            async def execute_turn(self_inner, request: TicketTurnRequest, hooks=None):
-                raise AssertionError("Security-process boundary should stop before executor runs.")
-
-        bot = TicketBot(intents=discord.Intents.none())
-        bot.get_channel = lambda _channel_id: fake_channel
-        bot.investigation_executor = _FailingExecutor()
-
-        run_context = BotRunContext(
-            channel_id=channel_id,
-            project_context="yearn",
-            initial_button_intent="other_free_form",
-        )
-
-        pending_messages[channel_id] = "I want to report a bug bounty issue."
-        conversation_threads[channel_id] = []
-        last_bot_reply_ts_by_channel.pop(channel_id, None)
-        stopped_channels.discard(channel_id)
-        clear_ticket_investigation_job(channel_id)
-
-        async def fake_boundary(_text: str):
-            return {
-                "classification": "security_process_boundary",
-                "tripwire_triggered": True,
-                "message": "Please use the Yearn security process.",
-            }
-
-        async def fake_send_long_message(channel, message, **kwargs):
-            await channel.send(message, **kwargs)
-
-        try:
-            with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
-                with patch("ysupport.send_long_message", new=fake_send_long_message):
-                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
-                        await bot.process_ticket_message(channel_id, run_context)
-            self.assertEqual(
-                fake_channel.sent_messages,
-                ["Please use the Yearn security process."],
-            )
-            self.assertNotIn(channel_id, stopped_channels)
         finally:
             pending_messages.pop(channel_id, None)
             conversation_threads.pop(channel_id, None)

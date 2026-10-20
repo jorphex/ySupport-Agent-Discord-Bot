@@ -1,47 +1,35 @@
-# Improve wallet failure diagnosis and explorer guidance
+# Prune low-signal unit tests
 
-Goal: address the verified response gaps in ticket 1622 with a minimal change
-to production instructions, without adding routing rules or changing tools.
+Goal: remove unit tests that duplicate E2E coverage or assert implementation
+details without protecting a distinct, plausible bug.
 
 Acceptance:
-- When gas is topped up but withdrawal still fails, request missing error
-  details and offer concrete wallet/RPC checks distinct from contract simulation.
-- Explorer guidance identifies overloaded functions unambiguously and includes
-  verified raw share amounts without an extra user lookup.
-- HTTP errors and nonce observations do not become unsupported claims about
-  transaction submission or wallet queues.
-- Historical production-backend replays cover the top-up follow-up, HTTP 401,
-  and staff-requested explorer guidance without sending real ticket messages.
-- Relevant checks and review pass; deploy while idle, verify live health,
-  remove temporary replay data, and commit/push the reviewed result.
+- Review every unit test against the actual E2E harness and remaining coverage.
+- Remove prompt/configuration snapshots, mock echoes, and redundant checks.
+- Preserve meaningful regressions for behavior E2E misses, including production
+  execution isolation, provider failures, persistence, and ticket/handoff races.
+- Remove helpers and imports made unused by deletions.
+- Pass the surviving offline suite, relevant Ruff checks, and final diff review.
 
-Constraints: prompt-only behavior change; retain the model, handoff/stop rules,
-authentication, tools, and Icarus. No wording-only tests or evaluation archive.
-Use historical evidence rather than the wallet's present-day zero-share balance.
+Constraints: test cleanup only; preserve E2E tests and production behavior.
+No live messages, deployment, dependency changes, or new tests.
 
-- [x] Capture historical evidence and baseline replay behavior.
-- [x] Add concise generic diagnostic and instruction-completeness guidance.
-- [x] Replay the historical cases, review answers, and fix concrete gaps.
-- [x] Run relevant checks, inspect the diff, and deploy while idle.
-- [x] Verify loaded prompt/service health and remove temporary replay data.
+- [x] Map E2E coverage and divide independent test files among three reviewers.
+- [x] Record the original offline suite result.
+- [x] Review and prune all unit-test groups in parallel.
+- [x] Review deletions for lost behavior coverage and unused scaffolding.
+- [x] Verify the surviving suite and static checks; resolve concrete findings.
 
 Verification:
-- Archive block 94,467,618 confirms 2 POL, the exact share balance, nonce 151,
-  and a successful four-argument redemption with max_loss=1. Historical mempool
-  and wallet-local queue state remain explicitly unknown.
-- One matched baseline completed in 16.4s and omitted RPC troubleshooting.
-  Additional baseline attempts hit provider 429s. After cooldown, final candidate
-  cases completed in 26.3s (top-up), 51.0s (explorer), and 25.8s (401), all with
-  no handoff. They used the production model/settings and isolated historical
-  context; these timings exclude live chain-data retrieval and message delivery.
-- Review caught unsupported submission-stage/request attribution and generic
-  reset advice. The final rules require evidence for those claims and concrete
-  RPC checks; all three cases were rerun against the final prompt. The 401 case
-  includes the preceding explorer exchange and was tested as a staff-directed
-  one-off, without changing stopped-ticket behavior.
-- The relevant 42 native-execution, contract, and staff-flow tests, Ruff, and
-  diff checks pass. No wording snapshots or redundant unit tests were added.
-- Production restarted while idle, reconnected to Discord/Telegram with zero
-  automatic restarts, and loaded instructions matching the reviewed template.
-  MCP remains healthy. Temporary units and all replay transcripts, sessions,
-  homes, artifacts, scripts, private environment files, and test logs are removed.
+- Original suite: 437 discovered, 393 passed, 44 opt-in LLM tests skipped.
+- Three parallel reviewers audited native execution, ticket flows, and handoff/
+  persistence tests; the parent reviewed docs, providers, MCP, and onchain tools.
+- Review retained unique transport-state mapping, configured fallback wiring,
+  malformed JSONL parsing, GitHub report parsing, and ENS/token-filter propagation.
+  The real-LLM E2E harness does not cover those boundaries.
+- Review also retained Flex/YIP source routing and direct retrieval's suppression
+  of synthetic-query generation; E2E mocks that retrieval layer.
+- Removed 72 unit tests and unused fixtures/imports. All remaining test IDs and
+  bodies, E2E suites/harness, and production files are unchanged.
+- Final suite: 365 discovered, 321 passed, 44 opt-in LLM tests skipped, 57.4s.
+  Ruff on all changed Python files and the final diff check pass.

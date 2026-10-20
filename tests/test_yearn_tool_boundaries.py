@@ -6,37 +6,6 @@ import onchain_tools
 import vault_search_tools
 
 
-class _VaultSearchResponse:
-    def __init__(self, payload) -> None:
-        self.payload = payload
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    def raise_for_status(self) -> None:
-        return None
-
-    async def json(self):
-        return self.payload
-
-
-class _VaultSearchSession:
-    def __init__(self, payload) -> None:
-        self.payload = payload
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    def get(self, *args, **kwargs):
-        return _VaultSearchResponse(self.payload)
-
-
 class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_tx_summary_profiles_contracts_and_formats_transfers(self) -> None:
         class _HexLike:

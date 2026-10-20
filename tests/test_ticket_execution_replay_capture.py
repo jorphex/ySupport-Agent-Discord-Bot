@@ -4,31 +4,11 @@ import unittest
 
 from ticket_execution.replay_capture import (
     build_first_turn_transport_request,
-    infer_initial_button_intent,
 )
 from ticket_transcript_fetch import TranscriptMessage
 
 
 class TicketExecutionReplayCaptureTests(unittest.TestCase):
-    def test_infer_initial_button_intent_matches_known_prompts(self) -> None:
-        self.assertEqual(
-            infer_initial_button_intent(
-                "Describe the issue in as much detail as you have. You can send multiple "
-                "messages now and I will review them together. Include the product or vault "
-                "involved, the exact page or URL if relevant, what you expected to happen, "
-                "what actually happened, any error text, any tx hash, and your browser/device "
-                "or wallet if that matters."
-            ),
-            "investigate_issue",
-        )
-        self.assertEqual(
-            infer_initial_button_intent(
-                "Okay, please describe your issue or question in detail below. I'll do my best "
-                "to assist or find the right help for you."
-            ),
-            "other_free_form",
-        )
-
     def test_build_first_turn_transport_request_aggregates_user_block_and_intent(self) -> None:
         messages = [
             TranscriptMessage(

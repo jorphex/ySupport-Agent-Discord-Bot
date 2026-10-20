@@ -1,23 +1,15 @@
 import tests as _test_environment  # noqa: F401
 
 import unittest
-from unittest.mock import patch
-
-
-from agents import Runner
 
 import config
 from state import (
     TicketInvestigationJob,
 )
 from support_agents import (
-    SupportBoundaryCheckOutput,
-    evaluate_support_boundary,
     TicketTriageDecision,
 )
-from support_tools import _extract_artifact_refs
 from ticket_investigation.runtime import (
-    _contains_report_artifact_evidence,
     _normalize_ticket_triage_decision,
 )
 from router import is_wallet_confirmation
@@ -30,123 +22,6 @@ class WalletConfirmationPolicyTests(unittest.TestCase):
         self.assertFalse(is_wallet_confirmation("Yesterday the vault worked."))
         self.assertFalse(is_wallet_confirmation("That is the incorrect address."))
         self.assertFalse(is_wallet_confirmation("I did not confirm that address."))
-
-
-class BDPriorityGuardrailTests(unittest.IsolatedAsyncioTestCase):
-    async def test_evaluate_support_boundary_returns_reusable_business_tripwire_payload(
-        self,
-    ) -> None:
-        class FakeResult:
-            def final_output_as(self, _output_type):
-                return SupportBoundaryCheckOutput(
-                    classification="business_boundary",
-                    business_subtype="job_inquiry",
-                    reasoning="asks how to work for yearn",
-                )
-
-        async def fake_run(self, *, starting_agent, input, run_config):
-            return FakeResult()
-
-        with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_boundary("How can I work for Yearn?")
-
-        self.assertTrue(result["tripwire_triggered"])
-        self.assertEqual(result["business_subtype"], "job_inquiry")
-        self.assertIn("message", result)
-
-    async def test_evaluate_support_boundary_clears_business_subtype_outside_business_class(
-        self,
-    ) -> None:
-        class FakeResult:
-            def final_output_as(self, _output_type):
-                return SupportBoundaryCheckOutput(
-                    classification="yearn_support",
-                    business_subtype="general_bd",
-                    reasoning="normal yearn support",
-                )
-
-        async def fake_run(self, *, starting_agent, input, run_config):
-            return FakeResult()
-
-        with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_boundary(
-                "Where can I monitor stYFI rewards?"
-            )
-
-        self.assertFalse(result["tripwire_triggered"])
-        self.assertEqual(result["classification"], "yearn_support")
-        self.assertIsNone(result["business_subtype"])
-
-    async def test_security_process_exception_uses_alternate_contact_message(
-        self,
-    ) -> None:
-        class FakeResult:
-            def final_output_as(self, _output_type):
-                return SupportBoundaryCheckOutput(
-                    classification="security_process_boundary",
-                    business_subtype=None,
-                    reasoning="immunefi unavailable for reporter",
-                )
-
-        async def fake_run(self, *, starting_agent, input, run_config):
-            return FakeResult()
-
-        disclosure = "I need to report a Yearn vulnerability, but Immunefi KYC is blocked and zkPassport is not working for me."
-
-        with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_boundary(disclosure)
-
-        self.assertTrue(result["tripwire_triggered"])
-        self.assertEqual(result["classification"], "security_process_boundary")
-        self.assertIn("contact-information", result["message"].lower())
-
-    async def test_evaluate_support_boundary_returns_non_support_tripwire(self) -> None:
-        class FakeResult:
-            def final_output_as(self, _output_type):
-                return SupportBoundaryCheckOutput(
-                    classification="non_support_assistant",
-                    business_subtype=None,
-                    reasoning="generic coding help unrelated to Yearn",
-                )
-
-        async def fake_run(self, *, starting_agent, input, run_config):
-            return FakeResult()
-
-        with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_boundary(
-                "Can you write a Python script to parse a CSV for me?"
-            )
-
-        self.assertTrue(result["tripwire_triggered"])
-        self.assertEqual(result["classification"], "non_support_assistant")
-
-    async def test_evaluate_support_boundary_skips_model_for_bare_address(self) -> None:
-        async def fake_run(self, *, starting_agent, input, run_config):
-            raise AssertionError(
-                "Bare address support primitives should not invoke the scope model."
-            )
-
-        with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_boundary(
-                "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
-            )
-
-        self.assertFalse(result["tripwire_triggered"])
-        self.assertEqual(result["classification"], "yearn_support")
-
-    async def test_evaluate_support_boundary_skips_model_for_bare_tx_hash(self) -> None:
-        async def fake_run(self, *, starting_agent, input, run_config):
-            raise AssertionError(
-                "Bare tx-hash support primitives should not invoke the scope model."
-            )
-
-        with patch.object(Runner, "run", new=fake_run):
-            result = await evaluate_support_boundary(
-                "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
-            )
-
-        self.assertFalse(result["tripwire_triggered"])
-        self.assertEqual(result["classification"], "yearn_support")
 
 
 class InvestigationJobTests(unittest.TestCase):
@@ -182,14 +57,6 @@ class InvestigationJobTests(unittest.TestCase):
         self.assertIsNone(job.evidence.withdrawal_target_vault)
 
 
-class RepoHelperTests(unittest.TestCase):
-    def test_extract_artifact_refs_deduplicates_and_preserves_order(self) -> None:
-        text = "segment:12 fact:4 segment:12 fact:7 fact:4"
-        self.assertEqual(
-            _extract_artifact_refs(text),
-            ["segment:12", "fact:4", "fact:7"],
-        )
-
 class TriageDecisionTests(unittest.TestCase):
     def test_normalize_human_escalation_adds_handoff_tag(self) -> None:
         decision = TicketTriageDecision(
@@ -201,34 +68,3 @@ class TriageDecisionTests(unittest.TestCase):
         normalized = _normalize_ticket_triage_decision(decision)
 
         self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, normalized.message or "")
-
-    def test_normalize_clarifying_question_fills_empty_message(self) -> None:
-        decision = TicketTriageDecision(
-            action="ask_clarifying",
-            message="",
-            reasoning="missing routing detail",
-        )
-
-        normalized = _normalize_ticket_triage_decision(decision)
-
-        self.assertEqual(normalized.message, "Can you clarify what you need help with?")
-
-    def test_contains_report_artifact_evidence_detects_supported_hosts_and_code_blocks(
-        self,
-    ) -> None:
-        self.assertTrue(
-            _contains_report_artifact_evidence(
-                "Report: https://gist.github.com/example/abcdef1234567890"
-            )
-        )
-        self.assertTrue(
-            _contains_report_artifact_evidence(
-                "See https://raw.githubusercontent.com/yearn/yearn-security/master/SECURITY.md"
-            )
-        )
-        self.assertTrue(
-            _contains_report_artifact_evidence(
-                "```solidity\nfunction test_case() external {}\n```"
-            )
-        )
-        self.assertFalse(_contains_report_artifact_evidence("No artifact URL here."))

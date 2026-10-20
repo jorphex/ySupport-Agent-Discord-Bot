@@ -1,7 +1,7 @@
 import tests as _test_environment  # noqa: F401
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 
 import discord
@@ -37,37 +37,6 @@ from tests.test_ticket_intake import (
 
 
 class TicketFlowTests(TicketFlowTestCase):
-    async def test_handoff_summary_uses_configured_terra_low_role(self) -> None:
-        create_response = AsyncMock(
-            return_value=SimpleNamespace(
-                output_text='{"summary":"A manual vault action remains."}'
-            )
-        )
-        client = SimpleNamespace(
-            responses=SimpleNamespace(create=create_response),
-        )
-
-        with (
-            patch.dict("os.environ", {"YSUPPORT_ALLOW_TEST_LLM": "1"}),
-            patch.object(config, "OPENAI_API_KEY", "test-key"),
-            patch.object(config, "TELEGRAM_HANDOFF_SUMMARY_MODEL", "gpt-5.6-terra"),
-            patch.object(
-                config,
-                "TELEGRAM_HANDOFF_SUMMARY_REASONING_EFFORT",
-                "low",
-            ),
-            patch("handoff._get_handoff_summary_async_client", return_value=client),
-        ):
-            summary = await handoff.summarize_handoff_summary(
-                reason="manual strategy action",
-                summary="The reward sale still needs an operator.",
-            )
-
-        self.assertEqual(summary, "A manual vault action remains.")
-        request = create_response.await_args.kwargs
-        self.assertEqual(request["model"], "gpt-5.6-terra")
-        self.assertEqual(request["reasoning"], {"effort": "low"})
-
     async def test_telegram_handoff_reply_consumes_notice_and_posts_update(
         self,
     ) -> None:

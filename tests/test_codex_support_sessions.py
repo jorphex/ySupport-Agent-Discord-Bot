@@ -14,7 +14,6 @@ from ticket_investigation.codex_support_endpoint import (
     DEFAULT_CODEX_EXEC_COMMAND,
     CodexSupportTicketExecutionJsonEndpoint,
     _build_codex_support_command,
-    _build_codex_delete_command,
     _expired_unreferenced_rollout_ids,
 )
 from ticket_investigation.transport import TicketExecutionTransportRequest
@@ -88,17 +87,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
 
         self.assertIsNone(record)
 
-    def test_extract_session_id_from_stderr(self) -> None:
-        manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
-        stderr_text = (
-            "OpenAI Codex v0.117.0\n"
-            "session id: 019dade1-5acf-70e2-9c61-f5ba37862a78\n"
-        )
-        self.assertEqual(
-            manager.extract_session_id(stderr_text),
-            "019dade1-5acf-70e2-9c61-f5ba37862a78",
-        )
-
     def test_extract_session_id_from_thread_started_jsonl(self) -> None:
         manager = CodexSupportSessionManager("/tmp", max_age_hours=168)
         stdout_text = "\n".join(
@@ -158,27 +146,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
         )
 
         self.assertIsNone(manager.conversation_key_for_request(request))
-
-    def test_summary_reports_active_records(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = CodexSupportSessionManager(temp_dir, max_age_hours=168)
-            manager.record_success(
-                conversation_key="ticket:123",
-                session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
-                artifact_dir="/tmp/run-1",
-                requested_intent="investigate_issue",
-                guardrail_profile="ticket_support",
-            )
-
-            summary = manager.summary()
-
-        self.assertEqual(summary["root_dir"], temp_dir)
-        self.assertEqual(summary["active_sessions"], 1)
-        self.assertEqual(len(summary["records"]), 1)
-        self.assertEqual(
-            summary["records"][0]["conversation_key"],
-            "ticket:123",
-        )
 
     def test_load_for_turn_resets_after_repeated_failures(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -273,22 +240,6 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
 
 
 class CodexSupportCommandBuilderTests(unittest.TestCase):
-    def test_delete_command_uses_supported_force_delete(self) -> None:
-        command = _build_codex_delete_command(
-            codex_command=DEFAULT_CODEX_EXEC_COMMAND,
-            session_id="019dade1-5acf-70e2-9c61-f5ba37862a78",
-        )
-
-        self.assertEqual(
-            command,
-            [
-                "codex",
-                "delete",
-                "--force",
-                "019dade1-5acf-70e2-9c61-f5ba37862a78",
-            ],
-        )
-
     def test_expired_rollout_scan_preserves_active_and_recent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             sessions_dir = Path(temp_dir) / "sessions" / "2026" / "07" / "01"
@@ -354,21 +305,6 @@ class CodexSupportSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(removed, 1)
         delete_session.assert_awaited_once_with(expired_id)
-
-    def test_fresh_command_drops_ephemeral_and_keeps_schema(self) -> None:
-        command = _build_codex_support_command(
-            codex_command=DEFAULT_CODEX_EXEC_COMMAND,
-            model="gpt-5.4",
-            reasoning_effort="medium",
-            response_schema_path=Path("/tmp/schema.json"),
-            run_dir_path=Path("/tmp/run"),
-            image_paths=[],
-            resume_session_id=None,
-        )
-
-        self.assertNotIn("--ephemeral", command)
-        self.assertIn("--output-schema", command)
-        self.assertIn("-C", command)
 
     def test_resume_command_uses_exec_resume_with_schema(self) -> None:
         command = _build_codex_support_command(

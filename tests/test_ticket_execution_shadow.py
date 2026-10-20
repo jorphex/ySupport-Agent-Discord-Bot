@@ -6,10 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import config
 from ticket_investigation.json_endpoint import (
     ShadowTicketExecutionJsonEndpoint,
-    build_ticket_execution_json_endpoint,
 )
 from ticket_investigation.transport import (
     TicketExecutionTransportRequest,
@@ -30,11 +28,6 @@ class _StaticEndpoint:
 class _FailingEndpoint:
     async def execute_json_turn(self, request_json: str, hooks=None) -> str:
         raise RuntimeError("shadow failed")
-
-
-class _ExecutorStub:
-    async def execute_turn(self, request, hooks=None):
-        raise AssertionError("shadow tests should not execute the local delegate")
 
 
 def _transport_result_json(reply: str) -> str:
@@ -165,27 +158,3 @@ class ShadowTicketExecutionEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(records), 1)
             payload = json.loads(records[0].read_text(encoding="utf-8"))
             self.assertIn("shadow_error", payload)
-
-    def test_endpoint_factory_wraps_shadow_endpoint(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_shadow = config.TICKET_EXECUTION_SHADOW_ENDPOINT
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        original_shadow_artifact_dir = config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "local"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_SHADOW_ENDPOINT = "subprocess"
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR = "/tmp/ticket-shadow"
-            endpoint = build_ticket_execution_json_endpoint(_ExecutorStub())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_SHADOW_ENDPOINT = original_shadow
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-            config.TICKET_EXECUTION_SHADOW_ARTIFACT_DIR = original_shadow_artifact_dir
-
-        self.assertIsInstance(endpoint, ShadowTicketExecutionJsonEndpoint)
-        self.assertEqual(endpoint.shadow_mode, "subprocess")
-        self.assertEqual(endpoint.artifact_dir, "/tmp/ticket-shadow")

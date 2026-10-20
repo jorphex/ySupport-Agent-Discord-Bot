@@ -20,30 +20,6 @@ from ticket_execution.status import (
 
 
 class ConfigSummaryTests(unittest.TestCase):
-    def test_mcp_docker_context_is_an_explicit_tracked_allowlist(self) -> None:
-        dockerignore = Path("Dockerfile.mcp.dockerignore").read_text(
-            encoding="utf-8"
-        ).splitlines()
-
-        self.assertEqual(dockerignore[0], "**")
-        self.assertIn("!Dockerfile.mcp", dockerignore)
-        self.assertIn("!mcp_server.py", dockerignore)
-        self.assertIn("!yearn_rag/repo_sources.json", dockerignore)
-        self.assertNotIn("!.env", dockerignore)
-
-    def test_support_dashboard_tls_verification_defaults_on(self) -> None:
-        self.assertTrue(config.SUPPORT_DASHBOARD_VERIFY_SSL)
-
-    def test_mcp_compose_keeps_dashboard_tls_verification_on_by_default(
-        self,
-    ) -> None:
-        compose = Path("compose.mcp.yaml").read_text(encoding="utf-8")
-
-        self.assertIn(
-            'SUPPORT_DASHBOARD_VERIFY_SSL: "${SUPPORT_DASHBOARD_VERIFY_SSL:-true}"',
-            compose,
-        )
-
     def test_invalid_boolean_env_keeps_safe_default_and_reports_error(self) -> None:
         config._INVALID_ENV_ERRORS.pop("TEST_BOOLEAN_SETTING", None)
         try:
@@ -77,98 +53,6 @@ class ConfigSummaryTests(unittest.TestCase):
             )
         finally:
             config._INVALID_ENV_ERRORS.pop("TEST_INTEGER_SETTING", None)
-
-    def test_build_rpc_urls_prefers_explicit_per_chain_env(self) -> None:
-        rpc_urls = config.build_rpc_urls(
-            {
-                "ETHEREUM_RPC_URL": "https://ethereum.example",
-                "BASE_RPC_URL": "https://base.example",
-                "ARBITRUM_RPC_URL": "https://arbitrum.example",
-                "OPTIMISM_RPC_URL": "https://optimism.example",
-                "POLYGON_RPC_URL": "https://polygon.example",
-                "SONIC_RPC_URL": "https://sonic.example",
-                "KATANA_RPC_URL": "https://katana.example",
-            }
-        )
-
-        self.assertEqual(rpc_urls["ethereum"], "https://ethereum.example")
-        self.assertEqual(rpc_urls["base"], "https://base.example")
-        self.assertEqual(rpc_urls["arbitrum"], "https://arbitrum.example")
-        self.assertEqual(rpc_urls["optimism"], "https://optimism.example")
-        self.assertEqual(rpc_urls["polygon"], "https://polygon.example")
-        self.assertEqual(rpc_urls["sonic"], "https://sonic.example")
-        self.assertEqual(rpc_urls["katana"], "https://katana.example")
-
-    def test_build_rpc_urls_falls_back_to_alchemy_and_default_katana(self) -> None:
-        original_alchemy_key = config.ALCHEMY_KEY
-        try:
-            config.ALCHEMY_KEY = "alchemy-test-key"
-            rpc_urls = config.build_rpc_urls({})
-        finally:
-            config.ALCHEMY_KEY = original_alchemy_key
-
-        self.assertEqual(
-            rpc_urls["ethereum"],
-            "https://eth-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-        self.assertEqual(
-            rpc_urls["base"],
-            "https://base-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-        self.assertEqual(
-            rpc_urls["arbitrum"],
-            "https://arb-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-        self.assertEqual(
-            rpc_urls["optimism"],
-            "https://opt-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-        self.assertEqual(
-            rpc_urls["polygon"],
-            "https://polygon-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-        self.assertEqual(
-            rpc_urls["sonic"],
-            "https://sonic-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-        self.assertEqual(
-            rpc_urls["katana"],
-            "https://katana-mainnet.g.alchemy.com/v2/alchemy-test-key",
-        )
-
-    def test_ticket_execution_runtime_warnings_flag_primary_codex_without_fallback(
-        self,
-    ) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            warnings = config.ticket_execution_runtime_warnings()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-
-        self.assertIn(
-            "primary codex_support_exec is enabled without a fallback endpoint",
-            warnings,
-        )
-
-    def test_ticket_execution_runtime_validation_allows_ephemeral_codex_runs(
-        self,
-    ) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "codex_support_exec"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = "local"
-            config.TICKET_EXECUTION_ARTIFACT_DIR = ""
-            config.validate_ticket_execution_runtime_config()
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
 
     def test_ticket_execution_runtime_validation_covers_active_shadow_codex(
         self,
@@ -291,54 +175,12 @@ class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("abcdef1234567890", result)
         mock_get.assert_called_once()
 
+
     async def test_fetch_report_artifact_rejects_unsupported_hosts(self) -> None:
         result = await docs_repo_tools.core_fetch_report_artifact(
             "https://example.com/report.txt"
         )
         self.assertIn("Unsupported report URL", result)
-
-    async def test_pretriage_repo_claim_combines_repo_search_artifacts_and_docs(
-        self,
-    ) -> None:
-        async def fake_search_repo_context(
-            query: str,
-            limit=None,
-            include_legacy: bool = False,
-        ) -> str:
-            self.assertIn("unstake", query)
-            return "Top repo hits:\n- segment:11518\n- segment:11540"
-
-        async def fake_fetch_repo_artifacts(artifact_refs_text: str) -> str:
-            self.assertEqual(artifact_refs_text, "segment:11518, segment:11540")
-            return "Fetched repo artifacts:\nLiquidLockerDepositor.vy excerpts"
-
-        async def fake_answer_from_docs(user_query: str) -> str:
-            self.assertIn("unstake", user_query)
-            return "Official docs say unstaking starts a 14-day linear cooldown."
-
-        with (
-            patch.object(
-                docs_repo_tools,
-                "core_search_repo_context",
-                new=fake_search_repo_context,
-            ),
-            patch.object(
-                docs_repo_tools,
-                "core_fetch_repo_artifacts",
-                new=fake_fetch_repo_artifacts,
-            ),
-            patch.object(
-                docs_repo_tools, "core_answer_from_docs", new=fake_answer_from_docs
-            ),
-        ):
-            result = await docs_repo_tools.core_pretriage_repo_claim(
-                "unstake resets the stream start time to block.timestamp"
-            )
-
-        self.assertIn("Repo search:", result)
-        self.assertIn("segment:11518", result)
-        self.assertIn("LiquidLockerDepositor.vy", result)
-        self.assertIn("Docs context:", result)
 
 
 class TicketExecutionStatusTests(unittest.TestCase):
@@ -355,29 +197,6 @@ class TicketExecutionStatusTests(unittest.TestCase):
                 self.assertFalse(missing_path.exists())
         finally:
             config.TICKET_EXECUTION_CODEX_SESSION_DIR = original_session_dir
-
-    def test_build_ticket_execution_status_smoke_probe_reports_success_for_local_endpoint(
-        self,
-    ) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "local"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            with patch(
-                "ticket_execution.status.get_repo_context_status",
-                return_value={"state": "ready", "fresh": True},
-            ):
-                status = build_ticket_execution_status(include_smoke_probe=True)
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-
-        smoke_probe = status["ticket_execution"]["smoke_probe"]
-        self.assertTrue(smoke_probe["ok"])
-        self.assertEqual(
-            smoke_probe["raw_final_reply"], "ticket_execution_smoke_ok:local"
-        )
 
     def test_ticket_execution_status_main_returns_nonzero_without_codex_home(
         self,

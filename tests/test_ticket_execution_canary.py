@@ -3,10 +3,8 @@ import tests as _test_environment  # noqa: F401
 import json
 import unittest
 
-import config
 from ticket_investigation.json_endpoint import (
     ConditionalTicketExecutionJsonEndpoint,
-    build_ticket_execution_json_endpoint,
 )
 from ticket_investigation.transport import TicketExecutionTransportRequest
 
@@ -42,11 +40,6 @@ class _StaticEndpoint:
                 },
             }
         )
-
-
-class _ExecutorStub:
-    async def execute_turn(self, request, hooks=None):
-        raise AssertionError("canary tests should not execute the local delegate")
 
 
 def _request(*, channel_id: int, requested_intent: str) -> TicketExecutionTransportRequest:
@@ -126,28 +119,3 @@ class TicketExecutionCanaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response_json)["flow_outcome"]["raw_final_reply"], "default")
         self.assertEqual(default.calls, 1)
         self.assertEqual(canary.calls, 0)
-
-    def test_endpoint_factory_wraps_canary_endpoint(self) -> None:
-        original_mode = config.TICKET_EXECUTION_ENDPOINT
-        original_fallback = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
-        original_canary = config.TICKET_EXECUTION_CANARY_ENDPOINT
-        original_canary_channels = config.TICKET_EXECUTION_CANARY_CHANNEL_IDS
-        original_canary_intents = config.TICKET_EXECUTION_CANARY_INTENTS
-        original_artifact_dir = config.TICKET_EXECUTION_ARTIFACT_DIR
-        try:
-            config.TICKET_EXECUTION_ENDPOINT = "local"
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = ""
-            config.TICKET_EXECUTION_CANARY_ENDPOINT = "subprocess"
-            config.TICKET_EXECUTION_CANARY_CHANNEL_IDS = {"42"}
-            config.TICKET_EXECUTION_CANARY_INTENTS = set()
-            config.TICKET_EXECUTION_ARTIFACT_DIR = "/tmp/ticket-artifacts"
-            endpoint = build_ticket_execution_json_endpoint(_ExecutorStub())
-        finally:
-            config.TICKET_EXECUTION_ENDPOINT = original_mode
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT = original_fallback
-            config.TICKET_EXECUTION_CANARY_ENDPOINT = original_canary
-            config.TICKET_EXECUTION_CANARY_CHANNEL_IDS = original_canary_channels
-            config.TICKET_EXECUTION_CANARY_INTENTS = original_canary_intents
-            config.TICKET_EXECUTION_ARTIFACT_DIR = original_artifact_dir
-
-        self.assertIsInstance(endpoint, ConditionalTicketExecutionJsonEndpoint)

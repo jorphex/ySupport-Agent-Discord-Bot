@@ -14,7 +14,6 @@ from state import (
     stop_reasons_by_channel,
 )
 from handoff import (
-    build_handoff_notice,
     strip_handoff_placeholder,
 )
 from ticket_investigation.runtime import (
@@ -24,7 +23,6 @@ from ticket_investigation.runtime import (
 from discord_support_runtime import (
     _classify_ticket_message_action,
     _extract_ticket_owner_user_id_from_messages,
-    _guardrail_tripwire_reply,
     _maybe_recover_runtime_stopped_ticket_for_message,
 )
 
@@ -152,20 +150,6 @@ class RoutingTests(unittest.TestCase):
             "staff_summon_usage",
         )
 
-    def test_build_handoff_notice_bounds_model_generated_reason(self) -> None:
-        notice = build_handoff_notice(
-            reason="x" * 400,
-            summary="manual action needed",
-            channel_id=1506309610192113917,
-            guild_id=734804446353031319,
-        )
-
-        reason_line = next(
-            line for line in notice.splitlines() if line.startswith("<b>Reason</b>:")
-        )
-        self.assertLessEqual(len(reason_line), len("<b>Reason</b>: ") + 260)
-        self.assertTrue(reason_line.endswith("..."))
-
     def test_strip_handoff_placeholder_preserves_newlines(self) -> None:
         text = (
             "Main difference from Aave:\n"
@@ -273,62 +257,6 @@ class RoutingTests(unittest.TestCase):
         finally:
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
-
-    def test_guardrail_tripwire_reply_prefers_guardrail_message(self) -> None:
-        exc = type(
-            "FakeTripwire",
-            (),
-            {
-                "guardrail_result": type(
-                    "FakeResult",
-                    (),
-                    {
-                        "output": type(
-                            "FakeOutput",
-                            (),
-                            {
-                                "output_info": {
-                                    "message": "Please use the BD contact path."
-                                }
-                            },
-                        )()
-                    },
-                )()
-            },
-        )()
-
-        self.assertEqual(
-            _guardrail_tripwire_reply(exc),
-            "Please use the BD contact path.",
-        )
-
-    def test_guardrail_tripwire_reply_falls_back_when_message_missing(self) -> None:
-        exc = type(
-            "FakeTripwire",
-            (),
-            {
-                "guardrail_result": type(
-                    "FakeResult",
-                    (),
-                    {
-                        "output": type(
-                            "FakeOutput",
-                            (),
-                            {
-                                "output_info": {
-                                    "classification": {"request_type": "partnership"}
-                                }
-                            },
-                        )()
-                    },
-                )()
-            },
-        )()
-
-        self.assertEqual(
-            _guardrail_tripwire_reply(exc),
-            "Your request could not be processed due to input checks.",
-        )
 
     def test_follow_up_routing_does_not_keep_bug_lane_sticky_without_structured_state(
         self,

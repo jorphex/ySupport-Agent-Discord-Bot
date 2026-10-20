@@ -108,49 +108,6 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             clear_public_conversation(original_author_id)
 
-    async def test_public_access_question_runs_support_before_handoff(self) -> None:
-        original_author_id = 72
-        channel_id = 73
-        original_message = _FakeOriginalMessage(
-            author_id=original_author_id,
-            content="I finished verification but still cannot access the Discord.",
-        )
-        trigger_channel = _FakePublicChannel(channel_id, original_message)
-        trigger_message = _FakeTriggerMessage(
-            trigger_channel,
-            reference_message_id=12345,
-        )
-
-        updated_job = TicketInvestigationJob(channel_id=channel_id)
-        bot = TicketBot(intents=discord.Intents.none())
-        bot.investigation_executor = _FakeInvestigationExecutor(
-            result=SimpleNamespace(
-                flow_outcome=TicketAgentFlowOutcome(
-                    raw_final_reply=(
-                        "Please confirm you completed the server verification steps "
-                        "and reopen Discord before a moderator check is needed."
-                    ),
-                    conversation_history=[],
-                    completed_agent_key=None,
-                    requires_human_handoff=False,
-                ),
-                updated_job=updated_job,
-            )
-        )
-
-        try:
-            with patch("ysupport._notify_handoff") as mock_notify:
-                handled = await bot._handle_public_trigger_message(trigger_message, "y")
-
-            self.assertTrue(handled)
-            self.assertEqual(len(bot.investigation_executor.calls), 1)
-            mock_notify.assert_not_called()
-            self.assertEqual(len(trigger_channel.sent_messages), 1)
-            self.assertIn("verification steps", trigger_channel.sent_messages[0])
-            self.assertIn(original_author_id, public_conversations)
-        finally:
-            clear_public_conversation(original_author_id)
-
     async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(
         self,
     ) -> None:
