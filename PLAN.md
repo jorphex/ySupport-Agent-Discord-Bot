@@ -20,7 +20,7 @@ handoffs, and Icarus; retain the existing daily schedule and freshness guard.
 - [x] Repair independent stages and add minimal regression protection.
 - [x] Refresh both corpora and verify live repo search/fetch.
 - [x] Replay the ticket against candidate code with fresh evidence.
-- [ ] Review, verify, commit separately, push, deploy, and check live health.
+- [x] Review, verify, commit separately, push, deploy, and check live health.
 
 Refresh results: pinned Pinecone 9.1.0 yields ListResponse/ListItem objects.
 Stringifying ListItem rather than reading its ID prevented stale-vector deletion
@@ -47,6 +47,16 @@ search/fetch were verified separately. Neither replay establishes the exact
 September frontend cause. Two initial candidate-harness setup failures (working
 directory dotenv loading and missing child CODEX_HOME) were corrected before
 the successful run; production was unaffected.
+
+Deployment: APY correction `496c3ba` and refresh repair `0d7d4fd` were pushed
+separately. The rebuilt locked MCP image is healthy and matches checkout source
+hashes; the previous production image is tagged `ysupport-mcp:rollback`.
+Authenticated production APY and repo search/fetch checks pass, and missing
+bearer authentication returns 401. The bot restarted while idle, reconnected to
+Discord/Telegram with zero automatic restarts, and loaded instructions matching
+the reviewed template. No source-review findings remain. Temporary candidate
+units were stopped and all replay homes, transcripts, sessions, artifacts,
+scripts, private environment files, and temporary test/build logs were removed.
 
 Previous APY work and verification:
 
