@@ -138,7 +138,7 @@ def _namespace_vector_count(stats: Any, namespace: str) -> int:
 def list_namespace_ids(index: Any, namespace: str) -> set[str]:
     ids: set[str] = set()
     for page in index.list(namespace=namespace):
-        ids.update(str(vector_id) for vector_id in page)
+        ids.update(item.id for item in page.vectors)
     return ids
 
 

@@ -31,8 +31,10 @@ Documentation ingestion:
 - successful source fingerprints are stored under `.cache/docs_ingestion/`
 - unchanged sources skip OpenAI embeddings and Pinecone writes only after the
   live namespace count and exact vector IDs are verified
-- refresh runs are single-instance and abort on any missing or unreadable source
-  instead of publishing a partial corpus
+- refresh runs are single-instance; documentation and repo-context stages run
+  independently, while each refuses to publish an incomplete corpus
+- any failed stage makes the job exit unsuccessfully; per-stage status and last
+  successful completion are kept in `.cache/docs_ingestion/{docs,repo}.status`
 - repo-context builds cover the complete manifest and use stable artifact
   references across unchanged daily rebuilds
 - set `DOCS_INGESTION_FORCE_REFRESH=1` for an explicit full repair

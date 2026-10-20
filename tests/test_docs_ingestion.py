@@ -3,11 +3,16 @@ from __future__ import annotations
 import tests as _test_environment  # noqa: F401
 
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from pinecone.models.vectors.responses import ListItem, ListResponse
 
 from yearn_rag import embed_and_store
 from yearn_rag import fetch_flex_docs
@@ -89,7 +94,10 @@ class _FakeIndex:
     def list(self, *, namespace: str):
         vector_ids = sorted(self.listed_namespaces.get(namespace, set()))
         if vector_ids:
-            yield vector_ids
+            yield ListResponse(
+                namespace=namespace,
+                vectors=[ListItem(id=vector_id) for vector_id in vector_ids],
+            )
 
     def fetch(self, *, ids: list[str], namespace: str):
         available = self.namespaces.get(namespace, set())
@@ -119,6 +127,71 @@ class _FakeIndex:
         self.deletes.append((namespace, vector_ids))
         self.events.append("delete")
         return {}
+
+
+class RefreshEntrypointTests(unittest.TestCase):
+    def test_refresh_stages_fail_independently_and_preserve_last_success(self) -> None:
+        steps = [
+            "git",
+            "fetch_flex_docs.py",
+            "process_docs.py",
+            "embed_and_store.py",
+            "build_repo_context.py",
+            "verify_repo_context.py",
+        ]
+        script = Path(embed_and_store.__file__).with_name("update_docs.sh")
+        for failed_step in ["", *steps]:
+            with self.subTest(failed_step=failed_step), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                rag_dir = root / "yearn_rag"
+                (rag_dir / "yearn-devdocs").mkdir(parents=True)
+                shutil.copy2(script, rag_dir / script.name)
+                bin_dir = root / ".venv" / "bin"
+                bin_dir.mkdir(parents=True)
+                stub = (
+                    '#!/bin/bash\n'
+                    'step="${1##*/}"\n'
+                    '[[ "${0##*/}" == "git" ]] && step=git\n'
+                    'printf "%s\\n" "$step" >> "$REFRESH_TEST_EVENTS"\n'
+                    '[[ "$step" != "$REFRESH_TEST_FAIL" ]]\n'
+                )
+                for command in ("python", "git"):
+                    path = bin_dir / command
+                    path.write_text(stub, encoding="utf-8")
+                    path.chmod(0o755)
+                status_dir = root / ".cache" / "docs_ingestion"
+                status_dir.mkdir(parents=True)
+                for stage in ("docs", "repo"):
+                    (status_dir / f"{stage}.last_success").write_text("previous\n")
+                events_path = root / "events"
+                result = subprocess.run(
+                    ["bash", str(rag_dir / script.name)],
+                    env={
+                        **os.environ,
+                        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                        "REFRESH_TEST_EVENTS": str(events_path),
+                        "REFRESH_TEST_FAIL": failed_step,
+                    },
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 1 if failed_step else 0, result.stderr)
+                docs_failed = failed_step in steps[:4]
+                repo_failed = failed_step in steps[4:]
+                expected = steps[: steps.index(failed_step) + 1] if docs_failed else steps[:4]
+                expected += steps[4:5] if failed_step == "build_repo_context.py" else steps[4:]
+                self.assertEqual(events_path.read_text().splitlines(), expected)
+                for stage, failed in (("docs", docs_failed), ("repo", repo_failed)):
+                    status = dict(
+                        line.split("=", 1)
+                        for line in (status_dir / f"{stage}.status").read_text().splitlines()
+                    )
+                    self.assertEqual(status["status"], "failed" if failed else "succeeded")
+                    last_success = (status_dir / f"{stage}.last_success").read_text().strip()
+                    self.assertEqual(status["last_success"], last_success)
+                    self.assertEqual(last_success == "previous", failed)
+                    self.assertIn(f"stage={stage} status={status['status']}", result.stdout)
 
 
 class DocsIngestionTests(unittest.TestCase):
