@@ -1,20 +1,33 @@
 import config
 
+
 SECURITY_PROCESS_URL = (
     "https://github.com/yearn/yearn-security/blob/master/SECURITY.md"
 )
 
-LISTING_DENIAL_MESSAGE = (
-    "Thank you for your interest! "
+LISTING_POLICY = (
     "Yearn Finance ($YFI) is permissionlessly listable on exchanges. Yearn does not pay listing fees, nor does it provide liquidity for exchange listings. "
-    "No proposal is necessary for listing.\n\n"
+    "No proposal is necessary for listing."
+)
+
+LISTING_DENIAL_MESSAGE = (
+    f"Thank you for your interest! {LISTING_POLICY}\n\n"
     "No follow up inquiries or responses necessary."
 )
 
+MARKETING_PROPOSAL_INSTRUCTIONS = (
+    f"For partnership, marketing, or other business development proposals, go to <#{config.PR_MARKETING_CHANNEL_ID}>, share your proposal in **5 sentences** describing how it benefits both parties."
+)
+
 STANDARD_REDIRECT_MESSAGE = (
-     f"Thank you for your interest! "
-     f"For partnership, marketing, or other business development proposals, go to <#{config.PR_MARKETING_CHANNEL_ID}>, share your proposal in **5 sentences** describing how it benefits both parties, and tag **corn**.\n\n"
-     f"No follow up inquiries or responses necessary."
+    f"Thank you for your interest! {MARKETING_PROPOSAL_INSTRUCTIONS}\n\n"
+    "No follow up inquiries or responses necessary."
+)
+
+BUSINESS_INQUIRY_REDIRECT_MESSAGE = (
+    f"Thank you for your interest!\n\n{LISTING_POLICY}\n\n"
+    f"{MARKETING_PROPOSAL_INSTRUCTIONS}\n\n"
+    "No follow up inquiries or responses necessary."
 )
 
 SECURITY_VENDOR_BOUNDARY_MESSAGE = (

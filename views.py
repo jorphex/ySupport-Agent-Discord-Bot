@@ -4,7 +4,7 @@ import discord
 from discord.ui import View, Button, button
 
 import config
-from bot_behavior import STANDARD_REDIRECT_MESSAGE
+from bot_behavior import BUSINESS_INQUIRY_REDIRECT_MESSAGE
 from handoff import build_dismissed_handoff_notice, retire_handoff_notice
 from state import (
     active_ticket_executor_tasks,
@@ -202,9 +202,9 @@ class InitialInquiryView(_TicketOwnerView):
     async def bd_partner_button(self, interaction: discord.Interaction, button: Button):
         await self.handle_button_click(interaction, button.custom_id)
         if interaction.channel:
-            await interaction.channel.send(STANDARD_REDIRECT_MESSAGE, suppress_embeds=True)
+            await interaction.channel.send(BUSINESS_INQUIRY_REDIRECT_MESSAGE, suppress_embeds=True)
         else:
-            await interaction.followup.send(STANDARD_REDIRECT_MESSAGE, ephemeral=False, suppress_embeds=True)
+            await interaction.followup.send(BUSINESS_INQUIRY_REDIRECT_MESSAGE, ephemeral=False, suppress_embeds=True)
         mark_ticket_channel_stopped(
             interaction.channel.id,
             reason="boundary_stop",
