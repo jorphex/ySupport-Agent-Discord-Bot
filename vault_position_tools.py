@@ -442,7 +442,7 @@ async def core_check_all_deposits(
     Returns a combined summary of any deposits found in either type of vault.
     """
     logging.info(f"[CoreTool:check_deposits] User: '{user_address_or_ens}'")
-    resolved_address = resolve_ens_name(user_address_or_ens)
+    resolved_address = await asyncio.to_thread(resolve_ens_name, user_address_or_ens)
     if not resolved_address:
         return f"Could not resolve '{user_address_or_ens}' to a valid Ethereum address."
 
@@ -503,7 +503,7 @@ async def core_get_withdrawal_instructions(
     resolved_user_address = None
     user_checksum_addr = None
     if user_address_or_ens:
-        resolved_user_address = resolve_ens_name(user_address_or_ens)
+        resolved_user_address = await asyncio.to_thread(resolve_ens_name, user_address_or_ens)
         if not resolved_user_address:
             logging.warning(
                 f"Could not resolve provided user address/ENS: '{user_address_or_ens}'. Proceeding without it."

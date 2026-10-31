@@ -215,6 +215,11 @@ class RepoContextBoundaryTests(unittest.TestCase):
                 ),
                 patch.object(
                     repo_context_build,
+                    "_resolve_repo_revision",
+                    return_value="1" * 40,
+                ),
+                patch.object(
+                    repo_context_build,
                     "_download_repo_archive",
                     return_value=b"archive",
                 ),

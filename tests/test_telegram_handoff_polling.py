@@ -163,6 +163,7 @@ class TicketFlowTests(TicketFlowTestCase):
         async def fake_fetch_updates(_offset):
             nonlocal fetch_calls
             fetch_calls += 1
+            await asyncio.sleep(0)
             if fetch_calls == 1:
                 return []
             raise asyncio.CancelledError

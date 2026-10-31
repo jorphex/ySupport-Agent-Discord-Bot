@@ -20,8 +20,8 @@ if ! flock -n 9; then
 fi
 
 refresh_docs() {
-    echo "Pulling latest Yearn docs..."
-    git -C yearn-devdocs pull --ff-only origin master || return "$?"
+    echo "Refreshing shallow Yearn docs checkout..."
+    "$PYTHON" fetch_yearn_docs.py || return "$?"
 
     echo "Fetching Flex docs..."
     "$PYTHON" fetch_flex_docs.py || return "$?"

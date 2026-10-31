@@ -9,10 +9,7 @@ import logging
 from typing import Any, List, Literal
 
 import discord
-from agents import (
-    InputGuardrailTripwireTriggered,
-    TResponseInputItem,
-)
+from agents import TResponseInputItem
 
 import config
 from handoff import (
@@ -280,13 +277,6 @@ def _message_text_for_turn(message: discord.Message) -> str:
     if getattr(message, "attachments", None):
         return "(attachment only)"
     return ""
-
-
-def _guardrail_tripwire_reply(exc: InputGuardrailTripwireTriggered) -> str:
-    guardrail_info = exc.guardrail_result.output.output_info
-    if isinstance(guardrail_info, dict) and "message" in guardrail_info:
-        return guardrail_info["message"]
-    return "Your request could not be processed due to input checks."
 
 
 async def _outer_support_boundary_result(text: str) -> dict[str, Any]:

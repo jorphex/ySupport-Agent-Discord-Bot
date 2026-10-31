@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any
 
+from bot_behavior import is_wallet_first_data_intent
 from ticket_investigation.transport import TicketExecutionTransportRequest, TicketExecutionTransportResult
 from ticket_investigation.executor import TicketExecutionNonFallbackError
 
@@ -457,7 +458,7 @@ def _derive_guardrail_profile(
     if channel_type == "public":
         return "public_support"
     intent = requested_intent or initial_button_intent
-    if intent == "data_deposits_withdrawals_start":
+    if is_wallet_first_data_intent(intent):
         return "ticket_deposits_withdrawals"
     if intent == "docs_qa":
         return "ticket_docs_qa"
@@ -479,7 +480,7 @@ def _derive_expected_first_actions(
         return [
             "Answer directly in-channel and keep public-channel replies concise.",
         ]
-    if intent == "data_deposits_withdrawals_start":
+    if is_wallet_first_data_intent(intent):
         return [
             "If the user provides a wallet address, start with wallet position lookup before asking for more detail.",
             "If the user provides a vault address, vault name, or token, start with vault lookup.",

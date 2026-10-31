@@ -2,15 +2,17 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
 import tarfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -213,6 +215,60 @@ def _download_repo_archive(session: requests.Session, source: RepoSource, repo_r
     response = session.get(archive_url, headers=_github_headers(), timeout=60)
     response.raise_for_status()
     return response.content
+
+
+def _resolve_repo_revision(session: requests.Session, source: RepoSource, repo_ref: str) -> str:
+    response = session.get(
+        f"https://api.github.com/repos/{source.full_name}/commits/{quote(repo_ref, safe='')}",
+        headers=_github_headers(),
+        timeout=30,
+    )
+    response.raise_for_status()
+    revision = response.json().get("sha")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+        raise ValueError(f"Could not resolve commit for {source.full_name} @ {repo_ref}")
+    return revision
+
+
+def _can_reuse_repo(
+    conn: sqlite3.Connection,
+    source: RepoSource,
+    cache_root: Path,
+    previous: dict[str, Any],
+    counts: dict[str, dict[str, int]],
+    *,
+    repo_ref: str,
+    revision: str,
+    source_hash: str,
+) -> bool:
+    if (
+        previous.get("revision") != revision
+        or previous.get("source_hash") != source_hash
+        or previous.get("repo_ref") != repo_ref
+        or not previous.get("files_indexed")
+    ):
+        return False
+    for table, key in (
+        ("files", "files_indexed"),
+        ("segments", "segments_indexed"),
+        ("segments_fts", "segments_indexed"),
+        ("facts", "facts_indexed"),
+        ("facts_fts", "facts_indexed"),
+    ):
+        if counts[table].get(source.full_name, 0) != previous.get(key):
+            return False
+    target = _repo_cache_dir(cache_root, source.full_name, repo_ref)
+    rows = conn.execute(
+        "SELECT path, content_hash FROM files WHERE repo_name = ?", (source.full_name,)
+    )
+    try:
+        return all(
+            not (target / row["path"]).is_symlink()
+            and _content_hash((target / row["path"]).read_text(encoding="utf-8")) == row["content_hash"]
+            for row in rows
+        )
+    except (OSError, UnicodeError):
+        return False
 
 
 def _extract_repo_files(
@@ -738,16 +794,54 @@ def build_repo_context_index(
     with requests.Session() as session, sqlite3.connect(db_file) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_schema(conn)
+        meta = _get_build_meta(conn)
+        pipeline_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        try:
+            previous_repos = {
+                repo["repo_name"]: repo
+                for repo in json.loads(meta.get(f"{_BUILD_META_KEY_PREFIX}.summary", "{}")).get("repos", [])
+            }
+        except (ValueError, TypeError, KeyError, AttributeError):
+            previous_repos = {}
+        if (
+            meta.get(f"{_BUILD_META_KEY_PREFIX}.pipeline_hash") != pipeline_hash
+            or meta.get(f"{_BUILD_META_KEY_PREFIX}.schema_version") != str(REPO_CONTEXT_SCHEMA_VERSION)
+            or os.getenv("DOCS_INGESTION_FORCE_REFRESH", "").lower() in {"1", "true", "yes", "on"}
+        ):
+            previous_repos = {}
+        counts = {
+            table: {
+                row["repo_name"]: row["count"]
+                for row in conn.execute(f"SELECT repo_name, COUNT(*) AS count FROM {table} GROUP BY repo_name")
+            }
+            for table in ("files", "segments", "facts", "segments_fts", "facts_fts")
+        }
+        data_changed = bool(set(counts["files"]) - configured_repo_names)
         _clear_unconfigured_repo_rows(
             conn,
             configured_repo_names,
         )
         for source in sources:
             repo_ref = _resolve_default_branch(session, source)
+            revision = _resolve_repo_revision(session, source, repo_ref)
+            source_hash = hashlib.sha256(
+                json.dumps(asdict(source), sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            previous = previous_repos.get(source.full_name, {})
+            if _can_reuse_repo(
+                conn, source, cache_root, previous, counts,
+                repo_ref=repo_ref, revision=revision, source_hash=source_hash,
+            ):
+                logging.info("Verified unchanged repo context for %s @ %s", source.full_name, revision)
+                repo_summaries.append({**previous, "reused": True})
+                total_files += previous["files_indexed"]
+                total_segments += previous["segments_indexed"]
+                total_facts += previous["facts_indexed"]
+                continue
             logging.info("Building repo context for %s @ %s", source.full_name, repo_ref)
             _cleanup_obsolete_repo_cache_dirs(cache_root, source.full_name, repo_ref)
             repo_files = _extract_repo_files(
-                archive_bytes=_download_repo_archive(session, source, repo_ref),
+                archive_bytes=_download_repo_archive(session, source, revision),
                 source=source,
                 repo_ref=repo_ref,
                 cache_dir=cache_root,
@@ -759,6 +853,7 @@ def build_repo_context_index(
                 )
 
             _clear_repo_rows(conn, source.full_name)
+            data_changed = True
 
             repo_segment_count = 0
             repo_fact_count = 0
@@ -771,6 +866,9 @@ def build_repo_context_index(
                 {
                     "repo_name": source.full_name,
                     "repo_ref": repo_ref,
+                    "revision": revision,
+                    "source_hash": source_hash,
+                    "reused": False,
                     "files_indexed": len(repo_files),
                     "segments_indexed": repo_segment_count,
                     "facts_indexed": repo_fact_count,
@@ -782,6 +880,7 @@ def build_repo_context_index(
 
         build_summary = {
             "repos_indexed": len(repo_summaries),
+            "repos_reused": sum(repo["reused"] for repo in repo_summaries),
             "files_indexed": total_files,
             "segments_indexed": total_segments,
             "facts_indexed": total_facts,
@@ -790,10 +889,12 @@ def build_repo_context_index(
         _set_build_meta(conn, f"{_BUILD_META_KEY_PREFIX}.schema_version", REPO_CONTEXT_SCHEMA_VERSION)
         _set_build_meta(conn, f"{_BUILD_META_KEY_PREFIX}.built_at", built_at)
         _set_build_meta(conn, f"{_BUILD_META_KEY_PREFIX}.manifest_hash", current_manifest_hash)
+        _set_build_meta(conn, f"{_BUILD_META_KEY_PREFIX}.pipeline_hash", pipeline_hash)
         _set_build_meta(conn, f"{_BUILD_META_KEY_PREFIX}.manifest_path", manifest_path_str)
         _set_build_meta(conn, f"{_BUILD_META_KEY_PREFIX}.summary", build_summary)
         conn.commit()
-        conn.execute("VACUUM")
+        if data_changed:
+            conn.execute("VACUUM")
 
     return {
         "manifest_path": manifest_path_str,
@@ -803,6 +904,7 @@ def build_repo_context_index(
         "manifest_hash": current_manifest_hash,
         "schema_version": REPO_CONTEXT_SCHEMA_VERSION,
         "repos_indexed": len(repo_summaries),
+        "repos_reused": build_summary["repos_reused"],
         "files_indexed": total_files,
         "segments_indexed": total_segments,
         "facts_indexed": total_facts,

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-from agents import MaxTurnsExceeded
 import discord
 
 import config
@@ -19,7 +18,7 @@ from state import (
 from handoff import (
     TelegramSentMessage,
 )
-from ticket_investigation.runtime import (
+from ticket_investigation.contracts import (
     TicketAgentFlowOutcome,
 )
 from ysupport import (
@@ -108,71 +107,6 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             clear_public_conversation(original_author_id)
 
-    async def test_public_trigger_max_turns_uses_configured_limit_and_replies_cleanly(
-        self,
-    ) -> None:
-        original_author_id = 73
-        channel_id = 74
-        original_message = _FakeOriginalMessage(
-            author_id=original_author_id,
-            content="How is the stYFI APY calculated?",
-        )
-        trigger_channel = _FakePublicChannel(channel_id, original_message)
-        trigger_message = _FakeTriggerMessage(
-            trigger_channel,
-            reference_message_id=12345,
-        )
-
-        fake_executor = _FakeInvestigationExecutor(
-            exc=MaxTurnsExceeded("Max turns exceeded")
-        )
-        bot = TicketBot(intents=discord.Intents.none())
-        bot.investigation_executor = fake_executor
-        handoff_notices: list[str] = []
-
-        async def fake_send_handoff_notice(
-            message_text: str,
-            *,
-            dismiss_enabled: bool = False,
-        ) -> TelegramSentMessage:
-            self.assertFalse(dismiss_enabled)
-            handoff_notices.append(message_text)
-            return TelegramSentMessage(
-                chat_id="123",
-                message_id=456,
-                message_text=message_text,
-            )
-
-        public_conversations[original_author_id] = PublicConversation(
-            history=[{"role": "assistant", "content": "Earlier context"}],
-            last_interaction_time=datetime.now(timezone.utc),
-        )
-        try:
-            with (
-                patch(
-                    "discord_support_runtime.send_handoff_notice",
-                    new=fake_send_handoff_notice,
-                ),
-            ):
-                handled = await bot._handle_public_trigger_message(trigger_message, "y")
-        finally:
-            public_conversations.pop(original_author_id, None)
-        self.assertTrue(handled)
-        self.assertTrue(trigger_message.deleted)
-        self.assertEqual(len(fake_executor.calls), 1)
-        self.assertEqual(
-            fake_executor.calls[0]["request"].current_history,
-            [{"role": "assistant", "content": "Earlier context"}],
-        )
-        self.assertNotIn(original_author_id, public_conversations)
-        self.assertEqual(len(original_message.replies), 1)
-        self.assertIn("internal analysis limit", original_message.replies[0][0].lower())
-        self.assertIn("Please try again", original_message.replies[0][0])
-        self.assertNotIn("I've notified", original_message.replies[0][0])
-        self.assertNotIn("<@", original_message.replies[0][0])
-        self.assertFalse(original_message.replies[0][1]["mention_author"])
-        self.assertTrue(original_message.replies[0][1]["suppress_embeds"])
-        self.assertEqual(handoff_notices, [])
 
     async def test_public_trigger_runtime_error_does_not_create_handoff(self) -> None:
         original_author_id = 196

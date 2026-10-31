@@ -2,7 +2,6 @@ import asyncio
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import sys
 from collections.abc import Sequence
 import json
 from typing import Protocol
@@ -16,11 +15,9 @@ from ticket_investigation.codex_support_endpoint import (
 from ticket_investigation.executor import (
     TicketExecutionHooks,
     TicketExecutionNonFallbackError,
-    TicketInvestigationExecutor,
 )
 from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
 from ticket_investigation.transport import (
-    build_smoke_transport_result,
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -33,32 +30,6 @@ class TicketExecutionJsonEndpoint(Protocol):
         hooks: TicketExecutionHooks | None = None,
     ) -> str:
         ...
-
-
-class ExecutorBackedTicketExecutionJsonEndpoint:
-    def __init__(self, delegate: TicketInvestigationExecutor) -> None:
-        self.delegate = delegate
-
-    async def execute_json_turn(
-        self,
-        request_json: str,
-        hooks: TicketExecutionHooks | None = None,
-    ) -> str:
-        transport_request = TicketExecutionTransportRequest.from_json(request_json)
-        if transport_request.smoke_mode:
-            return build_smoke_transport_result(
-                transport_request,
-                endpoint_mode="local",
-            ).to_json()
-        hydrated_request = transport_request.to_turn_request()
-        result = await self.delegate.execute_turn(
-            hydrated_request,
-            hooks=hooks,
-        )
-        return TicketExecutionTransportResult.from_execution_parts(
-            result.flow_outcome,
-            result.updated_job,
-        ).to_json()
 
 
 class JsonEndpointTicketExecutionTransport:
@@ -242,13 +213,10 @@ async def prune_codex_support_sessions(
     return await _prune(endpoint)
 
 
-def build_ticket_execution_json_endpoint(
-    delegate: TicketInvestigationExecutor | None = None,
-) -> TicketExecutionJsonEndpoint:
+def build_ticket_execution_json_endpoint() -> TicketExecutionJsonEndpoint:
     config.validate_ticket_execution_runtime_config()
     primary: TicketExecutionJsonEndpoint = _build_single_ticket_execution_json_endpoint(
         config.TICKET_EXECUTION_ENDPOINT,
-        delegate,
     )
     fallback_mode = config.TICKET_EXECUTION_FALLBACK_ENDPOINT
     if not fallback_mode or fallback_mode == config.TICKET_EXECUTION_ENDPOINT:
@@ -256,14 +224,12 @@ def build_ticket_execution_json_endpoint(
     else:
         fallback = _build_single_ticket_execution_json_endpoint(
             fallback_mode,
-            delegate,
         )
         endpoint = FailoverTicketExecutionJsonEndpoint(primary, fallback)
     canary_mode = config.TICKET_EXECUTION_CANARY_ENDPOINT
     if config.ticket_execution_canary_is_active():
         canary = _build_single_ticket_execution_json_endpoint(
             canary_mode,
-            delegate,
         )
         endpoint = ConditionalTicketExecutionJsonEndpoint(
             endpoint,
@@ -275,7 +241,6 @@ def build_ticket_execution_json_endpoint(
     if shadow_mode:
         shadow = _build_single_ticket_execution_json_endpoint(
             shadow_mode,
-            delegate,
         )
         return ShadowTicketExecutionJsonEndpoint(
             endpoint,
@@ -293,14 +258,7 @@ def build_ticket_execution_json_endpoint(
 
 def _build_single_ticket_execution_json_endpoint(
     mode: str,
-    delegate: TicketInvestigationExecutor | None,
 ) -> TicketExecutionJsonEndpoint:
-    if mode == "local":
-        if delegate is None:
-            raise ValueError(
-                "The local ticket execution endpoint requires an explicit local executor."
-            )
-        return ExecutorBackedTicketExecutionJsonEndpoint(delegate)
     if mode == "subprocess":
         command = list(_subprocess_command())
         return SubprocessTicketExecutionJsonEndpoint(
@@ -337,7 +295,7 @@ def _build_single_ticket_execution_json_endpoint(
 def _subprocess_command() -> Sequence[str]:
     if config.TICKET_EXECUTION_SUBPROCESS_COMMAND:
         return config.TICKET_EXECUTION_SUBPROCESS_COMMAND
-    return [sys.executable, "-m", "ticket_investigation.worker_cli"]
+    raise ValueError("subprocess requires an explicit TICKET_EXECUTION_SUBPROCESS_COMMAND; the legacy worker is retired.")
 
 
 def _codex_command() -> Sequence[str]:
@@ -378,7 +336,6 @@ def _subprocess_env() -> dict[str, str]:
         "ALCHEMY_KEY",
         "MCP_SERVER_API_KEY",
         "GITHUB_TOKEN",
-        "RUN_LLM_E2E_TESTS",
         "PATH",
         "HOME",
     }

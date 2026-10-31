@@ -27,7 +27,7 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from ticket_investigation.runtime import (
+from ticket_investigation.contracts import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
 )
@@ -173,6 +173,7 @@ class TicketFlowTests(TicketFlowTestCase):
                         }
                     }
                 )
+                await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
             self.assertEqual(len(requests), 2)
             self.assertEqual(requests[1].current_history, history)
             self.assertEqual(requests[1].attachments, notice.followup_attachments)
@@ -465,6 +466,7 @@ class TicketFlowTests(TicketFlowTestCase):
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
+                await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
 
             self.assertEqual(len(requests), 1)
             self.assertEqual(requests[0].turn_source, "internal_team")

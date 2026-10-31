@@ -10,7 +10,6 @@ from typing import Iterator
 
 import config
 from codex_support_sessions import CodexSupportSessionManager
-from ticket_execution.runtime_factory import build_local_ticket_investigation_executor
 from ticket_investigation.json_endpoint import build_ticket_execution_json_endpoint
 from ticket_investigation.transport import TicketExecutionTransportRequest
 
@@ -26,12 +25,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("local", "subprocess", "codex_support_exec"),
+        choices=("subprocess", "codex_support_exec"),
         help="Override the primary ticket execution backend for this replay run.",
     )
     parser.add_argument(
         "--fallback-mode",
-        choices=("local", "subprocess", "codex_support_exec"),
+        choices=("subprocess", "codex_support_exec"),
         help="Override the fallback backend for this replay run.",
     )
     parser.add_argument(
@@ -102,11 +101,7 @@ async def execute_request_json(
             raise ValueError("fresh_session requires an explicit replay session_dir.")
         _reset_replay_session(request_json, session_dir=session_dir)
     with temporary_ticket_execution_modes(mode, fallback_mode, session_dir):
-        delegate = _build_replay_delegate(
-            primary_mode=config.TICKET_EXECUTION_ENDPOINT,
-            fallback_mode=config.TICKET_EXECUTION_FALLBACK_ENDPOINT,
-        )
-        endpoint = build_ticket_execution_json_endpoint(delegate)
+        endpoint = build_ticket_execution_json_endpoint()
         return await endpoint.execute_json_turn(request_json)
 
 
@@ -118,17 +113,6 @@ def _validate_replay_session_dir(session_dir: str | None) -> None:
         production_session_dir
     ).expanduser().resolve():
         raise ValueError("Replay session_dir must not be the configured live session directory.")
-
-
-def _build_replay_delegate(*, primary_mode: str, fallback_mode: str) -> object:
-    if primary_mode == "local" or fallback_mode == "local":
-        return build_local_ticket_investigation_executor()
-    return _NoopExecutor()
-
-
-class _NoopExecutor:
-    async def execute_turn(self, request, hooks=None):
-        raise AssertionError("Replay delegate should not execute for non-local backends.")
 
 
 def _reset_replay_session(request_json: str, *, session_dir: str) -> None:
@@ -152,17 +136,11 @@ async def _main(argv: list[str] | None = None) -> int:
         _validate_replay_session_dir(args.session_dir)
     except ValueError as exc:
         parser.error(str(exc))
-    effective_mode = args.mode or config.TICKET_EXECUTION_ENDPOINT
     effective_fallback_mode = "" if args.no_fallback else (
         args.fallback_mode
         if args.fallback_mode is not None
         else config.TICKET_EXECUTION_FALLBACK_ENDPOINT
     )
-    if effective_mode == "local" or effective_fallback_mode == "local":
-        from agents import set_default_openai_key
-
-        set_default_openai_key(config.OPENAI_API_KEY)
-
     request_json = load_request_json(args.request_path)
     if not request_json.strip():
         print("Expected ticket execution JSON from stdin or request_path.", file=sys.stderr)

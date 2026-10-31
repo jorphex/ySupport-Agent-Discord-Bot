@@ -103,7 +103,10 @@ def main(argv: list[str] | None = None) -> int:
 def _probe_command(mode: str) -> dict[str, Any] | None:
     if not mode:
         return None
-    command = _resolve_base_command(mode)
+    try:
+        command = _resolve_base_command(mode)
+    except ValueError as exc:
+        return {"mode": mode, "available": False, "error": str(exc)}
     if not command:
         return None
 
@@ -161,7 +164,7 @@ def _probe_endpoint_smoke() -> dict[str, Any]:
 
     request = build_smoke_transport_request()
     try:
-        endpoint = build_ticket_execution_json_endpoint(_StatusExecutor())
+        endpoint = build_ticket_execution_json_endpoint()
         response_json = asyncio.run(endpoint.execute_json_turn(request.to_json()))
         response = TicketExecutionTransportResult.from_json(response_json)
     except Exception as exc:
@@ -180,11 +183,6 @@ def _probe_endpoint_smoke() -> dict[str, Any]:
         "error": None if smoke_ok else "Smoke probe returned unexpected payload.",
         "raw_final_reply": raw_final_reply,
     }
-
-
-class _StatusExecutor:
-    async def execute_turn(self, request, hooks=None):
-        raise RuntimeError("Status executor should not execute turns.")
 
 
 def _resolve_base_command(mode: str) -> list[str] | None:

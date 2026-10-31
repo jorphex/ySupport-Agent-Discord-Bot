@@ -1,0 +1,1631 @@
+[
+  {
+    "id": "sensitive_report_receipt_confirmation_escalates_without_repro_questions",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I sent an encrypted security report earlier. Can you confirm it was received?"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": true,
+      "any": [
+        [
+          "received",
+          "receipt",
+          "confirm"
+        ]
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording",
+        "transferred",
+        "forwarded"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Also covers ticket_router_escalation_returns_handoff_without_specialist_text: its native inputs are identical; combined checks preserve both legacy outcomes without another model call.",
+    "aliases": [
+      "ticket_router_escalation_returns_handoff_without_specialist_text"
+    ]
+  },
+  {
+    "id": "discord_access_issue_escalates_to_human_without_generic_redirects",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I finished the Discord verification flow but still cannot see the general channel. I need a moderator to check my access."
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": true,
+      "none": [
+        "github",
+        "connect your wallet",
+        "please provide your wallet"
+      ],
+      "any": [
+        [
+          "channel",
+          "permission",
+          "role"
+        ],
+        [
+          "moderator",
+          "admin",
+          "team"
+        ]
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Require a concrete channel-permission action and handoff, without forcing the answer to repeat the platform name."
+  },
+  {
+    "id": "discord_general_access_request_escalates_without_github_or_general_redirect",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "i want to report an issue and i can\u2019t view the general channel on discord and i will like to report my issues there to know if anyone who has the same issue can help me out in public please"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": true,
+      "any": [
+        [
+          "human",
+          "moderator",
+          "team"
+        ]
+      ],
+      "none": [
+        "github",
+        "discord.gg"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "product_navigation_question_routes_to_docs_and_answers_directly",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Where do I see my stYFI position?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Go to https://styfi.yearn.fi and open the position view for your wallet. That is where supported stYFI positions are shown."
+    },
+    "checks": {
+      "all": [
+        "styfi.yearn.fi",
+        "position"
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "styfi",
+        "position"
+      ]
+    }
+  },
+  {
+    "id": "styfi_migration_balance_view_question_uses_official_dashboard_paths",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "after migrations from veyfi to styfi but where can i check my styfi? I went to styfi.yearn.fi and there can't find my styfi balance."
+      }
+    ],
+    "providers": {
+      "search_documentation": "Check https://styfi.yearn.fi for current stYFI. Use https://veyfi.yearn.fi for the migration and liquid-locker dashboard. Use https://legacy-veyfi.yearn.fi for legacy veYFI lock management."
+    },
+    "checks": {
+      "all": [
+        "styfi.yearn.fi",
+        "veyfi.yearn.fi"
+      ],
+      "handoff": false,
+      "tools": [
+        "search_documentation"
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "styfi",
+        "veyfi"
+      ]
+    }
+  },
+  {
+    "id": "recovery_process_question_with_wallet_routes_to_docs_not_deposit_check",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hi, I am a yETH holder associated with wallet 0x0ae6395e62c85b7b5d08c5e7918b60c1eac66680. Does that mean I can reclaim my lost ETH 1:1? If not, what amount can I recover, and why would someone stay in the recovery vault instead of reclaiming?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "The docs do not document a 1:1 yETH recovery guarantee or a per-holder claim formula. Recovered assets, if any, are redistributed to affected depositors, but the exact claim amount and recovery-vault tradeoffs are not documented there.",
+      "search_repo_context": "",
+      "fetch_repo_artifacts": ""
+    },
+    "checks": {
+      "any": [
+        [
+          "not",
+          "no documented"
+        ],
+        [
+          "1:1",
+          "one-to-one"
+        ]
+      ],
+      "none": [
+        "do you want me to check",
+        "wallet address now",
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "yeth",
+        "recovery"
+      ],
+      "search_repo_context": [
+        "yeth",
+        "recovery"
+      ]
+    }
+  },
+  {
+    "id": "styfi_contract_address_question_routes_to_docs_and_answers_directly",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "whats the contract address for styfi? it just launched today"
+      }
+    ],
+    "providers": {
+      "search_documentation": "The stYFI contract on Ethereum mainnet is 0x42b25284E8ae427D79da78b65DFFC232aAECc016.\nSource: Yearn docs, stYFI contract addresses."
+    },
+    "checks": {
+      "all": [
+        "0x42b25284e8ae427d79da78b65dffc232aaecc016"
+      ],
+      "tools": [
+        "search_documentation"
+      ],
+      "none": [
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "styfi"
+      ]
+    }
+  },
+  {
+    "id": "veyfi_deposit_question_points_to_current_supported_styfi_path",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "can i still deposit in veyfi?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Legacy veYFI deposits are deprecated. Current supported staking path: https://styfi.yearn.fi. Existing legacy locks are managed at https://legacy-veyfi.yearn.fi/manage."
+    },
+    "checks": {
+      "all": [
+        "styfi.yearn.fi"
+      ],
+      "none": [
+        "yes, you can still deposit"
+      ],
+      "tools": [
+        "search_documentation"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "veyfi",
+        "styfi"
+      ]
+    }
+  },
+  {
+    "id": "harvest_rewards_question_routes_to_docs_not_vault_search",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "hi. can I make Harvests myself?\nThis. Pool v2\nI have a position in this pool. But the rewards are not coming"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Ranked Yearn documentation excerpts:\nSource: Yearn harvest and reward realization mechanics\nContent: `harvest()` is permissionless, but calling harvest only claims rewards. Swapping and realizing those rewards can happen later, so not seeing rewards immediately can be normal."
+    },
+    "checks": {
+      "all": [
+        "harvest"
+      ],
+      "any": [
+        [
+          "swap",
+          "reinvest"
+        ]
+      ],
+      "tools": [
+        "search_documentation"
+      ],
+      "none": [
+        "what token, vault, or criteria",
+        "check your deposits",
+        "wallet address",
+        "find vaults"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. A native data cross-check is permitted; the regression is substituting a generic wallet/vault intake for the mechanics answer. Documentation fixtures supply source facts, not a prewritten assistant offer to collect account details.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "harvest",
+        "reward"
+      ]
+    }
+  },
+  {
+    "id": "apy_mechanics_question_routes_to_docs_not_vault_search",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "How is the AUSD vault in katana earning 10%+ native APY for almost a month if the strategies inside are earning less than 1%?"
+      },
+      {
+        "message": "Thanks. My wallet is 0x1111111111111111111111111111111111111111, but I only want the APY methodology explained. Does the same explanation apply? Please do not inspect my account or transactions.",
+        "expect_handoff": false
+      }
+    ],
+    "providers": {
+      "search_documentation": "Vault APY is backward-looking from pricePerShare (PPS) change, annualized over the relevant window. On non-Ethereum chains the displayed net APY can use weekly PPS change, so it can diverge from individual strategy APR figures. The docs do not document a separate donation or TVL-outflow adjustment formula beyond the PPS-based calculation."
+    },
+    "checks": {
+      "any": [
+        [
+          "pps",
+          "pricepershare",
+          "price per share",
+          "price-per-share"
+        ],
+        [
+          "backward",
+          "historical",
+          "realized"
+        ]
+      ],
+      "tools": [
+        "search_documentation"
+      ],
+      "none": [
+        "what token, vault, or criteria",
+        "check your deposits",
+        "wallet address",
+        "find vaults"
+      ],
+      "no_tools": [
+        "positions",
+        "transaction",
+        "withdrawal",
+        "read_chain_state"
+      ],
+      "answer_turn": 0
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. A native data cross-check is permitted; the regression is substituting a generic wallet/vault intake for the mechanics answer.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "apy",
+        "pps",
+        "pricepershare",
+        "price per share"
+      ]
+    }
+  },
+  {
+    "id": "closed_1431_value_drop_question_replays_to_docs_not_wallet_detour",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hi\nI staked 0.2 ETH about a week ago on the yCVR pool:\nhttps://yearn.fi/vaults/1/0x27B5739e22ad9033bcBf192059122d163b60349D\ntransaction:\nhttps://etherscan.io/tx/0x720e06726fe8482bf0d297494ee4e569dd663e65c77f2d1b5c694a7af724565b\n\nWhat I don't understand is that the 0.2 ETH, also a week ago was about $400 in value.\nBut my staked value on the pool is only about $278 as the transaction also states.\n\nDid I just instantly lose about 30% upon staking or am I missing something?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Ranked Yearn documentation excerpts:\nSource: Yearn vault accounting\nContent: Vault ownership is represented by shares, and position value is derived from share quantity and price per share. This accounting does not guarantee that the original deposit-dollar value is preserved.\n\nEvidence scope: These documentation excerpts contain no transaction receipt, minted-share quantity, redemption preview, underlying-asset conversion, or current/historical ETH-USD prices for this ticket."
+    },
+    "checks": {
+      "any": [
+        [
+          "share",
+          "price per share",
+          "pps"
+        ],
+        [
+          "cannot",
+          "can\u2019t",
+          "can't",
+          "not enough",
+          "does not",
+          "not establish",
+          "need",
+          "would need",
+          "could not",
+          "unconfirmed",
+          "unverified",
+          "uncertain",
+          "unclear",
+          "unknown",
+          "undetermined"
+        ]
+      ],
+      "none": [
+        "funds are safe",
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "pps",
+        "vault",
+        "ycrv",
+        "share",
+        "value"
+      ]
+    }
+  },
+  {
+    "id": "onboarding_question_uses_docs_backed_getting_started_answer_without_yfi_detour",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I'm very normie, but Yearn comes highly recommended and I'm on board with the thesis. I already have a cold and hot wallet, but some of your vault tokens look exotic and I don't know how to get my hands on them to stake them. Would love some onboarding help."
+      }
+    ],
+    "providers": {
+      "search_documentation": "Getting started: https://docs.yearn.fi/getting-started. Connect a wallet, choose a supported asset and vault on https://yearn.fi, approve that asset if needed and deposit. A YFI holding is not required. Check risks, fees and withdrawal options first."
+    },
+    "checks": {
+      "any": [
+        [
+          "deposit",
+          "approve"
+        ],
+        [
+          "docs.yearn.fi",
+          "https://yearn.fi"
+        ],
+        [
+          "underlying",
+          "deposit asset",
+          "supported asset",
+          "accepted token",
+          "asset accepted"
+        ]
+      ],
+      "none": [
+        "must buy yfi",
+        "need to buy yfi"
+      ],
+      "tools": [
+        "search_documentation"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. A verified official app path is a valid getting-started destination alongside a guide link; require the correct underlying/deposit-asset explanation rather than a particular citation URL.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "deposit",
+        "getting started",
+        "onboard",
+        "approve",
+        "cold wallet",
+        "yearn vault"
+      ]
+    }
+  },
+  {
+    "id": "recommendation_question_routes_to_data_and_suggests_current_vaults",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "What Yearn vaults would you recommend right now if I want a simple place to start?"
+      }
+    ],
+    "providers": {
+      "search_vaults": "Found 3 Yearn vault(s) matching 'all'. Showing top 3 (sorted by TVL (Descending)) with details:\n\n---\n\nVault: Yearn USDC (yvUSDC)\nAddress: 0x1111111111111111111111111111111111111111\nYearn UI Link: https://yearn.fi/vaults/1/0x1111111111111111111111111111111111111111\nCurrent Estimated Net APY: 4.20%\nTVL (USD): $1000000.00\nRisk Level: 1\n\n---\n\nVault: Yearn DAI (yvDAI)\nAddress: 0x2222222222222222222222222222222222222222\nYearn UI Link: https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222\nCurrent Estimated Net APY: 3.80%\nTVL (USD): $850000.00\nRisk Level: 1\n\n---\n\nVault: Yearn WETH (yvWETH)\nAddress: 0x3333333333333333333333333333333333333333\nYearn UI Link: https://yearn.fi/vaults/1/0x3333333333333333333333333333333333333333\nCurrent Estimated Net APY: 2.10%\nTVL (USD): $780000.00\nRisk Level: 2\n"
+    },
+    "checks": {
+      "all": [
+        "yearn.fi/vaults/1/0x1111111111111111111111111111111111111111"
+      ],
+      "none": [
+        "no one can decide for you",
+        "docs do not specify a single best"
+      ],
+      "tools_any": [
+        [
+          "search_vaults",
+          "support_dashboard_reports",
+          "support_dashboard_discover"
+        ]
+      ],
+      "any": [
+        [
+          "yvusdc",
+          "yearn usdc",
+          "0x1111111111111111111111111111111111111111"
+        ]
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "recommendation_question_avoids_single_strategy_ys_vaults_by_default",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "What Yearn vaults would you recommend right now if I want a simple place to start?"
+      }
+    ],
+    "providers": {
+      "search_vaults": "Found 2 Yearn vault(s) matching 'all'. Showing top 2 (sorted by recommendation quality) with details:\n\n---\n\nVault: Yearn USDC (yvUSDC)\nAddress: 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nYearn UI Link: https://yearn.fi/vaults/1/0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nKind: Multi Strategy\nCurrent Estimated Net APY: 4.20%\nTVL (USD): $1000000.00\nStatus Flags: Retired=False, Hidden=False, Highlighted=True\nRisk Level: 1\nStrategies (3):\n  1. Name: Strat One (`0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01`)\n\n---\n\nVault: Yearn DAI (yvDAI)\nAddress: 0xcccccccccccccccccccccccccccccccccccccccc\nYearn UI Link: https://yearn.fi/vaults/1/0xcccccccccccccccccccccccccccccccccccccccc\nKind: Multi Strategy\nCurrent Estimated Net APY: 3.80%\nTVL (USD): $850000.00\nStatus Flags: Retired=False, Hidden=False, Highlighted=True\nRisk Level: 1\nStrategies (2):\n  1. Name: Strat One (`0xcccccccccccccccccccccccccccccccccccccc01`)\n"
+    },
+    "checks": {
+      "none": [
+        "ysusdc"
+      ],
+      "tools_any": [
+        [
+          "search_vaults",
+          "support_dashboard_reports",
+          "support_dashboard_discover"
+        ]
+      ],
+      "any": [
+        [
+          "yvusdc",
+          "yearn usdc",
+          "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        [
+          "yvdai",
+          "yearn dai",
+          "0xcccccccccccccccccccccccccccccccccccccccc"
+        ]
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Product display names, symbols and exact addresses identify the same returned multi-strategy choices."
+  },
+  {
+    "id": "charity_vault_builder_question_uses_official_setup_guide_and_steps",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I'm part of a small community supporting charity. Is there a way to set up a vault so people can deposit funds and all the yield is sent to a charity address?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Source: https://docs.yearn.fi/developers/v3/vault-management. V3 vaults can be deployed and configured by a builder; standard vault yield accrues to share holders. A charity-directed yield design requires an additional audited routing/wrapper arrangement rather than claiming ordinary vault deposits automatically pay a charity. Verify deployment, ownership, fees and accounting."
+    },
+    "checks": {
+      "all": [
+        "docs.yearn.fi"
+      ],
+      "any": [
+        [
+          "deploy",
+          "vault",
+          "charity"
+        ]
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "charity",
+        "vault",
+        "yield"
+      ]
+    }
+  },
+  {
+    "id": "greeting_only_message_does_not_assume_vault_search_intent",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hello"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "any": [
+        [
+          "help",
+          "yearn"
+        ]
+      ],
+      "no_tools": [
+        "search_vaults"
+      ],
+      "none": [
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "manual_reward_intervention_request_escalates_in_bug_flow",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hello, the Mooo transaction has difficulty to execute on the strategy 0x1111111111111111111111111111111111111111 from the MUSD/2Pool. The CRV tokens were sent out more than 30 hours ago, but still no LP token received.",
+        "initial_button_intent": "bug_report"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": false,
+      "any": [
+        [
+          "transaction",
+          "tx"
+        ],
+        [
+          "chain",
+          "network"
+        ]
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Corrects the retired expectation: this report supplies no transaction/chain evidence and requests no manual team action, so ask for missing investigation evidence before escalating. The separate explicit compounding request still requires handoff."
+  },
+  {
+    "id": "manual_reward_intervention_request_escalates_without_button",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Rewards have been sitting for days. Can someone compound or reinvest them for the pool?",
+        "expect_handoff": true
+      },
+      {
+        "message": "The pool is on Ethereum at 0x2222222222222222222222222222222222222222. The rewards are still pending.",
+        "expect_delivery": "queued_for_team"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": true,
+      "any": [
+        [
+          "compound",
+          "reinvest",
+          "team",
+          "strategy"
+        ]
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "mis_sent_treasury_funds_with_tx_hash_escalates_without_vague_clarification",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hey guys! I got a small issue, i just accidentally sent my funds (from binance exchange) into your \"treasure wallet\"\n\nhttps://etherscan.io/tx/0x2ad12015313462f5a39513e5df53f5a76f081ff140735da637040b19fc896ea6"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": true,
+      "none": [
+        "what do you mean",
+        "provide your wallet address",
+        "which vault"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "yyb_disabled_button_first_turn_routes_to_bug_without_deposit_prompt",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I cant add my yYB"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": false,
+      "none": [
+        "please provide your wallet",
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "withdrawal_followup_switches_to_bug_for_reproducible_rabby_issue",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Rabby says 'transaction not ready' for every address when I try to withdraw. I mentioned a screenshot too.",
+        "history": [
+          {
+            "role": "assistant",
+            "content": "Okay, I can help with withdrawal instructions. Please provide your wallet address (0x...). I can then check your deposits and you can tell me which one you want to withdraw from."
+          }
+        ]
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "all": [
+        "rabby"
+      ],
+      "none": [
+        "please provide your wallet",
+        "which vault",
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "vendor_security_outreach_hits_firm_boundary_message",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hey team, urgently flagging malicious sites impersonating the Yearn brand. Our threat intelligence analysts at PhishFort detected multiple fake domains and can support a one week trial, broader scan, and one takedown free of charge if useful."
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "boundary": "business_boundary",
+      "all": [
+        "yearn-security",
+        "cannot engage"
+      ],
+      "none": [
+        "partnership",
+        "corn",
+        "share more details"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "vendor_audit_sales_pitch_hits_boundary_without_call_scheduling",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hi team\n\nI was sorry to hear about the exploit. Hope the team and community is managing.\n\nWe do fully automated smart contract auditing using proprietary AI agents, often at a fraction of the cost and turnaround of top-tier human auditors.\n\nHappy to jump on a call too. Would this be interesting for you?\n\nBest,\nDaniel\nCEO at Cecuro\ncecuro.ai\ndaniel@cecuro.ai"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "boundary": "business_boundary",
+      "all": [
+        "yearn-security",
+        "cannot engage"
+      ],
+      "none": [
+        "jump on a call",
+        "share more details"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
+  },
+  {
+    "id": "closed_1433_reward_seeking_issue_report_uses_security_process_boundary",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Good day team, me and my team discovered an issue that should be addressed and hope to be rewarded for our efforts"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "boundary": "security_process_boundary",
+      "all": [
+        "yearn-security"
+      ],
+      "none": [
+        "describe the bug",
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Live outer security-process redirect ends this turn without a Telegram handoff; preserves the official destination and no generic bug intake."
+  },
+  {
+    "id": "security_report_gist_submission_with_no_concrete_claim_requests_specifics_before_handoff",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
+        "initial_button_intent": "bug_report"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "handoff": false,
+      "any": [
+        [
+          "contract",
+          "product",
+          "path"
+        ],
+        [
+          "impact",
+          "claim",
+          "mechanism"
+        ]
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "report",
+        "query": {
+          "url": "https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f"
+        },
+        "result": "Fetched public report artifact from: https://gist.github.com/.../dc2c924b6d84727f244babc09360e16f\n\nFile: report.md\nCritical vulnerability found. This may cause loss of funds."
+      }
+    ]
+  },
+  {
+    "id": "ticket_1462_reward_distribution_question_replays_to_docs_not_generic_ack",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hi. I have vaults cvxcrv. Awards are not distributed. How does this happen? How long should I wait? I already asked, I was told that this happens when the rewards are more than $ 300, but already more than $ 400. Nothing happens."
+      }
+    ],
+    "providers": {
+      "search_documentation": "Ranked Yearn documentation excerpts:\nSource: Yearn harvest and reward realization mechanics\nContent: Harvest can claim rewards before they are swapped and realized into the vault position, so delayed distribution can be normal. Thresholds or waiting periods mentioned informally are not the same thing as a guaranteed immediate distribution trigger."
+    },
+    "checks": {
+      "all": [
+        "reward"
+      ],
+      "any": [
+        [
+          "delay",
+          "normal",
+          "before",
+          "immediately"
+        ],
+        [
+          "not a guaranteed",
+          "no guarantee",
+          "not guaranteed",
+          "not a fixed",
+          "does not guarantee",
+          "not the same thing as a guaranteed",
+          "not an automatic distribution trigger"
+        ]
+      ],
+      "none": [
+        "okay, please describe your issue",
+        "find vaults",
+        "what token, vault, or criteria",
+        "check your deposits"
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Checks the two-stage reward processing and lack of a guaranteed threshold, allowing equivalent wording. Documentation fixtures supply source facts, not a prewritten assistant offer to collect account details.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "reward",
+        "harvest",
+        "cvxcrv"
+      ]
+    }
+  },
+  {
+    "id": "security_report_gist_submission_uses_repo_pretriage_before_answering",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Report : https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f",
+        "initial_button_intent": "bug_report"
+      }
+    ],
+    "providers": {
+      "search_repo_context": "Source: yearn/stYFI contracts/LiquidLockerDepositor.vy artifact_ref: segment:1. Search matched unstake, maxRedeem, stream.",
+      "fetch_repo_artifacts": "Source: https://github.com/yearn/stYFI/blob/master/contracts/LiquidLockerDepositor.vy\n    @param _receiver Recipient of the shares\n    @return Amount of assets deposited\n    \"\"\"\n    self._stake(_receiver, _shares)\n    assert extcall IERC20(asset).transferFrom(msg.sender, self, _shares * scale, default_return_value=True)\n    return _shares * scale\n\n@external\ndef unstake(_shares: uint256):\n    \"\"\"\n    @notice Unstake shares, streaming them out\n    @param _shares Amount of shares to unstake\n    @dev Adds existing stream to new stream, if applicable\n    \"\"\"\n    assert _shares > 0\n\n    prev_supply: uint256 = self.totalSupply\n    prev_balance: uint256 = self.balanceOf[msg.sender]\n    self.totalSupply = prev_supply - _shares\n    self.balanceOf[msg.sender] = prev_balance - _shares\n\n    time: uint256 = 0\n    total: uint256 = 0\n    claimed: uint256 = 0\n    time, total, claimed = self._unpack(self.packed_streams[msg.sender])\n    self.packed_streams[msg.sender] = self._pack(block.timestamp, total - claimed + _shares, 0)\n\n    extcall self.hooks.on_unstake(msg.sender, prev_supply, prev_balance, _shares)\n\n    log Transfer(sender=msg.sender, receiver=empty(address), value=_shares)\n\n    @return Equivalent amount of shares to be burned\n    \"\"\"\n    return _assets // scale\n\n@view\n@external\ndef maxRedeem(_owner: address) -> uint256:\n    \"\"\"\n    @notice Get the maximum amount of shares a user can redeem\n    @param _owner User redeeming\n    @return Maximum amount of shares that can be redeemed\n    \"\"\"\n    return self._redeemable(_owner)\n\n@view\n@external\ndef previewRedeem(_shares: uint256) -> uint256:\n    \"\"\"\n    log Deposit(sender=msg.sender, owner=_receiver, assets=_shares * scale, shares=_shares)\n    log Transfer(sender=empty(address), receiver=_receiver, value=_shares)\n\n@internal\n@view\ndef _redeemable(_account: address) -> uint256:\n    \"\"\"\n    @notice Get immediate redeemable amount\n    \"\"\"\n    time: uint256 = 0\n    total: uint256 = 0\n    claimed: uint256 = 0\n    time, total, claimed = self._unpack(self.packed_streams[_account])\n    if time == 0:\n        return 0\n    time = min(block.timestamp - time, STREAM_DURATION)\n\n    return max(total * time // STREAM_DURATION, claimed) - claimed\n\nScope: confirms implementation, not a deployment-specific exploit or maintainer intent. maxRedeem determines vested unclaimed shares. Stream duration is 14 days.",
+      "search_documentation": "The code documents the stream resetting on unstake. This documents mechanics, not deployment impact or maintainer intent. https://docs.yearn.fi/getting-started/products/styfi/overview"
+    },
+    "checks": {
+      "all": [
+        "block.timestamp",
+        "yearn-security"
+      ],
+      "any": [
+        [
+          "documented",
+          "expected",
+          "intent",
+          "design",
+          "intend"
+        ],
+        [
+          "unstake"
+        ],
+        [
+          "stream"
+        ],
+        [
+          "14",
+          "two-week",
+          "two week"
+        ],
+        [
+          "unredeemed",
+          "unclaimed",
+          "vested"
+        ]
+      ],
+      "tools": [
+        "search_repo_context",
+        "fetch_repo_artifacts"
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed. Assert the actual stream-reset mechanism, duration and unclaimed balance treatment; matched repository search/fetch establish the source identity, without requiring the reply to repeat its full filename.",
+    "provider_query_terms": {
+      "search_repo_context": [
+        "unstake",
+        "liquidlocker",
+        "styfi",
+        "sdyfi"
+      ],
+      "fetch_repo_artifacts": [
+        "segment:1"
+      ],
+      "search_documentation": [
+        "unstake",
+        "liquidlocker",
+        "styfi",
+        "sdyfi"
+      ]
+    },
+    "lookups": [
+      {
+        "operation": "report",
+        "query": {
+          "url": "https://gist.github.com/AlphaN0x/dc2c924b6d84727f244babc09360e16f"
+        },
+        "result": "Fetched public report artifact from: https://gist.github.com/.../dc2c924b6d84727f244babc09360e16f\n\nFile: report.md\nClaim: In stYFI LiquidLockerDepositor.vy, calling unstake when the caller already has a partially vested stream resets the stream start time to block.timestamp and re-locks previously vested but unredeemed funds for 14 days."
+      }
+    ]
+  },
+  {
+    "id": "sdyfi_unstake_behavior_question_gives_grounded_repo_answer_with_clear_limit",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hi team,\n\nI was reviewing the sdYFI Liquid Locker contract and noticed a specific behavior with the unstake function that I wanted to clarify with you.\nWhen a user has an existing stream containing already-vested but unredeemed tokens, calling unstake again bundles those previously vested funds into the new stream and resets the start time to block.timestamp. This effectively re-locks or temporarily freezes the previously vested funds for another 14 days.\nIs this temporary freezing of unredeemed funds intended behavior, or is it an unintended edge case? I have a quick Foundry test demonstrating the flow if it helps.\n\nThanks!"
+      }
+    ],
+    "providers": {
+      "search_repo_context": "Source: yearn/stYFI contracts/LiquidLockerDepositor.vy artifact_ref: segment:1. Search matched unstake, maxRedeem, stream.",
+      "fetch_repo_artifacts": "Source: https://github.com/yearn/stYFI/blob/master/contracts/LiquidLockerDepositor.vy\n    @param _receiver Recipient of the shares\n    @return Amount of assets deposited\n    \"\"\"\n    self._stake(_receiver, _shares)\n    assert extcall IERC20(asset).transferFrom(msg.sender, self, _shares * scale, default_return_value=True)\n    return _shares * scale\n\n@external\ndef unstake(_shares: uint256):\n    \"\"\"\n    @notice Unstake shares, streaming them out\n    @param _shares Amount of shares to unstake\n    @dev Adds existing stream to new stream, if applicable\n    \"\"\"\n    assert _shares > 0\n\n    prev_supply: uint256 = self.totalSupply\n    prev_balance: uint256 = self.balanceOf[msg.sender]\n    self.totalSupply = prev_supply - _shares\n    self.balanceOf[msg.sender] = prev_balance - _shares\n\n    time: uint256 = 0\n    total: uint256 = 0\n    claimed: uint256 = 0\n    time, total, claimed = self._unpack(self.packed_streams[msg.sender])\n    self.packed_streams[msg.sender] = self._pack(block.timestamp, total - claimed + _shares, 0)\n\n    extcall self.hooks.on_unstake(msg.sender, prev_supply, prev_balance, _shares)\n\n    log Transfer(sender=msg.sender, receiver=empty(address), value=_shares)\n\n    @return Equivalent amount of shares to be burned\n    \"\"\"\n    return _assets // scale\n\n@view\n@external\ndef maxRedeem(_owner: address) -> uint256:\n    \"\"\"\n    @notice Get the maximum amount of shares a user can redeem\n    @param _owner User redeeming\n    @return Maximum amount of shares that can be redeemed\n    \"\"\"\n    return self._redeemable(_owner)\n\n@view\n@external\ndef previewRedeem(_shares: uint256) -> uint256:\n    \"\"\"\n    log Deposit(sender=msg.sender, owner=_receiver, assets=_shares * scale, shares=_shares)\n    log Transfer(sender=empty(address), receiver=_receiver, value=_shares)\n\n@internal\n@view\ndef _redeemable(_account: address) -> uint256:\n    \"\"\"\n    @notice Get immediate redeemable amount\n    \"\"\"\n    time: uint256 = 0\n    total: uint256 = 0\n    claimed: uint256 = 0\n    time, total, claimed = self._unpack(self.packed_streams[_account])\n    if time == 0:\n        return 0\n    time = min(block.timestamp - time, STREAM_DURATION)\n\n    return max(total * time // STREAM_DURATION, claimed) - claimed\n\nScope: confirms implementation, not a deployment-specific exploit or maintainer intent. maxRedeem determines vested unclaimed shares. Stream duration is 14 days.",
+      "search_documentation": "The code documents the stream resetting on unstake. This documents mechanics, not deployment impact or maintainer intent. https://docs.yearn.fi/getting-started/products/styfi/overview"
+    },
+    "checks": {
+      "any": [
+        [
+          "block.timestamp",
+          "14-day",
+          "re-lock"
+        ],
+        [
+          "liquidlockerdepositor",
+          "liquid locker"
+        ]
+      ],
+      "tools": [
+        "search_repo_context",
+        "fetch_repo_artifacts"
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_repo_context": [
+        "unstake",
+        "liquidlocker",
+        "styfi",
+        "sdyfi"
+      ],
+      "fetch_repo_artifacts": [
+        "segment:1"
+      ],
+      "search_documentation": [
+        "unstake",
+        "liquidlocker",
+        "styfi",
+        "sdyfi"
+      ]
+    }
+  },
+  {
+    "id": "sdyfi_pasted_poc_followup_stays_repo_grounded_without_browser_questions",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "Hi team,\n\nI was reviewing the sdYFI Liquid Locker contract and noticed a specific behavior with the unstake function that I wanted to clarify with you.\nWhen a user has an existing stream containing already-vested but unredeemed tokens, calling unstake again bundles those previously vested funds into the new stream and resets the start time to block.timestamp. This effectively re-locks or temporarily freezes the previously vested funds for another 14 days.\nIs this temporary freezing of unredeemed funds intended behavior, or is it an unintended edge case?\n\nI have a quick Foundry test demonstrating the flow and can paste it below.",
+        "initial_button_intent": "investigate_issue"
+      },
+      {
+        "message": "```solidity\nfunction test_TemporaryFreezingOfVestedFunds() public {\n    locker.unstake(firstUnstake);\n    vm.warp(block.timestamp + 14 days);\n    uint256 redeemableBefore = locker.maxRedeem(alice);\n    locker.unstake(secondUnstake);\n    uint256 redeemableAfter = locker.maxRedeem(alice);\n    assertEq(redeemableAfter, 0, 'BUG');\n}\n```",
+        "expect_delivery": "queued_if_handoff"
+      }
+    ],
+    "providers": {
+      "search_repo_context": "Source: yearn/stYFI contracts/LiquidLockerDepositor.vy artifact_ref: segment:1. Search matched unstake, maxRedeem, stream.",
+      "fetch_repo_artifacts": "Source: https://github.com/yearn/stYFI/blob/master/contracts/LiquidLockerDepositor.vy\n    @param _receiver Recipient of the shares\n    @return Amount of assets deposited\n    \"\"\"\n    self._stake(_receiver, _shares)\n    assert extcall IERC20(asset).transferFrom(msg.sender, self, _shares * scale, default_return_value=True)\n    return _shares * scale\n\n@external\ndef unstake(_shares: uint256):\n    \"\"\"\n    @notice Unstake shares, streaming them out\n    @param _shares Amount of shares to unstake\n    @dev Adds existing stream to new stream, if applicable\n    \"\"\"\n    assert _shares > 0\n\n    prev_supply: uint256 = self.totalSupply\n    prev_balance: uint256 = self.balanceOf[msg.sender]\n    self.totalSupply = prev_supply - _shares\n    self.balanceOf[msg.sender] = prev_balance - _shares\n\n    time: uint256 = 0\n    total: uint256 = 0\n    claimed: uint256 = 0\n    time, total, claimed = self._unpack(self.packed_streams[msg.sender])\n    self.packed_streams[msg.sender] = self._pack(block.timestamp, total - claimed + _shares, 0)\n\n    extcall self.hooks.on_unstake(msg.sender, prev_supply, prev_balance, _shares)\n\n    log Transfer(sender=msg.sender, receiver=empty(address), value=_shares)\n\n    @return Equivalent amount of shares to be burned\n    \"\"\"\n    return _assets // scale\n\n@view\n@external\ndef maxRedeem(_owner: address) -> uint256:\n    \"\"\"\n    @notice Get the maximum amount of shares a user can redeem\n    @param _owner User redeeming\n    @return Maximum amount of shares that can be redeemed\n    \"\"\"\n    return self._redeemable(_owner)\n\n@view\n@external\ndef previewRedeem(_shares: uint256) -> uint256:\n    \"\"\"\n    log Deposit(sender=msg.sender, owner=_receiver, assets=_shares * scale, shares=_shares)\n    log Transfer(sender=empty(address), receiver=_receiver, value=_shares)\n\n@internal\n@view\ndef _redeemable(_account: address) -> uint256:\n    \"\"\"\n    @notice Get immediate redeemable amount\n    \"\"\"\n    time: uint256 = 0\n    total: uint256 = 0\n    claimed: uint256 = 0\n    time, total, claimed = self._unpack(self.packed_streams[_account])\n    if time == 0:\n        return 0\n    time = min(block.timestamp - time, STREAM_DURATION)\n\n    return max(total * time // STREAM_DURATION, claimed) - claimed\n\nScope: confirms implementation, not a deployment-specific exploit or maintainer intent. maxRedeem determines vested unclaimed shares. Stream duration is 14 days.",
+      "search_documentation": "The code documents the stream resetting on unstake. This documents mechanics, not deployment impact or maintainer intent. https://docs.yearn.fi/getting-started/products/styfi/overview"
+    },
+    "checks": {
+      "any": [
+        [
+          "block.timestamp",
+          "maxredeem"
+        ]
+      ],
+      "tools": [
+        "search_repo_context",
+        "fetch_repo_artifacts"
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ],
+      "transcript_any": [
+        [
+          "liquidlockerdepositor",
+          "stakedyfi",
+          "unstake"
+        ]
+      ],
+      "transcript_none": [
+        "paste the minimal foundry test here",
+        "paste your poc here"
+      ]
+    },
+    "coverage_note": "Inspect the public contract before a justified maintainer handoff. The later user PoC is retained for the team, makes zero native calls, and is not answered by a fictitious resumed bot turn. A source-verified unstake analysis also identifies the reviewed behavior; repeating the full contract filename is optional. A code-grounded answer may resolve the question without handoff. The controller must queue the follow-up if the preceding turn hands off; otherwise the PoC is reviewed normally.",
+    "provider_query_terms": {
+      "search_repo_context": [
+        "unstake",
+        "liquidlocker",
+        "styfi",
+        "sdyfi"
+      ],
+      "fetch_repo_artifacts": [
+        "segment:1"
+      ],
+      "search_documentation": [
+        "unstake",
+        "liquidlocker",
+        "styfi",
+        "sdyfi"
+      ]
+    }
+  },
+  {
+    "id": "legacy_positions_link_request_routes_to_docs_instead_of_bug_flow",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I opened a ticket before and lost the URL to see all my positions. My wallet is 0x23d402C2058052f0B9c24Fb4E17DE8cC1E3a0cb0. I have one USDC.e vault but another one is not being shown in the UI. You sent me before a link to see the legacy vaults and I could see it from there. Can you send that URL again?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Use https://legacy.yearn.fi/ to view legacy Yearn positions that may not appear in the newer UI."
+    },
+    "checks": {
+      "all": [
+        "legacy.yearn.fi"
+      ],
+      "handoff": false,
+      "none": [
+        "describe the bug",
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "legacy",
+        "position"
+      ]
+    }
+  },
+  {
+    "id": "specific_vault_url_request_routes_to_data_lookup",
+    "legacy_suite": "test_llm_support_answers_e2e",
+    "turns": [
+      {
+        "message": "I cannot find vault 0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B in the UI. Can you send me the Yearn URL for that vault?"
+      }
+    ],
+    "providers": {
+      "search_vaults": "Vault: USDC.e-2\nAddress: 0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B\nYearn UI Link: https://legacy.yearn.fi/v3/42161/0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B\n"
+    },
+    "checks": {
+      "all": [
+        "legacy.yearn.fi"
+      ],
+      "handoff": false,
+      "none": [
+        "describe the bug",
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ],
+      "tools": [
+        "search_vaults"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_vaults": [
+        "0x9fa306b1f4a6a83fec98d8ebbabedff78c407f6b"
+      ]
+    }
+  },
+  {
+    "id": "tx_hash_bug_report_uses_onchain_inspection_without_wallet_prompt",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "My approval failed on Ethereum. Please inspect this tx hash and tell me what happened: 0xf328a478f4a8ac0341a4f3c470c37ab4a3e41277a7abe0f06fe88a7c48dbde10",
+        "initial_button_intent": "bug_report"
+      }
+    ],
+    "providers": {
+      "search_repo_context": "Repo search results\n- repo: yearn-vaults-v3\n  path: contracts/VaultV3.vy\n  artifact_ref: segment:allowance\n",
+      "fetch_repo_artifacts": "Repo artifact\nrepo: yearn-vaults-v3\npath: contracts/VaultV3.vy\nsymbol: _spend_allowance\nsummary: current_allowance must be at least amount or the call reverts.\n"
+    },
+    "checks": {
+      "all": [
+        "approval"
+      ],
+      "any": [
+        [
+          "reverted",
+          "failed",
+          "allowance"
+        ]
+      ],
+      "none": [
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "provider_query_terms": {
+      "search_repo_context": [
+        "allowance",
+        "approval"
+      ]
+    },
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "ethereum",
+          "tx_hash": "0xf328a478f4a8ac0341a4f3c470c37ab4a3e41277a7abe0f06fe88a7c48dbde10"
+        },
+        "result": "Transaction investigation\ntx_hash: 0xf328a478f4a8ac0341a4f3c470c37ab4a3e41277a7abe0f06fe88a7c48dbde10\nchain: ethereum\nstatus: reverted\nuser_transfers_out: none\nuser_transfers_in: none\napprovals:\n- token: USDC\n  owner: 0x1111111111111111111111111111111111111111\n  spender: 0x2222222222222222222222222222222222222222\n  value_formatted: 0\ncontracts_profiled:\n- address: 0x1111111111111111111111111111111111111111\n  kind: erc20_like\n  symbol: USDC\nnotable_findings:\n- No allowance existed for the attempted approval flow.\n- No funds moved in the reverted transaction.\nreason: allowance too low for the attempted approval flow"
+      }
+    ]
+  },
+  {
+    "id": "ticket_flow_tx_hash_followup_investigates_without_branching_question",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+        "history": [
+          {
+            "role": "user",
+            "content": "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt."
+          },
+          {
+            "role": "assistant",
+            "content": "Please send the transaction hash and I will check it."
+          }
+        ]
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "any": [
+        [
+          "transaction",
+          "650.9147"
+        ]
+      ],
+      "none": [
+        "forwarded",
+        "transferred to",
+        "which would you like",
+        "would you like me",
+        "tell me what to inspect",
+        "pick one"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        },
+        "result": "Transaction summary\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\nstatus: success\ncontracts_profiled:\n- address: 0xC10eE9031F2a0B84766A86B55a8D90F357910fb4\n  kind: erc4626_like\n  symbol: yvWBUSDT\nevents:\n- event: Transfer\n  value_formatted: 650.9147\n\nDetailed transaction investigation\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\ninput_token: frxUSD\ninput_amount: 1990.379783\noutput_token: yvWBUSDT\noutput_amount: 650.9147\nexplanation: the transaction minted 650.9147 yvWBUSDT shares after routing the frxUSD deposit."
+      }
+    ]
+  },
+  {
+    "id": "ticket_flow_follow_up_look_into_it_reuses_known_tx_context",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "i dunno man. look into it",
+        "history": [
+          {
+            "role": "user",
+            "content": "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt."
+          },
+          {
+            "role": "assistant",
+            "content": "Please send the transaction hash and I will check it."
+          },
+          {
+            "role": "user",
+            "content": "Katana tx hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+          },
+          {
+            "role": "assistant",
+            "content": "Transaction summary\nchain: katana\nstatus: success"
+          }
+        ]
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "any": [
+        [
+          "650.9147",
+          "share"
+        ]
+      ],
+      "none": [
+        "please provide the tx hash",
+        "which chain",
+        "which would you like",
+        "pick one",
+        "would you like me",
+        "tell me what to inspect"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        },
+        "result": "Transaction summary\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\nstatus: success\ncontracts_profiled:\n- address: 0xC10eE9031F2a0B84766A86B55a8D90F357910fb4\n  kind: erc4626_like\n  symbol: yvWBUSDT\nevents:\n- event: Transfer\n  value_formatted: 650.9147\n\nDetailed transaction investigation\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\ninput_token: frxUSD\ninput_amount: 1990.379783\noutput_token: yvWBUSDT\noutput_amount: 650.9147\nexplanation: the transaction minted 650.9147 yvWBUSDT shares after routing the frxUSD deposit."
+      }
+    ]
+  },
+  {
+    "id": "katana_discrepancy_transcript_keeps_investigating_without_user_branch_selection",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt",
+        "expect_handoff": false
+      },
+      {
+        "message": "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+        "expect_handoff": false
+      },
+      {
+        "message": "i dunno man. look into it",
+        "expect_handoff": false
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "any": [
+        [
+          "650.9147",
+          "share"
+        ]
+      ],
+      "none": [
+        "please provide the tx hash",
+        "which chain",
+        "which would you like"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        },
+        "result": "Transaction investigation\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\nstatus: success\ninvestigation:\n- user_transfers_out: frxUSD 1990.379783\n- deposits: yvvbUSDT shares 650.914712\n- user_transfers_in: yvvbUSDT 650.914712\n- notable_findings: explicit deposit event decoded\n\nDetailed transaction investigation\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\ninput_token: frxUSD\ninput_amount: 1990.379783\ndeposit_event: yvvbUSDT deposit with 650.914712 shares\noutput_token: yvvbUSDT\noutput_amount: 650.914712\nexplanation: the tx deposited vbUSDT and minted yvvbUSDT shares for the user."
+      }
+    ]
+  },
+  {
+    "id": "katana_discrepancy_transcript_investigates_comparison_tx_without_resetting",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "I deposited 1990.3798 frxusd into the usdt vault on katana but was only credited with 650.9147 yvvbusdt",
+        "expect_handoff": false
+      },
+      {
+        "message": "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0",
+        "expect_handoff": false
+      },
+      {
+        "message": "This is the similar transaction from minutes earlier. 0x53db23a0e15f250dd30978bd2a3499289e73bcec25590e1f49063b78e3bbd3f9",
+        "expect_handoff": false
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "all": [
+        "650.914712",
+        "1872"
+      ],
+      "none": [
+        "forwarded",
+        "transferred to specialists",
+        "which chain",
+        "please provide the tx hash"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x53db23a0e15f250dd30978bd2a3499289e73bcec25590e1f49063b78e3bbd3f9"
+        },
+        "result": "Transaction investigation\ntx_hash: 0x53db23a0e15f250dd30978bd2a3499289e73bcec25590e1f49063b78e3bbd3f9\nchain: katana\noutput_token: yvvbUSDT\noutput_amount: 1872.000000"
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0"
+        },
+        "result": "Transaction investigation\ntx_hash: 0x87babcb5328cf17c6edb9027a29de1e32764306d6707669cabfb0436e11474d0\nchain: katana\noutput_token: yvvbUSDT\noutput_amount: 650.914712"
+      }
+    ]
+  },
+  {
+    "id": "deposit_button_intent_calls_check_all_deposits_tool",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "0x1111111111111111111111111111111111111111",
+        "initial_button_intent": "data_deposit_check"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "all": [
+        "yvusdc",
+        "12.34"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "positions",
+        "query": {
+          "wallet": "0x1111111111111111111111111111111111111111"
+        },
+        "result": "Chain: ethereum\nDeposit summary\nVault: yvUSDC (yvUSDC)\nUser: 0x1111111111111111111111111111111111111111\nShares: 12.34"
+      }
+    ]
+  },
+  {
+    "id": "combined_data_button_routes_vault_query_to_search_tool",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "usdc",
+        "initial_button_intent": "data_deposits_withdrawals_start"
+      }
+    ],
+    "providers": {
+      "search_vaults": "Vault: Yearn USDC (yvUSDC)\nAddress: 0x2222222222222222222222222222222222222222\nCurrent Estimated Net APY: 4.20%"
+    },
+    "checks": {
+      "all": [
+        "4.20%"
+      ],
+      "tools": [
+        "search_vaults"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_vaults": [
+        "usdc"
+      ]
+    }
+  },
+  {
+    "id": "withdrawal_button_intent_checks_deposits_before_withdrawal_tool",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "0x1111111111111111111111111111111111111111",
+        "initial_button_intent": "data_withdrawal_flow_start"
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "any": [
+        [
+          "vault",
+          "withdraw"
+        ]
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "positions",
+        "query": {
+          "wallet": "0x1111111111111111111111111111111111111111"
+        },
+        "result": "Chain: ethereum\nDeposit summary\nVault: Yearn USDC (yvUSDC)\nAddress: 0x2222222222222222222222222222222222222222\nShares: 12.34"
+      }
+    ]
+  },
+  {
+    "id": "free_form_withdrawal_request_routes_through_ticket_router_to_data",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "How do I withdraw from vault 0x2222222222222222222222222222222222222222 on ethereum using wallet 0x1111111111111111111111111111111111111111?"
+      }
+    ],
+    "providers": {
+      "search_documentation": "Withdraw through the official Yearn vault page. Connect the identified wallet on its chain, select Withdraw, enter the amount, review transaction and gas in the wallet. Do not sign unexpected approvals. https://docs.yearn.fi/getting-started/guides/how-to-withdraw-from-a-vault"
+    },
+    "checks": {
+      "all": [
+        "ethereum",
+        "0x2222222222222222222222222222222222222222",
+        "withdraw"
+      ],
+      "any": [
+        [
+          "withdraw"
+        ]
+      ],
+      "none": [
+        "forward"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "aliases": [
+      "data_agent_free_form_withdrawal_request_calls_withdrawal_tool"
+    ],
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x1111111111111111111111111111111111111111",
+          "chain": "ethereum",
+          "vault": "0x2222222222222222222222222222222222222222"
+        },
+        "result": "Withdrawal Instructions\nWallet: 0x1111111111111111111111111111111111111111\nVault: 0x2222222222222222222222222222222222222222\nChain: ethereum"
+      }
+    ]
+  },
+  {
+    "id": "withdrawal_followup_reuses_single_listed_deposit_chain_and_vault",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "I'd like support withdrawing",
+        "history": [
+          {
+            "role": "user",
+            "content": "0x1111111111111111111111111111111111111111"
+          },
+          {
+            "role": "assistant",
+            "content": "**Katana Active Deposits:**\n**Vault:** [Katana Vault](https://yearn.fi/vaults/146/0x80c34BD3A3569E126e7055831036aa7b212cB159) (Symbol: yvVBUSDT)\n  Address: `0x80c34BD3A3569E126e7055831036aa7b212cB159`\n  Total Position: **1.000000 yvVBUSDT**\n\nWhich of these vaults would you like withdrawal instructions for?"
+          }
+        ],
+        "remembered_withdrawal_target": [
+          "katana",
+          "0x80c34BD3A3569E126e7055831036aa7b212cB159"
+        ]
+      }
+    ],
+    "providers": {
+      "search_documentation": "Withdraw through the official Yearn vault page. Connect the identified wallet on its chain, select Withdraw, enter the amount, review transaction and gas in the wallet. Do not sign unexpected approvals. https://docs.yearn.fi/getting-started/guides/how-to-withdraw-from-a-vault"
+    },
+    "checks": {
+      "all": [
+        "katana",
+        "0x80c34bd3a3569e126e7055831036aa7b212cb159"
+      ],
+      "none": [
+        "which vault",
+        "re-check",
+        "ethereum"
+      ]
+    },
+    "coverage_note": "Production ticket intake and native execution. Controlled provider observations are available only through matching private internal reads (HTTP for report artifacts); every configured lookup must be observed.",
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x1111111111111111111111111111111111111111",
+          "chain": "katana",
+          "vault": "0x80c34BD3A3569E126e7055831036aa7b212cB159"
+        },
+        "result": "Withdrawal Instructions\nWallet: 0x1111111111111111111111111111111111111111\nVault: 0x80c34BD3A3569E126e7055831036aa7b212cB159\nChain: katana"
+      }
+    ]
+  },
+  {
+    "id": "veyfi_migration_followup_after_data_turn_points_directly_to_legacy_manage",
+    "legacy_suite": "test_llm_ticket_flow_e2e",
+    "turns": [
+      {
+        "message": "i have 1.0893 veYFI . they are unlocked now since yesterday. but i am unable to migrate and cant find out why.",
+        "history": [
+          {
+            "role": "user",
+            "content": "0x1111111111111111111111111111111111111111"
+          },
+          {
+            "role": "assistant",
+            "content": "**Active Deposits:**\n**Vault:** [Ethereum Vault](https://yearn.fi/vaults/1/0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e) (Symbol: yvUSDC-1)\n  Address: `0x6dfb4ab47a5d2947c4f0f6ea20f92955295c5f5e`\n  Total Position: **1.000000 yvUSDC-1**"
+          }
+        ]
+      }
+    ],
+    "providers": {
+      "search_documentation": "Legacy unlocked veYFI must be withdrawn using https://legacy-veyfi.yearn.fi/manage before following the current stYFI path at https://styfi.yearn.fi. The old lock is not a current vault deposit. Source: https://docs.yearn.fi/getting-started/products/veyfi/overview."
+    },
+    "checks": {
+      "all": [
+        "legacy-veyfi.yearn.fi/manage",
+        "styfi.yearn.fi"
+      ],
+      "handoff": false,
+      "none": [
+        "screenshot",
+        "browser",
+        "device",
+        "steps to reproduce",
+        "screen recording"
+      ],
+      "tools": [
+        "search_documentation"
+      ]
+    },
+    "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",
+    "provider_query_terms": {
+      "search_documentation": [
+        "veyfi",
+        "styfi"
+      ]
+    }
+  }
+]

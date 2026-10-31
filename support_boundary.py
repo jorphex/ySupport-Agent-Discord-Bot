@@ -1,4 +1,4 @@
-"""Live outer support-boundary classification shared by Discord and local replay."""
+"""Live outer support-boundary classification shared by Discord and native evaluation."""
 
 import logging
 import re
@@ -9,7 +9,6 @@ from agents.model_settings import Reasoning
 from pydantic import BaseModel, Field
 
 import config
-from agent_prompts import SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS
 from bot_behavior import (
     JOB_INQUIRY_REDIRECT_MESSAGE,
     LISTING_DENIAL_MESSAGE,
@@ -17,6 +16,40 @@ from bot_behavior import (
     SECURITY_VENDOR_BOUNDARY_MESSAGE,
     SECURITY_PROCESS_URL,
     STANDARD_REDIRECT_MESSAGE,
+)
+
+
+SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS = (
+    "Classify the user's message at Yearn's outer support boundary. A message may be "
+    "a short follow-up in an existing support conversation. Keep yes/no replies, "
+    "addresses, transaction hashes, and terse contextual references in Yearn support "
+    "unless they are clearly something else.\n\n"
+    "Classifications:\n"
+    "- `yearn_support`: Yearn community access/permissions, products, docs, vaults, transactions, rewards, bugs, "
+    "repository or contract behavior, and Yearn-related developer questions.\n"
+    "- `business_boundary`: listing, partnership, marketing, vendor, job, contribution, "
+    "or grant outreach.\n"
+    "- `security_process_boundary`: a request for a bounty or reward/payment for discovering an issue, "
+    "secure-submission, or disclosure-process handling, including an Immunefi or zkPassport "
+    "submission blocker.\n"
+    "- `non_support_assistant`: clearly unrelated coding, writing, translation, homework, "
+    "jokes, or general chat.\n"
+    "- `uncertain`: genuinely unclassifiable.\n\n"
+    "For `business_boundary` only, set `business_subtype` to `listing` for token/listing "
+    "liquidity, `general_bd` for partnership or marketing, `vendor_security` for security "
+    "services, or `job_inquiry` for work, contribution, or grants; otherwise use null. "
+    "Security vendors offering "
+    "scans, monitoring, trials, takedowns, or threat intelligence are `vendor_security`, "
+    "not disclosures. Supported products on official Yearn pages remain support. "
+    "Greetings and neutral support openers remain `yearn_support`. "
+    "A request to confirm receipt or status of an already submitted report remains "
+    "`yearn_support`: it needs a private fact, not a new disclosure-process redirect. "
+    "Yearn code, repository, PoC, exploit, and contract questions remain support. "
+    "A report or code-artifact URL alone also remains support for technical pre-triage; "
+    "do not infer a bounty or secure-submission request from the URL or report label. "
+    "Reporting an ordinary issue or asking for Discord channel access remains support; "
+    "security-process handling requires a request for a report reward/payment or secure disclosure. "
+    "When uncertain between support and a boundary, choose `yearn_support`."
 )
 
 

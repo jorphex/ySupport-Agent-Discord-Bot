@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 
+from bot_behavior import is_wallet_first_data_intent
 from router import (
     is_message_primarily_address,
     is_probable_wallet_address,
@@ -42,14 +43,6 @@ def canonicalize_current_user_message(
     ):
         return resolved_wallet
     return aggregated_text
-
-
-def is_wallet_first_data_intent(intent: str | None) -> bool:
-    return intent in {
-        "data_deposit_check",
-        "data_withdrawal_flow_start",
-        "data_deposits_withdrawals_start",
-    }
 
 
 def known_yearn_address_hint(resolved_target) -> str:

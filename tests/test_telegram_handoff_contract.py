@@ -132,6 +132,7 @@ class TicketFlowTests(TicketFlowTestCase):
                             await bot.telegram_handoffs._handle_telegram_handoff_update(
                                 update
                             )
+                            await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
             self.assertEqual(
                 edited_messages,
                 [

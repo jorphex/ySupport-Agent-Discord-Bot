@@ -2,10 +2,10 @@
 import asyncio
 import logging
 import re
+from time import monotonic
 from typing import Any, Dict, List, Optional
 
-import requests
-from openai import AsyncOpenAI, OpenAI
+from openai import OpenAI
 from pinecone import Pinecone
 
 import config
@@ -18,10 +18,39 @@ from repo_context import (
     search_repo_context,
 )
 
-openai_async_client: AsyncOpenAI | None = None
 openai_sync_client: OpenAI | None = None
 pinecone_client: Pinecone | None = None
 pinecone_index: Any | None = None
+_NAMESPACE_CACHE_TTL_SECONDS = 300
+_namespace_cache: tuple[Any, set[str], float] | None = None
+_namespace_lookup: tuple[Any, asyncio.Task[set[str]]] | None = None
+
+
+async def _existing_namespaces(index: Any) -> set[str]:
+    global _namespace_lookup
+    if (
+        _namespace_cache is not None
+        and _namespace_cache[0] is index
+        and monotonic() < _namespace_cache[2]
+    ):
+        return _namespace_cache[1]
+
+    if (
+        _namespace_lookup is None
+        or _namespace_lookup[0] is not index
+        or _namespace_lookup[1].done()
+    ):
+        async def discover() -> set[str]:
+            global _namespace_cache
+            stats = await asyncio.to_thread(index.describe_index_stats)
+            namespaces = set((stats or {}).get("namespaces", {}))
+            if _namespace_lookup is not None and _namespace_lookup[1] is asyncio.current_task():
+                _namespace_cache = (index, namespaces, monotonic() + _NAMESPACE_CACHE_TTL_SECONDS)
+            return namespaces
+
+        task = asyncio.create_task(discover())
+        _namespace_lookup = (index, task)
+    return await asyncio.shield(_namespace_lookup[1])
 
 
 def _get_pinecone_client() -> Pinecone:
@@ -122,25 +151,6 @@ def _docs_query_specs(
     return specs
 
 
-def _extract_repo_artifact_refs(text: str) -> list[str]:
-    refs = re.findall(r"(?:segment|fact):\d+", text or "")
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for ref in refs:
-        if ref in seen:
-            continue
-        seen.add(ref)
-        ordered.append(ref)
-    return ordered
-
-
-def _get_openai_async_client() -> AsyncOpenAI:
-    global openai_async_client
-    if openai_async_client is None:
-        openai_async_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
-    return openai_async_client
-
-
 def _get_openai_sync_client() -> OpenAI:
     global openai_sync_client
     if openai_sync_client is None:
@@ -149,14 +159,15 @@ def _get_openai_sync_client() -> OpenAI:
 
 
 async def close_shared_clients() -> None:
-    global openai_async_client, openai_sync_client, pinecone_client, pinecone_index
+    global openai_sync_client, pinecone_client, pinecone_index
+    global _namespace_cache, _namespace_lookup
 
-    if openai_async_client is not None:
-        try:
-            await openai_async_client.close()
-        except Exception:
-            pass
-        openai_async_client = None
+    if _namespace_lookup is not None and not _namespace_lookup[1].done():
+        _namespace_lookup[1].cancel()
+        await asyncio.gather(_namespace_lookup[1], return_exceptions=True)
+    _namespace_lookup = None
+    _namespace_cache = None
+
 
     if openai_sync_client is not None:
         try:
@@ -174,109 +185,8 @@ async def close_shared_clients() -> None:
         pinecone_index = None
 
 
-def _github_api_headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "ysupport-report-artifact-fetcher",
-    }
-    if config.GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {config.GITHUB_TOKEN}"
-    return headers
-
-
-def _parse_gist_id(report_url: str) -> Optional[str]:
-    match = re.match(r"^https://gist\.github\.com/[^/]+/([0-9a-fA-F]+)", report_url)
-    if match:
-        return match.group(1)
-    match = re.match(r"^https://gist\.githubusercontent\.com/[^/]+/([0-9a-fA-F]+)/", report_url)
-    if match:
-        return match.group(1)
-    return None
-
-
-def _normalize_supported_report_url(report_url: str) -> tuple[str, str]:
-    stripped = (report_url or "").strip()
-    gist_id = _parse_gist_id(stripped)
-    if gist_id:
-        return "gist", gist_id
-
-    if stripped.startswith("https://raw.githubusercontent.com/"):
-        return "raw", stripped
-
-    blob_match = re.match(r"^https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$", stripped)
-    if blob_match:
-        owner, repo, ref, path = blob_match.groups()
-        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-        return "raw", raw_url
-
-    if stripped.startswith("https://github.com/") and "/raw/" in stripped:
-        return "raw", stripped.replace("https://github.com/", "https://raw.githubusercontent.com/").replace("/raw/", "/", 1)
-
-    raise ValueError(
-        "Unsupported report URL. Supported public artifact URLs are gist.github.com, "
-        "gist.githubusercontent.com, raw.githubusercontent.com, and github.com/.../blob/... links."
-    )
-
-
-async def _fetch_gist_content(gist_id: str, *, max_chars: int) -> str:
-    api_url = f"https://api.github.com/gists/{gist_id}"
-
-    def _do_request() -> dict[str, Any]:
-        response = requests.get(api_url, headers=_github_api_headers(), timeout=20)
-        response.raise_for_status()
-        return response.json()
-
-    gist_payload = await asyncio.to_thread(_do_request)
-    files = gist_payload.get("files") or {}
-    if not files:
-        return "The gist is public but contains no files or readable content."
-
-    blocks: list[str] = []
-    remaining_chars = max_chars
-    truncated = False
-
-    for filename, file_meta in files.items():
-        content = file_meta.get("content") or ""
-        if not content:
-            raw_url = file_meta.get("raw_url")
-            if raw_url:
-                try:
-                    content = await _fetch_raw_report_content(raw_url, max_chars=max(remaining_chars, 1000))
-                except Exception:
-                    content = ""
-        header = f"File: {filename}"
-        block = f"{header}\n{content}".strip()
-        if len(block) > remaining_chars:
-            block = block[:remaining_chars].rstrip()
-            truncated = True
-        blocks.append(block)
-        remaining_chars -= len(block) + 2
-        if remaining_chars <= 0:
-            truncated = True
-            break
-
-    body = "\n\n".join(blocks)
-    if truncated:
-        body += "\n\n[artifact truncated]"
-    return body
-
-
-async def _fetch_raw_report_content(raw_url: str, *, max_chars: int) -> str:
-    def _do_request() -> str:
-        response = requests.get(raw_url, headers=_github_api_headers(), timeout=20)
-        response.raise_for_status()
-        return response.text
-
-    raw_text = await asyncio.to_thread(_do_request)
-    if len(raw_text) > max_chars:
-        return raw_text[:max_chars].rstrip() + "\n\n[artifact truncated]"
-    return raw_text
-
-
 async def _build_docs_context(
     user_query: str,
-    *,
-    use_hyde: bool = True,
 ) -> tuple[str, str, bool]:
     initial_retrieval_k = 15
     rerank_top_n = 8
@@ -288,21 +198,6 @@ async def _build_docs_context(
         namespaces_to_query.append("flex-docs")
 
     embedding_text = user_query
-    if use_hyde:
-        try:
-            hyde_prompt = (
-                f"You are a Yearn documentation expert. A user has asked: '{user_query}'.\n"
-                "Generate a concise, hypothetical answer..."
-            )
-            hyde_response = await _get_openai_async_client().chat.completions.create(
-                model=config.LLM_DOCS_HYDE_MODEL,
-                messages=[{"role": "system", "content": hyde_prompt}],
-                reasoning_effort=config.LLM_DOCS_HYDE_REASONING_EFFORT,
-            )
-            hypothetical_answer = hyde_response.choices[0].message.content.strip()
-            embedding_text = f"{user_query}\n\n{hypothetical_answer}"
-        except Exception as e:
-            logging.error(f"HyDE error: {e}")
 
     try:
         response = await asyncio.to_thread(
@@ -321,8 +216,7 @@ async def _build_docs_context(
         index = _get_pinecone_index()
         client = _get_pinecone_client()
         try:
-            stats = await asyncio.to_thread(index.describe_index_stats)
-            existing_namespaces = set((stats or {}).get("namespaces", {}).keys())
+            existing_namespaces = await _existing_namespaces(index)
             available_namespaces = [ns for ns in namespaces_to_query if ns in existing_namespaces]
             if not available_namespaces:
                 available_namespaces = ["yearn-docs"]
@@ -459,74 +353,12 @@ async def _build_docs_context(
     return context_text, yip_status_summary, no_context
 
 
-async def _synthesize_docs_answer(
-    user_query: str,
-    context_text: str,
-    yip_status_summary: str,
-    no_context: bool,
-) -> str:
-    system_prompt = (
-        "You are an expert Yearn assistant. Answer based SOLELY on the context.\n"
-        "Answer the user's question directly using only this knowledge.\n"
-        "Lead with the grounded conclusion, not with commentary about checking docs or sources.\n"
-        "1. If a source line includes a URL, include that link in your answer.\n"
-        "2. If YIP_STATUS_METADATA is provided and not 'none', include a final line: 'YIP Status: ...' using that metadata.\n"
-        "3. If a source has no URL, do not invent one.\n"
-        "4. If NO_CONTEXT is true or the context is empty, say you do not have a confirmed Yearn answer for that from the available context. Do not invent details.\n"
-        "5. If the context only partially answers the question, say exactly what is documented and what is not documented.\n"
-        "6. For procedural or product-navigation questions, give the concrete next step or destination first.\n"
-        "7. Do not inflate thin evidence into a broad or authoritative answer.\n"
-        "8. For onboarding or getting-started questions, do not imply the user must first buy YFI or another 'Yearn token' unless the context explicitly says that. Prefer the docs-backed explanation that users deposit the token accepted by the chosen vault, and describe asset/network examples only as examples if that is all the docs provide.\n"
-        "9. If the context does not recommend a specific asset, network, or onboarding path, say the docs do not specify a single best choice instead of improvising one.\n"
-        "10. If the context says a system is legacy or deprecated and replaced by a newer supported path, say that directly. For questions about new deposits or whether the user should still use the old system, point to the current supported path first and only mention the legacy path for managing existing positions or exits if the context supports that distinction.\n"
-        "11. If the context already resolves a current-vs-legacy or destination question, stop after the grounded answer. Do not append option menus like 'if you want, I can also...' unless the context still leaves a real unresolved branch.\n"
-        "12. For builder or setup questions, if the context includes an official deployment or management guide, include that guide link and the concrete documented setup steps before broader explanation.\n"
-        "13. If the context only supports a high-level setup path, say that clearly and separate it from any missing implementation detail the docs do not specify.\n"
-        "14. Do not open with phrases like 'based on the docs', 'according to the docs', 'the docs support', or 'in the official sources I checked'. If useful, add a short final 'Source:' line instead of narrating your grounding process.\n"
-        "15. When an exact detail is undocumented, say 'The docs do not say whether ...' or 'That is not documented here' instead of saying you checked sources.\n"
-        "16. Respond in your own words; do not use canned responses or templates.\n"
-        "17. NO META-COMMENTARY.\n"
-        "18. If you use bullets, render them as a real multi-line list with one item per line. Do not inline bullet markers inside a paragraph.\n"
-        "19. Put a blank line before a bullet list, and keep the introduction sentence separate from the list.\n"
-    )
-
-    try:
-        response = await _get_openai_async_client().chat.completions.create(
-            model=config.LLM_DOCS_SYNTH_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Context:\n{context_text}\n\nYIP_STATUS_METADATA: {yip_status_summary or 'none'}\nNO_CONTEXT: {str(no_context).lower()}\n\nQuestion: {user_query}"}
-            ],
-            reasoning_effort=config.LLM_DOCS_SYNTH_REASONING_EFFORT,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logging.error(f"Gen error: {e}")
-        return "Error generating final answer."
-
-
-async def core_answer_from_docs(user_query: str) -> str:
-    """
-    Answers questions from Yearn docs and YIPs only.
-    """
-    logging.info(f"[CoreTool:answer_from_docs] Query: '{user_query}'")
-    try:
-        context_text, yip_status_summary, no_context = await _build_docs_context(
-            user_query,
-            use_hyde=True,
-        )
-    except RuntimeError as exc:
-        return str(exc)
-    return await _synthesize_docs_answer(user_query, context_text, yip_status_summary, no_context)
-
-
 async def core_search_docs_context(user_query: str) -> str:
     """Return bounded, reranked Yearn docs context for a reasoning caller."""
     logging.info("[CoreTool:search_docs_context] Query: '%s'", user_query)
     try:
         context_text, yip_status_summary, no_context = await _build_docs_context(
             user_query,
-            use_hyde=False,
         )
     except RuntimeError as exc:
         return str(exc)
@@ -605,67 +437,6 @@ async def core_fetch_repo_artifacts(artifact_refs_text: str) -> str:
     except Exception as exc:
         logging.error(f"[CoreTool:fetch_repo_artifacts] Error: {exc}", exc_info=True)
         return f"Error fetching repo artifacts: {exc}"
-
-
-async def core_pretriage_repo_claim(
-    claim_text: str,
-    *,
-    include_docs: bool = True,
-    limit: Optional[int] = None,
-    include_legacy: bool = False,
-) -> str:
-    logging.info(
-        "[CoreTool:pretriage_repo_claim] claim='%s' include_docs=%s limit=%s include_legacy=%s",
-        claim_text,
-        include_docs,
-        limit,
-        include_legacy,
-    )
-    sections: list[str] = []
-
-    repo_search = await core_search_repo_context(
-        claim_text,
-        limit=limit,
-        include_legacy=include_legacy,
-    )
-    sections.append(f"Repo search:\n{repo_search}")
-
-    artifact_refs = _extract_repo_artifact_refs(repo_search)[:2]
-    if artifact_refs:
-        artifact_text = await core_fetch_repo_artifacts(", ".join(artifact_refs))
-        sections.append(f"Fetched repo artifacts:\n{artifact_text}")
-
-    if include_docs:
-        docs_answer = await core_answer_from_docs(claim_text)
-        sections.append(f"Docs context:\n{docs_answer}")
-
-    return "\n\n".join(section for section in sections if section.strip())
-
-
-async def core_fetch_report_artifact(report_url: str, max_chars: int = 12000) -> str:
-    logging.info("[CoreTool:fetch_report_artifact] report_url='%s' max_chars=%s", report_url, max_chars)
-    try:
-        artifact_kind, normalized_value = _normalize_supported_report_url(report_url)
-        if artifact_kind == "gist":
-            artifact_text = await _fetch_gist_content(normalized_value, max_chars=max_chars)
-            source_label = f"https://gist.github.com/.../{normalized_value}"
-        else:
-            artifact_text = await _fetch_raw_report_content(normalized_value, max_chars=max_chars)
-            source_label = normalized_value
-        return f"Fetched public report artifact from: {source_label}\n\n{artifact_text}"
-    except ValueError as exc:
-        return str(exc)
-    except requests.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else "unknown"
-        logging.warning(
-            "[CoreTool:fetch_report_artifact] HTTP error for '%s': status=%s",
-            report_url,
-            status_code,
-        )
-        return f"Could not fetch the public report artifact (HTTP {status_code})."
-    except Exception as exc:
-        logging.error(f"[CoreTool:fetch_report_artifact] Error: {exc}", exc_info=True)
-        return f"Error fetching the public report artifact: {exc}"
 
 
 async def core_repo_context_status() -> str:

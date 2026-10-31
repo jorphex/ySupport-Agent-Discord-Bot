@@ -31,7 +31,7 @@ from state import (
 from handoff import (
     TelegramSentMessage,
 )
-from ticket_investigation.runtime import (
+from ticket_investigation.contracts import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
 )

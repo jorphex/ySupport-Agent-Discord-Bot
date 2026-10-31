@@ -8,10 +8,7 @@
 !support_dashboard_tools.py
 !repo_context.py
 !repo_context_build.py
-!chain_access.py
-!yearn_targets.py
 !config.py
-!v1_vaults.json
 !yearn_rag/
 yearn_rag/**
 !yearn_rag/repo_sources.json

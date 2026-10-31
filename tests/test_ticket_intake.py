@@ -29,7 +29,7 @@ from ticket_intake import (
     known_yearn_address_hint,
     prepare_ticket_turn_input,
 )
-from ticket_investigation.runtime import (
+from ticket_investigation.contracts import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
 )

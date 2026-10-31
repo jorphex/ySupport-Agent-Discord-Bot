@@ -19,7 +19,6 @@ from ticket_investigation.json_endpoint import (
 )
 from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
 from ticket_investigation.executor import (
-    LocalTicketInvestigationExecutor,
     TicketExecutionTransport,
     TicketExecutionHooks,
     TicketExecutionNonFallbackError,
@@ -29,27 +28,10 @@ from ticket_investigation.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
-from ticket_investigation.runtime import TicketAgentFlowOutcome, TicketTurnRequest
-from ticket_investigation.worker import TicketWorkerResult
+from ticket_investigation.contracts import TicketAgentFlowOutcome, TicketTurnRequest
 from state import BotRunContext, TicketInvestigationJob
 
 
-@dataclass
-class _FakeWorker:
-    requests: list
-
-    async def execute_turn(self, request):
-        self.requests.append(request)
-        request.investigation_job.begin_investigating()
-        request.investigation_job.complete_specialist_turn("docs")
-        return TicketWorkerResult(
-            flow_outcome=TicketAgentFlowOutcome(
-                raw_final_reply="ok",
-                conversation_history=[],
-                completed_agent_key="docs",
-                requires_human_handoff=False,
-            )
-        )
 
 
 class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
@@ -83,25 +65,6 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(os.listdir(artifact_dir), [])
 
-    async def test_local_executor_copies_job_before_worker_mutates_it(self) -> None:
-        worker = _FakeWorker(requests=[])
-        executor = LocalTicketInvestigationExecutor(worker)
-
-        request = TicketTurnRequest(
-            aggregated_text="help",
-            input_list=[],
-            current_history=[],
-            run_context=BotRunContext(channel_id=92, project_context="yearn"),
-            investigation_job=TicketInvestigationJob(channel_id=92),
-            workflow_name="tests.executor",
-        )
-        result = await executor.execute_turn(request)
-
-        self.assertEqual(len(worker.requests), 1)
-        self.assertEqual(request.investigation_job.mode, "idle")
-        self.assertIsNone(request.investigation_job.current_specialty)
-        self.assertEqual(result.updated_job.mode, "investigating")
-        self.assertEqual(result.updated_job.current_specialty, "docs")
 
     async def test_transport_executor_uses_transport_boundary(self) -> None:
         @dataclass

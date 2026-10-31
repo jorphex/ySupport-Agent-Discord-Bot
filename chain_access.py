@@ -1,5 +1,10 @@
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
+import json
+import threading
+import time
 from typing import Any, Optional
 
 from web3 import Web3
@@ -11,6 +16,90 @@ LOGGER = logging.getLogger(__name__)
 
 WEB3_INSTANCES: dict[str, Web3] = {}
 _WEB3_BOOTSTRAPPED = False
+
+
+class RpcReadBudget:
+    """A turn's RPC allowance, shared with its worker threads."""
+
+    READ_METHODS = frozenset({
+        "web3_clientVersion", "net_version", "eth_chainId", "eth_blockNumber",
+        "eth_call", "eth_estimateGas", "eth_getBalance", "eth_getCode",
+        "eth_getTransactionCount", "eth_getTransactionReceipt",
+        "eth_getTransactionByHash", "eth_getBlockByNumber", "eth_getBlockByHash",
+        "eth_getLogs",
+        "eth_getStorageAt", "eth_gasPrice", "eth_maxPriorityFeePerGas", "eth_feeHistory",
+    })
+    DIRECT_READ_METHODS = READ_METHODS - {
+        "web3_clientVersion", "net_version", "eth_call", "eth_estimateGas",
+        "eth_getTransactionReceipt", "eth_getTransactionByHash", "eth_getLogs",
+    }
+
+    def __init__(self, *, max_calls: int, timeout_seconds: float):
+        self.max_calls = max_calls
+        self.deadline = time.monotonic() + timeout_seconds
+        self.used = 0
+        self.closed = False
+        self.exhausted = False
+        self._lock = threading.Lock()
+
+    def consume(self, method, params):
+        with self._lock:
+            if method not in self.READ_METHODS:
+                raise ValueError("Internal RPC permits read methods only.")
+            if method in {"eth_getBlockByNumber", "eth_getBlockByHash"} and len(params) > 1 and params[1] is not False:
+                raise ValueError("Internal block reads return transaction hashes, not full transactions.")
+            if method == "eth_feeHistory":
+                count = int(params[0], 16) if isinstance(params[0], str) else int(params[0])
+                if not 1 <= count <= 100 or (len(params) > 2 and len(params[2]) > 10):
+                    raise ValueError("Internal fee history is limited to 100 blocks and ten percentiles.")
+            if method == "eth_getLogs":
+                query = params[0]
+                start, end = query.get("fromBlock", "latest"), query.get("toBlock", "latest")
+                if not query.get("address"):
+                    raise ValueError("Internal log queries require a contract address.")
+                if not (start == end == "latest"):
+                    try:
+                        start = int(start, 16) if isinstance(start, str) else int(start)
+                        end = int(end, 16) if isinstance(end, str) else int(end)
+                    except (TypeError, ValueError):
+                        raise ValueError("Internal log queries require a bounded numeric range.") from None
+                    if start < 0 or end < start or end - start >= 5000:
+                        raise ValueError("Internal log range must contain at most 5000 blocks.")
+            if self.closed or time.monotonic() >= self.deadline or self.used >= self.max_calls:
+                self.exhausted = True
+                raise RuntimeError("Internal RPC budget exhausted; observation is incomplete.")
+            self.used += 1
+
+    def close(self):
+        with self._lock:
+            self.closed = True
+
+
+_RPC_READ_BUDGET = ContextVar("ysupport_rpc_read_budget", default=None)
+
+
+@contextmanager
+def rpc_read_scope(budget):
+    token = _RPC_READ_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _RPC_READ_BUDGET.reset(token)
+
+
+class InternalRpcHttpProvider(Web3.HTTPProvider):
+    def make_request(self, method, params):
+        budget = _RPC_READ_BUDGET.get()
+        if budget is not None:
+            budget.consume(method, params)
+        return super().make_request(method, params)
+
+    def make_batch_request(self, batch_requests):
+        budget = _RPC_READ_BUDGET.get()
+        if budget is not None:
+            for method, params in batch_requests:
+                budget.consume(method, params)
+        return super().make_batch_request(batch_requests)
 
 
 def _normalize_chain(chain: str) -> str:
@@ -29,10 +118,11 @@ def ensure_web3_instances() -> dict[str, Web3]:
     if not _WEB3_BOOTSTRAPPED:
         for name, url in config.RPC_URLS.items():
             try:
-                web3_instance = Web3(Web3.HTTPProvider(url))
+                web3_instance = Web3(InternalRpcHttpProvider(
+                    url, request_kwargs={"timeout": 15},
+                    exception_retry_configuration=None,
+                ))
                 WEB3_INSTANCES[name] = web3_instance
-                if not web3_instance.is_connected():
-                    LOGGER.warning("Failed to connect to Web3 for %s", name)
             except Exception as exc:
                 LOGGER.warning("Error initializing Web3 for %s: %s", name, exc)
         _WEB3_BOOTSTRAPPED = True
@@ -49,6 +139,19 @@ def get_web3_instance(chain: str | None) -> Web3 | None:
     if not normalized_chain:
         return None
     return ensure_web3_instances().get(normalized_chain)
+
+
+async def core_read_chain_state(*, chain: str, method: str, params_json: str) -> str:
+    if method not in RpcReadBudget.DIRECT_READ_METHODS:
+        raise ValueError("Unsupported basic chain-state read; use specialised helpers for transactions, contract calls and logs.")
+    params = json.loads(params_json)
+    if not isinstance(params, list):
+        raise ValueError("Chain-state params_json must contain a JSON array.")
+    web3_instance = get_web3_instance(chain)
+    if web3_instance is None:
+        raise ValueError("Unsupported chain for internal state reads.")
+    result = await asyncio.to_thread(web3_instance.manager.request_blocking, method, params)
+    return Web3.to_json({"chain": chain, "method": method, "result": result})
 
 
 def resolve_ens_name(name: str) -> Optional[str]:

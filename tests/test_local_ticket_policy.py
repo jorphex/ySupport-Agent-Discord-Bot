@@ -2,15 +2,8 @@ import tests as _test_environment  # noqa: F401
 
 import unittest
 
-import config
 from state import (
     TicketInvestigationJob,
-)
-from support_agents import (
-    TicketTriageDecision,
-)
-from ticket_investigation.runtime import (
-    _normalize_ticket_triage_decision,
 )
 from router import is_wallet_confirmation
 
@@ -55,16 +48,3 @@ class InvestigationJobTests(unittest.TestCase):
         self.assertEqual(job.current_specialty, "docs")
         self.assertIsNone(job.evidence.withdrawal_target_chain)
         self.assertIsNone(job.evidence.withdrawal_target_vault)
-
-
-class TriageDecisionTests(unittest.TestCase):
-    def test_normalize_human_escalation_adds_handoff_tag(self) -> None:
-        decision = TicketTriageDecision(
-            action="human_escalation",
-            message="This needs human review.",
-            reasoning="sensitive report receipt confirmation",
-        )
-
-        normalized = _normalize_ticket_triage_decision(decision)
-
-        self.assertIn(config.HUMAN_HANDOFF_TAG_PLACEHOLDER, normalized.message or "")

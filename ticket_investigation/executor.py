@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 from state import TicketInvestigationJob
@@ -12,7 +11,6 @@ from ticket_investigation.transport import (
 
 if TYPE_CHECKING:
     from ticket_investigation.contracts import TicketTurnRequest
-    from ticket_investigation.worker import TicketInvestigationWorker
 
 
 @dataclass
@@ -48,48 +46,6 @@ class TicketExecutionTransport(Protocol):
         ...
 
 
-class LocalTicketInvestigationExecutor:
-    def __init__(self, worker: TicketInvestigationWorker) -> None:
-        self.worker = worker
-
-    async def execute_turn(
-        self,
-        request: TicketTurnRequest,
-        hooks: TicketExecutionHooks | None = None,
-    ) -> TicketExecutionResult:
-        updated_job = deepcopy(request.investigation_job)
-        effective_request = replace(request, investigation_job=updated_job)
-        worker_result = await self.worker.execute_turn(effective_request)
-        return TicketExecutionResult(
-            flow_outcome=worker_result.flow_outcome,
-            updated_job=updated_job,
-        )
-
-
-class LoopbackTicketExecutionTransport:
-    def __init__(self, delegate: TicketInvestigationExecutor) -> None:
-        self.delegate = delegate
-
-    async def execute_transport_turn(
-        self,
-        request: TicketExecutionTransportRequest,
-        hooks: TicketExecutionHooks | None = None,
-    ) -> TicketExecutionTransportResult:
-        hydrated_request = TicketExecutionTransportRequest.from_json(
-            request.to_json()
-        ).to_turn_request()
-        result = await self.delegate.execute_turn(
-            hydrated_request,
-            hooks=hooks,
-        )
-        return TicketExecutionTransportResult.from_json(
-            TicketExecutionTransportResult.from_execution_parts(
-                result.flow_outcome,
-                result.updated_job,
-            ).to_json()
-        )
-
-
 class TransportTicketInvestigationExecutor:
     def __init__(self, transport: TicketExecutionTransport) -> None:
         self.transport = transport
@@ -109,8 +65,3 @@ class TransportTicketInvestigationExecutor:
             flow_outcome=flow_outcome,
             updated_job=updated_job,
         )
-
-
-class LoopbackTransportTicketInvestigationExecutor(TransportTicketInvestigationExecutor):
-    def __init__(self, delegate: TicketInvestigationExecutor) -> None:
-        super().__init__(LoopbackTicketExecutionTransport(delegate))

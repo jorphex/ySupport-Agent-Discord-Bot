@@ -88,7 +88,7 @@ class ShadowTicketExecutionEndpointTests(unittest.IsolatedAsyncioTestCase):
             endpoint = ShadowTicketExecutionJsonEndpoint(
                 primary,
                 shadow,
-                primary_mode="local",
+                primary_mode="codex_support_exec",
                 shadow_mode="codex_support_exec",
                 artifact_dir=artifact_dir,
             )
@@ -141,7 +141,7 @@ class ShadowTicketExecutionEndpointTests(unittest.IsolatedAsyncioTestCase):
             endpoint = ShadowTicketExecutionJsonEndpoint(
                 _StaticEndpoint(_transport_result_json("primary")),
                 _FailingEndpoint(),
-                primary_mode="local",
+                primary_mode="codex_support_exec",
                 shadow_mode="codex_support_exec",
                 artifact_dir=artifact_dir,
             )

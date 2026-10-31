@@ -11,7 +11,7 @@ import re
 from typing import Sequence
 from weakref import WeakValueDictionary
 
-from codex_support_home import prepare_codex_support_home
+from codex_support_home import prepare_codex_support_home, prune_codex_support_caches
 from codex_support_contract import (
     CODEX_SUPPORT_RESULT_SCHEMA,
     SignedTransactionSafetyViolation,
@@ -40,6 +40,7 @@ from ticket_execution.subprocess_utils import (
 )
 from ticket_execution.workspace import TicketExecutionWorkspace
 from ticket_investigation.executor import TicketExecutionHooks
+from ticket_investigation.internal_rpc import InternalRpcServer
 from ticket_investigation.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
@@ -139,7 +140,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.codex_command = command
         self.model = model
         self.reasoning_effort = reasoning_effort
-        self.codex_home = Path(codex_home) if codex_home else None
+        self.codex_home = Path(codex_home).resolve() if codex_home else None
         self.codex_auth_link_source = (
             Path(codex_auth_link_source) if codex_auth_link_source else None
         )
@@ -164,6 +165,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
         )
         self.cwd = cwd
         self.env = dict(env) if env is not None else None
+        if self.codex_home is not None:
+            self.env = {**(self.env or {}), "CODEX_HOME": str(self.codex_home)}
         self.inherit_parent_env = inherit_parent_env
         self.artifact_dir = artifact_dir
         self.timeout_seconds = timeout_seconds
@@ -194,6 +197,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
             for session_id in session_ids:
                 if await self._delete_codex_session(session_id):
                     removed += 1
+            await asyncio.to_thread(
+                prune_codex_support_caches, self.codex_home, cutoff=cutoff
+            )
             return removed
 
     async def _delete_codex_session(self, session_id: str) -> bool:
@@ -273,11 +279,14 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 prefix="ticket-codex-support-run-",
             )
             with workspace as run_dir:
-                async with self.codex_runtime_lock:
+                async with self.codex_runtime_lock, InternalRpcServer(
+                    run_dir, timeout_seconds=self.timeout_seconds
+                ) as internal_rpc:
                     support_request = SupportTurnRequest.from_ticket_execution_request(
                         request,
                         ysupport_mcp_enabled=self.ysupport_mcp_enabled,
                     )
+                    support_request.support_state["internal_rpc"] = internal_rpc.description
                     workflow_context = support_request.support_state.get("workflow_context", {})
                     session_record = (
                         self.session_manager.load_for_turn(
@@ -379,6 +388,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             )
                         raise
                     finally:
+                        await internal_rpc.close()
                         if export_workspace:
                             exported_run_dir = safe_export_workspace_copy(
                                 workspace,

@@ -132,7 +132,7 @@ class _FakeIndex:
 class RefreshEntrypointTests(unittest.TestCase):
     def test_refresh_stages_fail_independently_and_preserve_last_success(self) -> None:
         steps = [
-            "git",
+            "fetch_yearn_docs.py",
             "fetch_flex_docs.py",
             "process_docs.py",
             "embed_and_store.py",

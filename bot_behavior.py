@@ -1,6 +1,14 @@
 import config
 
 
+def is_wallet_first_data_intent(intent: str | None) -> bool:
+    return intent in {
+        "data_deposit_check",
+        "data_withdrawal_flow_start",
+        "data_deposits_withdrawals_start",
+    }
+
+
 SECURITY_PROCESS_URL = (
     "https://github.com/yearn/yearn-security/blob/master/SECURITY.md"
 )

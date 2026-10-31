@@ -1,8 +1,4 @@
 import re
-from typing import Literal
-
-
-AgentKey = Literal["data", "docs", "bug", "triage"]
 
 
 def is_message_primarily_address(text: str) -> bool:
@@ -81,20 +77,3 @@ def is_wallet_rejection(text: str) -> bool:
         "wrong address",
     ]
     return any(phrase in q for phrase in phrase_rejections)
-
-
-def select_starting_agent(text: str, run_context) -> AgentKey:
-    intent = run_context.initial_button_intent
-    if intent in ["data_deposit_check", "data_withdrawal_flow_start", "data_vault_search", "data_deposits_withdrawals_start"]:
-        return "data"
-    if intent == "docs_qa":
-        return "docs"
-    if intent == "bug_report":
-        return "bug"
-    if intent == "investigate_issue":
-        return "triage"
-    # Free-form messages should stay in triage unless the runtime already has a
-    # stronger structured reason to start elsewhere. That keeps lane selection
-    # owned by the triage/router agents instead of duplicated keyword policy
-    # here in the wrapper.
-    return "triage"

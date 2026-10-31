@@ -87,28 +87,6 @@ LLM_GUARDRAIL_MODEL = os.getenv("LLM_GUARDRAIL_MODEL", "gpt-5.6-luna")
 LLM_GUARDRAIL_REASONING_EFFORT = os.getenv("LLM_GUARDRAIL_REASONING_EFFORT", "none")
 LLM_GUARDRAIL_VERBOSITY = os.getenv("LLM_GUARDRAIL_VERBOSITY", "low")
 
-LLM_DATA_AGENT_MODEL = os.getenv("LLM_DATA_AGENT_MODEL", "gpt-5.6-terra")
-LLM_DATA_AGENT_REASONING_EFFORT = os.getenv("LLM_DATA_AGENT_REASONING_EFFORT", "low")
-LLM_DATA_AGENT_VERBOSITY = os.getenv("LLM_DATA_AGENT_VERBOSITY", "low")
-
-LLM_DOCS_AGENT_MODEL = os.getenv("LLM_DOCS_AGENT_MODEL", "gpt-5.6-sol")
-LLM_DOCS_AGENT_REASONING_EFFORT = os.getenv("LLM_DOCS_AGENT_REASONING_EFFORT", "medium")
-LLM_DOCS_AGENT_VERBOSITY = os.getenv("LLM_DOCS_AGENT_VERBOSITY", "medium")
-
-LLM_BUG_AGENT_MODEL = os.getenv("LLM_BUG_AGENT_MODEL", "gpt-5.6-sol")
-LLM_BUG_AGENT_REASONING_EFFORT = os.getenv("LLM_BUG_AGENT_REASONING_EFFORT", "high")
-LLM_BUG_AGENT_VERBOSITY = os.getenv("LLM_BUG_AGENT_VERBOSITY", "medium")
-
-LLM_TRIAGE_AGENT_MODEL = os.getenv("LLM_TRIAGE_AGENT_MODEL", "gpt-5.6-terra")
-LLM_TRIAGE_AGENT_REASONING_EFFORT = os.getenv("LLM_TRIAGE_AGENT_REASONING_EFFORT", "low")
-LLM_TRIAGE_AGENT_VERBOSITY = os.getenv("LLM_TRIAGE_AGENT_VERBOSITY", "low")
-
-LLM_DOCS_HYDE_MODEL = os.getenv("LLM_DOCS_HYDE_MODEL", "gpt-5-mini")
-LLM_DOCS_HYDE_REASONING_EFFORT = os.getenv("LLM_DOCS_HYDE_REASONING_EFFORT", "minimal")
-
-LLM_DOCS_SYNTH_MODEL = os.getenv("LLM_DOCS_SYNTH_MODEL", "gpt-5.4")
-LLM_DOCS_SYNTH_REASONING_EFFORT = os.getenv("LLM_DOCS_SYNTH_REASONING_EFFORT", "medium")
-
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # --- Pinecone ---
@@ -172,16 +150,9 @@ MAX_DISCORD_MESSAGE_LENGTH = 1990
 # --- Bot Behavior ---
 COOLDOWN_SECONDS = 5
 BUG_REPORT_COOLDOWN_SECONDS = _env_int("BUG_REPORT_COOLDOWN_SECONDS", 60)
-MAX_TICKET_CONVERSATION_TURNS = 10
-MAX_PUBLIC_TRIGGER_TURNS = _env_int(
-    "MAX_PUBLIC_TRIGGER_TURNS",
-    MAX_TICKET_CONVERSATION_TURNS,
-)
-if MAX_PUBLIC_TRIGGER_TURNS is None:
-    MAX_PUBLIC_TRIGGER_TURNS = MAX_TICKET_CONVERSATION_TURNS
 MAX_RESULTS_TO_SHOW = 5
 PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30
-TICKET_EXECUTION_ENDPOINT = os.getenv("TICKET_EXECUTION_ENDPOINT", "local").strip().lower()
+TICKET_EXECUTION_ENDPOINT = os.getenv("TICKET_EXECUTION_ENDPOINT", "codex_support_exec").strip().lower()
 TICKET_EXECUTION_FALLBACK_ENDPOINT = os.getenv(
     "TICKET_EXECUTION_FALLBACK_ENDPOINT", ""
 ).strip().lower()
@@ -334,10 +305,6 @@ def ticket_execution_runtime_summary() -> str:
 
 def ticket_execution_runtime_warnings() -> list[str]:
     warnings: list[str] = []
-    if TICKET_EXECUTION_ENDPOINT == "codex_support_exec" and not TICKET_EXECUTION_FALLBACK_ENDPOINT:
-        warnings.append(
-            f"primary {TICKET_EXECUTION_ENDPOINT} is enabled without a fallback endpoint"
-        )
     if TICKET_EXECUTION_CANARY_ENDPOINT and not (
         TICKET_EXECUTION_CANARY_CHANNEL_IDS or TICKET_EXECUTION_CANARY_INTENTS
     ):
@@ -348,6 +315,19 @@ def ticket_execution_runtime_warnings() -> list[str]:
 
 
 def validate_ticket_execution_runtime_config() -> None:
+    if not TICKET_EXECUTION_ENDPOINT:
+        raise ValueError("TICKET_EXECUTION_ENDPOINT must name a supported backend.")
+    configured_modes = (
+        TICKET_EXECUTION_ENDPOINT, TICKET_EXECUTION_FALLBACK_ENDPOINT,
+        TICKET_EXECUTION_CANARY_ENDPOINT, TICKET_EXECUTION_SHADOW_ENDPOINT,
+    )
+    for mode in configured_modes:
+        if mode == "local":
+            raise ValueError("The local ticket engine is retired; use codex_support_exec or an explicit external subprocess.")
+        if mode and mode not in {"codex_support_exec", "subprocess"}:
+            raise ValueError(f"Unsupported ticket execution endpoint: {mode}")
+    if "subprocess" in ticket_execution_endpoint_modes() and not TICKET_EXECUTION_SUBPROCESS_COMMAND:
+        raise ValueError("subprocess requires an explicit TICKET_EXECUTION_SUBPROCESS_COMMAND; the legacy worker is retired.")
     uses_codex_support = "codex_support_exec" in ticket_execution_endpoint_modes()
     if uses_codex_support and not TICKET_EXECUTION_CODEX_HOME:
         raise ValueError(

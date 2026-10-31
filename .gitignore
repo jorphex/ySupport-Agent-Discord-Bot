@@ -21,4 +21,5 @@ OPERATOR_MAINTAINER_REFERENCE.md
 /yearn_rag/update_docs.log
 /.cache/repo_context/
 /.cache/docs_ingestion/
+/.cache/verification/
 .tmp_replay/

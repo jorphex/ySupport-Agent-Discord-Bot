@@ -64,6 +64,8 @@ class TelegramHandoffController:
     def __init__(self, bot: _TelegramBotHost) -> None:
         self.bot = bot
         self.task: asyncio.Task[None] | None = None
+        self._delivery_task: asyncio.Task[None] | None = None
+        self._delivery_wakeup = asyncio.Event()
         self._telegram_update_offset = load_telegram_update_offset()
         self._telegram_recovery_attempts: set[tuple[int, int, str]] = set()
 
@@ -78,6 +80,7 @@ class TelegramHandoffController:
             return False
         if self.task is None or self.task.done():
             self.task = asyncio.create_task(self._telegram_handoff_reply_loop())
+        self._wake_delivery_worker()
         return True
 
     async def close(self) -> None:
@@ -87,11 +90,33 @@ class TelegramHandoffController:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        if self._delivery_task is not None:
+            delivery_task = self._delivery_task
+            self._delivery_task = None
+            delivery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await delivery_task
+
+    def _wake_delivery_worker(self) -> None:
+        if self._delivery_task is None or self._delivery_task.done():
+            self._delivery_task = asyncio.create_task(self._delivery_loop())
+        self._delivery_wakeup.set()
+
+    async def _delivery_loop(self) -> None:
+        while not self.bot.is_closed():
+            await self._delivery_wakeup.wait()
+            self._delivery_wakeup.clear()
+            try:
+                await self._resume_pending_telegram_handoff_replies()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.exception("Telegram handoff delivery failed; pending state retained.")
 
     async def _telegram_handoff_reply_loop(self) -> None:
         while not self.bot.is_closed():
             try:
-                await self._resume_pending_telegram_handoff_replies()
+                self._wake_delivery_worker()
                 updates = await fetch_telegram_updates(self._telegram_update_offset)
                 for update in updates:
                     update_id = update.get("update_id")
@@ -211,11 +236,7 @@ class TelegramHandoffController:
             raise RuntimeError(
                 "Could not persist the accepted Telegram handoff reply."
             )
-        await self._deliver_telegram_handoff_reply(
-            channel_id=matched_channel_id,
-            notice=matched_notice,
-            team_reply_text=text,
-        )
+        self._wake_delivery_worker()
 
     async def _handle_telegram_handoff_dismissal(
         self,

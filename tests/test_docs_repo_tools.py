@@ -51,7 +51,7 @@ class DocsRepoToolsTests(unittest.TestCase):
 
 
 class DocsRepoToolsAsyncTests(unittest.IsolatedAsyncioTestCase):
-    async def test_direct_context_search_disables_hyde_and_returns_sources(self) -> None:
+    async def test_direct_context_search_returns_sources(self) -> None:
         with patch.object(
             docs_repo_tools,
             "_build_docs_context",
@@ -67,30 +67,7 @@ class DocsRepoToolsAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         build_context.assert_awaited_once_with(
             "How do vaults work?",
-            use_hyde=False,
         )
         self.assertIn("Ranked Yearn documentation excerpts:", result)
         self.assertIn("https://docs.yearn.fi/vaults", result)
         self.assertIn("Relevant YIP status: YIP-61: Implemented", result)
-
-    async def test_direct_context_build_skips_hyde_call(self) -> None:
-        with (
-            patch.object(docs_repo_tools, "_get_openai_async_client") as async_client,
-            patch.object(
-                docs_repo_tools,
-                "_get_openai_sync_client",
-            ) as sync_client,
-        ):
-            sync_client.return_value.embeddings.create.side_effect = RuntimeError(
-                "stop after embedding boundary"
-            )
-            with (
-                self.assertLogs(level="ERROR"),
-                self.assertRaisesRegex(RuntimeError, "Error generating embedding"),
-            ):
-                await docs_repo_tools._build_docs_context(
-                    "direct query",
-                    use_hyde=False,
-                )
-
-        async_client.assert_not_called()

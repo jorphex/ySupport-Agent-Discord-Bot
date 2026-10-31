@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 
 import config
-import docs_repo_tools
 from ticket_execution.status import (
     _build_codex_session_summary,
     build_ticket_execution_status,
@@ -59,7 +58,8 @@ class ConfigSummaryTests(unittest.TestCase):
     ) -> None:
         with patch.multiple(
             config,
-            TICKET_EXECUTION_ENDPOINT="local",
+            TICKET_EXECUTION_ENDPOINT="subprocess",
+            TICKET_EXECUTION_SUBPROCESS_COMMAND=["external-worker"],
             TICKET_EXECUTION_FALLBACK_ENDPOINT="",
             TICKET_EXECUTION_SHADOW_ENDPOINT="codex_support_exec",
             TICKET_EXECUTION_CANARY_ENDPOINT="",
@@ -95,7 +95,8 @@ class ConfigSummaryTests(unittest.TestCase):
     ) -> None:
         with patch.multiple(
             config,
-            TICKET_EXECUTION_ENDPOINT="local",
+            TICKET_EXECUTION_ENDPOINT="subprocess",
+            TICKET_EXECUTION_SUBPROCESS_COMMAND=["external-worker"],
             TICKET_EXECUTION_FALLBACK_ENDPOINT="",
             TICKET_EXECUTION_SHADOW_ENDPOINT="",
             TICKET_EXECUTION_CANARY_ENDPOINT="codex_support_exec",
@@ -112,7 +113,8 @@ class ConfigSummaryTests(unittest.TestCase):
     def test_unselected_canary_is_not_an_active_execution_mode(self) -> None:
         with patch.multiple(
             config,
-            TICKET_EXECUTION_ENDPOINT="local",
+            TICKET_EXECUTION_ENDPOINT="subprocess",
+            TICKET_EXECUTION_SUBPROCESS_COMMAND=["external-worker"],
             TICKET_EXECUTION_FALLBACK_ENDPOINT="",
             TICKET_EXECUTION_SHADOW_ENDPOINT="",
             TICKET_EXECUTION_CANARY_ENDPOINT="codex_support_exec",
@@ -120,7 +122,7 @@ class ConfigSummaryTests(unittest.TestCase):
             TICKET_EXECUTION_CANARY_INTENTS=set(),
             TICKET_EXECUTION_CODEX_HOME=None,
         ):
-            self.assertEqual(config.ticket_execution_endpoint_modes(), ("local",))
+            self.assertEqual(config.ticket_execution_endpoint_modes(), ("subprocess",))
             config.validate_ticket_execution_runtime_config()
 
     def test_runtime_environment_validation_requires_core_bot_settings(self) -> None:
@@ -148,39 +150,6 @@ class ConfigSummaryTests(unittest.TestCase):
         self.assertIn("DISCORD_BOT_TOKEN is required", str(exc.exception))
 
 
-class ReportArtifactFetchTests(unittest.IsolatedAsyncioTestCase):
-    async def test_fetch_report_artifact_reads_public_gist_via_github_api(self) -> None:
-        class FakeResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self) -> dict:
-                return {
-                    "files": {
-                        "report.md": {
-                            "content": "Issue: unstake resets stream time via block.timestamp",
-                        }
-                    }
-                }
-
-        with patch.object(
-            docs_repo_tools.requests, "get", return_value=FakeResponse()
-        ) as mock_get:
-            result = await docs_repo_tools.core_fetch_report_artifact(
-                "https://gist.github.com/example/abcdef1234567890"
-            )
-
-        self.assertIn("Fetched public report artifact", result)
-        self.assertIn("unstake resets stream time", result)
-        self.assertIn("abcdef1234567890", result)
-        mock_get.assert_called_once()
-
-
-    async def test_fetch_report_artifact_rejects_unsupported_hosts(self) -> None:
-        result = await docs_repo_tools.core_fetch_report_artifact(
-            "https://example.com/report.txt"
-        )
-        self.assertIn("Unsupported report URL", result)
 
 
 class TicketExecutionStatusTests(unittest.TestCase):

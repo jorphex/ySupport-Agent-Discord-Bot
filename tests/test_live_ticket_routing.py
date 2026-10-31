@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import config
 from state import (
-    BotRunContext,
     clear_ticket_investigation_job,
     get_or_create_ticket_investigation_job,
     stopped_channels,
@@ -16,10 +15,7 @@ from state import (
 from handoff import (
     strip_handoff_placeholder,
 )
-from ticket_investigation.runtime import (
-    _merge_explicit_evidence_into_job,
-    _select_ticket_starting_agent,
-)
+from ticket_investigation.context import merge_explicit_evidence
 from discord_support_runtime import (
     _classify_ticket_message_action,
     _extract_ticket_owner_user_id_from_messages,
@@ -258,34 +254,12 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    def test_follow_up_routing_does_not_keep_bug_lane_sticky_without_structured_state(
-        self,
-    ) -> None:
-        channel_id = 29
-        context = BotRunContext(channel_id=channel_id, project_context="yearn")
-        investigation_job = get_or_create_ticket_investigation_job(channel_id)
-        investigation_job.last_specialty = "bug"
-        try:
-            agent_key = _select_ticket_starting_agent(
-                "where do i see my styfi position?",
-                context,
-                current_history=[
-                    {
-                        "role": "assistant",
-                        "content": "Please share the page and button state.",
-                    },
-                ],
-                investigation_job=investigation_job,
-            )
-            self.assertEqual(agent_key, "triage")
-        finally:
-            clear_ticket_investigation_job(channel_id)
 
     def test_merge_explicit_evidence_does_not_infer_chain_from_substring(self) -> None:
         channel_id = 30
         investigation_job = get_or_create_ticket_investigation_job(channel_id)
         try:
-            _merge_explicit_evidence_into_job(
+            merge_explicit_evidence(
                 investigation_job,
                 "The portfolio database is showing the wrong balance.",
             )

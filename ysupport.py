@@ -5,13 +5,13 @@ import logging
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, List
+from weakref import WeakValueDictionary
 
 import discord
 from dotenv import load_dotenv
 
 from agents import (
     TResponseInputItem,
-    InputGuardrailTripwireTriggered, MaxTurnsExceeded, AgentsException,
     set_default_openai_key,
 )
 
@@ -28,7 +28,6 @@ from discord_support_runtime import (
     _detect_ticket_owner_user_id,
     _discard_pending_ticket_payload,
     _execute_ticket_turn,
-    _guardrail_tripwire_reply,
     _handoff_delivery_failure_reply,
     _is_support_staff_member,
     _maybe_recover_runtime_stopped_ticket_for_message,
@@ -128,22 +127,8 @@ class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
         self._state_cleanup_task: asyncio.Task[None] | None = None
-        self._public_turn_locks: dict[int, asyncio.Lock] = {}
-        local_executor = None
-        if "local" in {
-            config.TICKET_EXECUTION_ENDPOINT,
-            config.TICKET_EXECUTION_FALLBACK_ENDPOINT,
-            config.TICKET_EXECUTION_CANARY_ENDPOINT,
-            config.TICKET_EXECUTION_SHADOW_ENDPOINT,
-        }:
-            from ticket_execution.runtime_factory import (
-                build_local_ticket_investigation_executor,
-            )
-
-            local_executor = build_local_ticket_investigation_executor()
-        self.investigation_json_endpoint = build_ticket_execution_json_endpoint(
-            local_executor
-        )
+        self._public_turn_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+        self.investigation_json_endpoint = build_ticket_execution_json_endpoint()
         self.investigation_transport = JsonEndpointTicketExecutionTransport(
             self.investigation_json_endpoint
         )
@@ -384,43 +369,6 @@ class TicketBot(discord.Client):
                             original_author_id,
                             len(new_history),
                         )
-                except InputGuardrailTripwireTriggered as e:
-                    await progress_reporter.close()
-                    logging.warning(
-                        "Input Guardrail triggered in public channel %s for user %s.",
-                        message.channel.id,
-                        original_author_id,
-                    )
-                    public_conversations.pop(original_author_id, None)
-                    clear_public_conversation(original_author_id)
-                    await original_message.reply(
-                        _guardrail_tripwire_reply(e),
-                        mention_author=False,
-                        suppress_embeds=True,
-                    )
-                except MaxTurnsExceeded:
-                    await progress_reporter.close()
-                    logging.warning(
-                        "Max turns (%s) exceeded during public trigger run for user %s in channel %s.",
-                        config.MAX_PUBLIC_TRIGGER_TURNS,
-                        original_author_id,
-                        message.channel.id,
-                    )
-                    public_conversations.pop(original_author_id, None)
-                    clear_public_conversation(original_author_id)
-                    if public_run_context.repo_search_calls:
-                        base_reply = (
-                            "I hit an internal analysis limit while reviewing repo evidence for that request."
-                        )
-                    else:
-                        base_reply = (
-                            "I hit an internal analysis limit while working on that request."
-                        )
-                    await original_message.reply(
-                        f"{base_reply} Please try again.",
-                        mention_author=False,
-                        suppress_embeds=True,
-                    )
                 except Exception as e:
                     await progress_reporter.close()
                     logging.error(
@@ -1057,38 +1005,6 @@ class TicketBot(discord.Client):
                                 "Leaving channel active for follow-up.",
                                 channel_id,
                             )
-                    except InputGuardrailTripwireTriggered as e:
-                        logging.warning(f"Input Guardrail triggered in channel {channel_id}. Extracting message from output_info.")
-                        final_reply = _guardrail_tripwire_reply(e)
-                        guardrail_info = getattr(
-                            getattr(getattr(e, "guardrail_result", None), "output", None),
-                            "output_info",
-                            None,
-                        )
-                        should_stop_processing = _should_stop_for_boundary_output(
-                            guardrail_info if isinstance(guardrail_info, dict) else None
-                        )
-                        if should_stop_processing:
-                            stop_reason = "boundary_stop"
-                    except MaxTurnsExceeded:
-                        logging.warning(f"Max turns ({config.MAX_TICKET_CONVERSATION_TURNS}) exceeded in channel {channel_id}.")
-                        if run_context.repo_search_calls:
-                            final_reply = (
-                                "I hit an internal analysis limit while reviewing repo evidence for this report."
-                            )
-                        else:
-                            final_reply = (
-                                "This conversation has reached its maximum length."
-                            )
-                        should_stop_processing = True
-                        stop_reason = "runtime_error"
-                    except AgentsException as e:
-                        logging.error(f"Agent SDK error during ticket processing for channel {channel_id}: {e}")
-                        final_reply = (
-                            f"Sorry, an error occurred while processing the request ({type(e).__name__}). Please try again."
-                        )
-                        should_stop_processing = True
-                        stop_reason = "runtime_error"
                     except Exception as e:
                         logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                         final_reply = "An unexpected error occurred."

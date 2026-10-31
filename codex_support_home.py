@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import logging
 import os
 from pathlib import Path
+import shutil
+import stat
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -14,6 +18,46 @@ class CodexSupportHome:
     auth_path: Path
     instructions_path: Path
     ysupport_mcp_enabled: bool
+
+
+def prune_codex_support_caches(codex_home: Path, *, cutoff: datetime) -> int:
+    """Remove only aged, reproducible catalog/staging data from an idle home."""
+    def last_used(entry: Path) -> float:
+        metadata = entry.lstat()
+        if stat.S_ISREG(metadata.st_mode):
+            return max(metadata.st_mtime, metadata.st_atime)
+        return metadata.st_mtime
+
+    candidates = [
+        codex_home / ".tmp" / "plugins",
+        codex_home / "cache" / "remote_plugin_catalog",
+    ]
+    staging = codex_home / "plugins" / ".remote-plugin-install-staging"
+    if staging.is_dir() and not staging.is_symlink():
+        candidates.extend(staging.iterdir())
+    removed = 0
+    for path in candidates:
+        try:
+            if (
+                path.is_symlink()
+                or not path.is_dir()
+                or not path.resolve().is_relative_to(codex_home.resolve())
+            ):
+                continue
+            entries = [path, *path.rglob("*")]
+            marker = codex_home / ".tmp" / "plugins.sha"
+            if path == codex_home / ".tmp" / "plugins" and marker.exists():
+                entries.append(marker)
+            if any(last_used(entry) >= cutoff.timestamp() for entry in entries):
+                continue
+            shutil.rmtree(path)
+            if marker in entries:
+                marker.unlink(missing_ok=True)
+            removed += 1
+            logging.info("Removed stale Codex cache: %s", path)
+        except OSError:
+            logging.warning("Could not remove stale Codex cache %s.", path, exc_info=True)
+    return removed
 
 
 def prepare_codex_support_home(
