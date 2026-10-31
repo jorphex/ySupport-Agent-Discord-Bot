@@ -1627,5 +1627,232 @@
         "styfi"
       ]
     }
+  },
+  {
+    "id": "ticket_1565667516926402663_bridge_destination_verified",
+    "turns": [
+      {
+        "message": "Please finish tracing my Yearn withdrawal. Where did the funds actually arrive? Wallet: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53. Katana outgoing transactions: 0x9b3585182c4b90f2746af4f62901ad41bad58e4f9c43b55c945116ed66d25600 and 0x0225131a8b0671a3218127bc60a430c601bec59bfe3379d8c232a3b4d93d9fcb. Also, does my $1.48 quote for the remaining Ethereum kpdUSDC establish that thin liquidity caused it?",
+        "history": [
+          {
+            "role": "user",
+            "content": "I still hold 19,862.558018 Ethereum kpdUSDC in 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53 after the Katana pre-deposit migration. How can I redeem it?"
+          },
+          {
+            "role": "assistant",
+            "content": "The wallet received the migrated Katana shares and later redeemed all of them. On 29 September 2025 it redeemed 18,929.596607 yvvbUSDC for 18,962.673090 vbUSDC; on 19 December 2025 it redeemed 1,000 yvvbUSDC for 1,009.824585 vbUSDC. It then sent 19,022.191440 and 1,009.824585 vbUSDC to router 0x628d684d57c73a5d8ca77f455fdf2cc8bd503c16. Destination delivery has not been checked."
+          }
+        ],
+        "expect_handoff": false
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "all": [
+        "arbitrum",
+        "0x77b2e7ebcd7ec1e2dbcf3c33b1f30585ad6ff02c59420cf1aad4a4ac990bf780",
+        "0xc18600064c7dbb9b2b5c689da88f2b5b89bf5e9f75d4ed0131380eb9dd5edf6d",
+        "liquidity"
+      ],
+      "any": [
+        [
+          "18986.486464",
+          "18986.49"
+        ],
+        [
+          "1007.879276",
+          "1007.88"
+        ],
+        [
+          "unverified",
+          "not verified",
+          "not been verified",
+          "cannot determine",
+          "can't determine",
+          "cannot confirm",
+          "can't confirm",
+          "not established",
+          "no evidence",
+          "not checked",
+          "does not prove",
+          "doesn't prove",
+          "not prove",
+          "not proven",
+          "can't prove",
+          "cannot be determined",
+          "does not establish",
+          "does not by itself establish",
+          "does not by itself prove",
+          "hypothes",
+          "unresolved",
+          "uncertain",
+          "insufficient evidence",
+          "not enough evidence"
+        ]
+      ],
+      "none": [
+        "quote reflects thin secondary-market liquidity",
+        "quote reflects thin liquidity",
+        "quote is caused by thin liquidity",
+        "quote proves thin liquidity",
+        "quote confirms thin liquidity"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Controlled continuation of ticket 1565667516926402663, not a message sent to the live ticket. Historical origin/destination receipts and amounts were independently checked on 2026-10-30. Available only through exact internal transaction reads; no liquidity, quote-route or market-depth evidence is supplied. Verify arrival rather than treating origin success as delivery.",
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x9b3585182c4b90f2746af4f62901ad41bad58e4f9c43b55c945116ed66d25600"
+        },
+        "result": "Transaction receipt\nchain: katana\ntx_hash: 0x9b3585182c4b90f2746af4f62901ad41bad58e4f9c43b55c945116ed66d25600\nstatus: success\ndate: 2025-09-29\nfrom: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nto: 0x628d684d57c73a5d8ca77f455fdf2cc8bd503c16\nwallet token transfer out: 19022.191440 vbUSDC\nLiFiTransferStarted decoded bridge data:\nbridge: relay\nintegrator: jumper.exchange\ndestinationChainId: 42161\nreceiver: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nRelay route record:\ndestination_chain: arbitrum\ndestination_tx_hash: 0x77b2e7ebcd7ec1e2dbcf3c33b1f30585ad6ff02c59420cf1aad4a4ac990bf780\ndestination_token: USDC 0xaf88d065e77c8cc2239327c5edb3a432268e5831\nDestination receipt has not been inspected."
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "arbitrum",
+          "tx_hash": "0x77b2e7ebcd7ec1e2dbcf3c33b1f30585ad6ff02c59420cf1aad4a4ac990bf780"
+        },
+        "result": "Transaction receipt\nchain: arbitrum\ntx_hash: 0x77b2e7ebcd7ec1e2dbcf3c33b1f30585ad6ff02c59420cf1aad4a4ac990bf780\nstatus: success\ndate: 2025-09-29\nERC20 Transfer:\ntoken: USDC 0xaf88d065e77c8cc2239327c5edb3a432268e5831\nfrom: Relay solver\nto: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\namount: 18986.486464"
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x0225131a8b0671a3218127bc60a430c601bec59bfe3379d8c232a3b4d93d9fcb"
+        },
+        "result": "Transaction receipt\nchain: katana\ntx_hash: 0x0225131a8b0671a3218127bc60a430c601bec59bfe3379d8c232a3b4d93d9fcb\nstatus: success\ndate: 2025-12-19\nfrom: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nto: 0x628d684d57c73a5d8ca77f455fdf2cc8bd503c16\nwallet token transfer out: 1009.824585 vbUSDC\nLiFiTransferStarted decoded bridge data:\nbridge: relaydepository\nintegrator: jumper.exchange\ndestinationChainId: 42161\nreceiver: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nRelay route record:\ndestination_chain: arbitrum\ndestination_tx_hash: 0xc18600064c7dbb9b2b5c689da88f2b5b89bf5e9f75d4ed0131380eb9dd5edf6d\ndestination_token: USDC 0xaf88d065e77c8cc2239327c5edb3a432268e5831\nDestination receipt has not been inspected."
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "arbitrum",
+          "tx_hash": "0xc18600064c7dbb9b2b5c689da88f2b5b89bf5e9f75d4ed0131380eb9dd5edf6d"
+        },
+        "result": "Transaction receipt\nchain: arbitrum\ntx_hash: 0xc18600064c7dbb9b2b5c689da88f2b5b89bf5e9f75d4ed0131380eb9dd5edf6d\nstatus: success\ndate: 2025-12-19\nERC20 Transfer:\ntoken: USDC 0xaf88d065e77c8cc2239327c5edb3a432268e5831\nfrom: Relay solver\nto: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\namount: 1007.879276"
+      }
+    ]
+  },
+  {
+    "id": "ticket_1565667516926402663_bridge_destination_unverified",
+    "turns": [
+      {
+        "message": "Please finish tracing my Yearn withdrawal. Where did the funds actually arrive? Wallet: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53. Katana outgoing transactions: 0x9b3585182c4b90f2746af4f62901ad41bad58e4f9c43b55c945116ed66d25600 and 0x0225131a8b0671a3218127bc60a430c601bec59bfe3379d8c232a3b4d93d9fcb. Also, does my $1.48 quote for the remaining Ethereum kpdUSDC establish that thin liquidity caused it?",
+        "history": [
+          {
+            "role": "user",
+            "content": "I still hold 19,862.558018 Ethereum kpdUSDC in 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53 after the Katana pre-deposit migration. How can I redeem it?"
+          },
+          {
+            "role": "assistant",
+            "content": "The wallet received the migrated Katana shares and later redeemed all of them. On 29 September 2025 it redeemed 18,929.596607 yvvbUSDC for 18,962.673090 vbUSDC; on 19 December 2025 it redeemed 1,000 yvvbUSDC for 1,009.824585 vbUSDC. It then sent 19,022.191440 and 1,009.824585 vbUSDC to router 0x628d684d57c73a5d8ca77f455fdf2cc8bd503c16. Destination delivery has not been checked."
+          }
+        ],
+        "expect_handoff": false
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "all": [
+        "arbitrum",
+        "liquidity"
+      ],
+      "any": [
+        [
+          "unverified",
+          "not verified",
+          "not been verified",
+          "cannot determine",
+          "can't determine",
+          "cannot confirm",
+          "can't confirm",
+          "not established",
+          "no evidence",
+          "not checked",
+          "does not prove",
+          "doesn't prove",
+          "not prove",
+          "not proven",
+          "can't prove",
+          "cannot be determined",
+          "does not establish",
+          "does not by itself establish",
+          "does not by itself prove",
+          "hypothes",
+          "unresolved",
+          "uncertain",
+          "insufficient evidence",
+          "not enough evidence"
+        ],
+        [
+          "delivery unconfirmed",
+          "delivery remains unconfirmed",
+          "arrival unconfirmed",
+          "not confirmed",
+          "not verified",
+          "not been verified",
+          "cannot confirm",
+          "can't confirm",
+          "could not confirm",
+          "couldn't confirm",
+          "unable to confirm",
+          "unverified",
+          "could not verify",
+          "cannot verify",
+          "couldn't verify",
+          "unable to verify",
+          "unconfirmed"
+        ]
+      ],
+      "none": [
+        "quote reflects thin secondary-market liquidity",
+        "quote reflects thin liquidity",
+        "quote is caused by thin liquidity",
+        "quote proves thin liquidity",
+        "quote confirms thin liquidity",
+        "18986.486464",
+        "18986.49",
+        "1007.879276",
+        "1007.88"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Counterfactual failure variant of the captured route: origins and destination hashes are known, but both destination receipt reads are unavailable. No destination amounts or delivery result are supplied. Require explicit uncertainty without asserting loss or arrival; no liquidity evidence is supplied.",
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x9b3585182c4b90f2746af4f62901ad41bad58e4f9c43b55c945116ed66d25600"
+        },
+        "result": "Transaction receipt\nchain: katana\ntx_hash: 0x9b3585182c4b90f2746af4f62901ad41bad58e4f9c43b55c945116ed66d25600\nstatus: success\ndate: 2025-09-29\nfrom: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nto: 0x628d684d57c73a5d8ca77f455fdf2cc8bd503c16\nwallet token transfer out: 19022.191440 vbUSDC\nLiFiTransferStarted decoded bridge data:\nbridge: relay\nintegrator: jumper.exchange\ndestinationChainId: 42161\nreceiver: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nRelay route record:\ndestination_chain: arbitrum\ndestination_tx_hash: 0x77b2e7ebcd7ec1e2dbcf3c33b1f30585ad6ff02c59420cf1aad4a4ac990bf780\ndestination_token: USDC 0xaf88d065e77c8cc2239327c5edb3a432268e5831\nDestination receipt has not been inspected."
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "arbitrum",
+          "tx_hash": "0x77b2e7ebcd7ec1e2dbcf3c33b1f30585ad6ff02c59420cf1aad4a4ac990bf780"
+        },
+        "result": "Observation unavailable: destination receipt read timed out. No destination transaction status, transfer logs or delivered amount could be obtained."
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x0225131a8b0671a3218127bc60a430c601bec59bfe3379d8c232a3b4d93d9fcb"
+        },
+        "result": "Transaction receipt\nchain: katana\ntx_hash: 0x0225131a8b0671a3218127bc60a430c601bec59bfe3379d8c232a3b4d93d9fcb\nstatus: success\ndate: 2025-12-19\nfrom: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nto: 0x628d684d57c73a5d8ca77f455fdf2cc8bd503c16\nwallet token transfer out: 1009.824585 vbUSDC\nLiFiTransferStarted decoded bridge data:\nbridge: relaydepository\nintegrator: jumper.exchange\ndestinationChainId: 42161\nreceiver: 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\nRelay route record:\ndestination_chain: arbitrum\ndestination_tx_hash: 0xc18600064c7dbb9b2b5c689da88f2b5b89bf5e9f75d4ed0131380eb9dd5edf6d\ndestination_token: USDC 0xaf88d065e77c8cc2239327c5edb3a432268e5831\nDestination receipt has not been inspected."
+      },
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "arbitrum",
+          "tx_hash": "0xc18600064c7dbb9b2b5c689da88f2b5b89bf5e9f75d4ed0131380eb9dd5edf6d"
+        },
+        "result": "Observation unavailable: destination receipt read timed out. No destination transaction status, transfer logs or delivered amount could be obtained."
+      }
+    ]
   }
 ]

@@ -217,9 +217,9 @@ async def run(args, *, command_override=None, cases_override=None):
             "reasoning_effort": config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
             "boundary_model": config.LLM_GUARDRAIL_MODEL,
             "selected_case_ids": [case["id"] for case in cases],
-            "legacy_scenario_ids": [name for case in cases for name in [case["id"], *case.get("aliases", [])]],
+            "legacy_scenario_ids": [name for case in cases if case.get("legacy_suite") for name in [case["id"], *case.get("aliases", [])]],
             "total": len(cases),
-            "legacy_scenarios_covered": sum(1 + len(case.get("aliases", [])) for case in cases),
+            "legacy_scenarios_covered": sum(1 + len(case.get("aliases", [])) for case in cases if case.get("legacy_suite")),
             "complete": False, "cases": [],
         }
         write_report(output, report)

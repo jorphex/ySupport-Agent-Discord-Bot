@@ -84,6 +84,8 @@ evidence, including source hashes and scenario outcomes, is written to
 
 The 44 former specialist LLM scenarios map to 42 distinct native cases. Equivalent
 inputs share an evaluation while retaining their IDs and combined assertions.
+Additional ticket regressions cover confirmed bridge delivery and unavailable
+recipient-chain receipts without changing that original coverage map.
 The runner uses real ticket controllers, the outer classifier, native execution,
 and the production MCP tool schemas:
 
