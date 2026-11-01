@@ -81,6 +81,9 @@ Runtime boundaries:
   Broad searches use the cached catalog. Exact vault addresses get snapshot details;
   other searches can request `include_details=true`. APY sorts use `highest_apy` /
   `lowest_apy`, with the previous APR names retained as aliases.
+  Raw snapshot fields never inherit cached catalog measurements; missing values stay
+  null and incomplete snapshots are marked `partial`. Catalog age stays bound to
+  the generation used by the call, and yBOLD reports its input sources separately.
 
 Verification:
 

@@ -8,6 +8,7 @@ Discord/Telegram and data providers are fixtures; native models are real.
 import argparse
 import asyncio
 from contextlib import ExitStack
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -209,6 +210,7 @@ async def run(args, *, command_override=None, cases_override=None):
             "case_sha256": hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest(),
             "source_sha256": {name: hashlib.sha256((SOURCE_ROOT / name).read_bytes()).hexdigest() for name in (
                 "ysupport.py", "ticket_intake.py", "state.py", "support_boundary.py", "mcp_server.py", "bot_behavior.py", "codex_support_contract.py",
+                "support_dashboard_tools.py", "vault_search_tools.py", "kong_vaults.py",
                 "ysupport_codex_instructions.md", "ticket_investigation/codex_support_endpoint.py",
                 "ticket_investigation/internal_rpc.py", "chain_access.py", "onchain_tools.py", "vault_position_tools.py",
                 "tests/native_support_e2e.py", "tests/native_support_cases.json",
@@ -234,6 +236,7 @@ async def run(args, *, command_override=None, cases_override=None):
             **{name: (support_dashboard_tools, f"core_{name}") for name in (
                 "support_dashboard_discover", "support_dashboard_reports", "support_dashboard_status",
                 "support_dashboard_changes", "support_dashboard_styfi",
+                "support_dashboard_flex",
             )},
         }
 
@@ -244,12 +247,53 @@ async def run(args, *, command_override=None, cases_override=None):
                 query = json.dumps([positional, keywords]).lower()
                 matched = name in fixtures and (not terms or any(term.lower() in query for term in terms))
                 value = fixtures.get(name)
-                calls.append({"tool": name, "args": list(positional), "kwargs": keywords, "fixture_matched": matched})
+                record = {"tool": name, "args": list(positional), "kwargs": keywords, "fixture_matched": matched}
+                if name == "search_vaults" and matched:
+                    value = deepcopy(value)
+                    search = (positional[0] if positional else keywords["query"]).strip().lower()
+                    chain = positional[1] if len(positional) > 1 else keywords.get("chain")
+                    rows = [row for row in value["rows"] if (
+                        not chain or row["chain_id"] == config.CHAIN_NAME_TO_ID.get(chain.lower())
+                    ) and vault_search_tools._matches_query({
+                        "address": row["vault_address"], "name": row.get("name"),
+                        "symbol": row.get("symbol"), "asset": row.get("asset", {}),
+                    }, search)]
+                    sort = positional[2] if len(positional) > 2 else keywords.get("sort_by")
+                    field = "estimated_apy" if sort in {"highest_apy", "lowest_apy", "highest_apr", "lowest_apr"} else "tvl_usd"
+                    rows.sort(key=lambda row: (row.get(field) is None,
+                        (row.get(field) or 0) * (1 if sort in {"lowest_apy", "lowest_apr"} else -1)))
+                    offset, limit = keywords.get("offset", 0), keywords.get("limit", 5)
+                    value["rows"] = rows[offset:offset+limit]
+                    value["pagination"] = {"total": len(rows), "offset": offset, "limit": limit,
+                        "returned": len(value["rows"]), "next_offset": offset+limit if offset+limit < len(rows) else None}
+                    record["fixture_matched"] = bool(value["rows"])
+                    record["returned_vaults"] = [(row["chain_id"], row["vault_address"]) for row in value["rows"]]
+                calls.append(record)
                 if matched:
                     return value
                 error = "No matching evidence in this controlled evaluation fixture."
                 return {"error": error} if name == "search_vaults" else error
             return invoke
+
+        async def discover_data(path, params):
+            assert path == "/api/discover", f"Unexpected dashboard I/O: {path}"
+            payload = current["providers"].get("support_dashboard_discover")
+            terms = current.get("provider_query_terms", {}).get("support_dashboard_discover", [])
+            matched = isinstance(payload, dict) and (not terms or any(term.lower() in json.dumps(params).lower() for term in terms))
+            calls.append({"tool": "support_dashboard_discover", "args": [], "kwargs": params, "fixture_matched": matched})
+            payload = deepcopy(payload) if matched else {"rows": [], "filters": {}}
+            rows = [row for row in payload["rows"]
+                    if (params.get("chain_id") is None or row["chain_id"] == params["chain_id"])
+                    and (not params.get("token_symbol") or row["token_symbol"].lower() == params["token_symbol"].lower())
+                    and (params.get("min_tvl_usd") is None or row.get("tvl_usd") is not None and row["tvl_usd"] >= params["min_tvl_usd"])
+                    and (params.get("market", "all") == "all" or row["market"] == params["market"])]
+            field = {"tvl": "tvl_usd", "est_apy": "est_apy", "apy_30d": "realized_apy_30d", "momentum": "momentum_7d_30d"}[params.get("sort_by", "tvl")]
+            rows.sort(key=lambda row: (row.get(field) is None,
+                (row.get(field) or 0) * (1 if params.get("direction") == "asc" else -1)))
+            payload["rows"] = rows[:params.get("limit", 10)]
+            payload["filters"].update(params)
+            payload["pagination"] = {"limit": params.get("limit", 10), "total": len(rows)}
+            return payload
 
         def observation(operation, query, *, transport, nonce=None):
             matched = next((entry for entry in current.get("lookups", []) if entry["operation"] == operation
@@ -296,7 +340,9 @@ async def run(args, *, command_override=None, cases_override=None):
             return yearn_targets.ResolvedYearnAddressTarget(address=address, kind="eoa_or_missing_code" if is_wallet else "unknown", chain=chain_hint)
 
         for name, (module, attribute) in providers.items():
-            patches.enter_context(patch.object(module, attribute, new=provider(name)))
+            if name != "support_dashboard_discover":
+                patches.enter_context(patch.object(module, attribute, new=provider(name)))
+        patches.enter_context(patch.object(support_dashboard_tools, "_fetch_dashboard_json", new=discover_data))
         patches.enter_context(patch.object(ysupport, "_outer_support_boundary_result", new=boundary))
         patches.enter_context(patch.object(handoff, "_telegram_api_call", new=telegram))
         patches.enter_context(patch.object(yearn_targets, "resolve_yearn_address_target", new=resolve_target))
@@ -320,8 +366,10 @@ async def run(args, *, command_override=None, cases_override=None):
         port = sock.getsockname()[1]
         token = secrets.token_hex(24)
         server = mcp_server._build_mcp_server(host="127.0.0.1", port=port, api_key=token)
+        declared = {tool.name: tool for tool in await mcp_server.mcp.list_tools()}
+        assert set(declared) == set(providers), "Every production MCP tool needs controlled evaluation I/O"
         for name in providers:
-            server.add_tool(getattr(mcp_server, name))
+            server.add_tool(getattr(mcp_server, name), annotations=declared[name].annotations)
         app = server.streamable_http_app()
         app.add_route("/evidence/{nonce}/{operation}", lookup, methods=["GET"])
         http = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="on"))

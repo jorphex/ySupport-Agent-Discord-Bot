@@ -69,6 +69,9 @@ class Kong:
         self.catalog_status = 200
         self.wrong_identity = False
         self.omit_composition = False
+        self.partial_snapshot = False
+        self.snapshot_started = threading.Event()
+        self.snapshot_release = None
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -78,15 +81,29 @@ class Kong:
             def do_GET(self):
                 fixture.calls.append(self.path)
                 status = 200
-                if self.path == "/api/rest/list/vaults":
+                if self.path.startswith("/api/discover"):
+                    value = {"filters": {"universe": "core"}, "rows": [{
+                        "vault_address": RETIRED, "chain_id": 1, "symbol": "yvUSDC", "tvl_usd": 1000000,
+                        "est_apy": 0.042, "realized_apy_30d": None, "momentum_7d_30d": None,
+                        "market": "stablecoins", "token_symbol": "USDC",
+                        "yearn_url": "must-not-leak", "strategy_count": 999, "is_retired": False,
+                    }]}
+                elif self.path == "/api/rest/list/vaults":
                     value = fixture.catalog
                     status = fixture.catalog_status
                 elif self.path.startswith("/api/rest/snapshot/"):
+                    if fixture.snapshot_release is not None:
+                        fixture.snapshot_started.set()
+                        fixture.snapshot_release.wait(5)
                     _, chain, address = self.path.rsplit("/", 2)
                     value = next((deepcopy(v) for v in fixture.catalog
                                   if v["chainId"] == int(chain) and v["address"].lower() == address.lower()), None)
                     status = fixture.snapshot_status if value else 404
                     if value:
+                        value["meta"] = {key: value.pop(key) for key in (
+                            "kind", "isRetired", "isHidden", "migration",
+                        )}
+                        value.pop("strategiesCount", None)
                         value.update(name="Exact snapshot " + value["name"], blockTime="1793537183", blockNumber="26320011")
                         value["composition"] = [{"address": ASSET, "name": f"Strategy {i}", "status": "active",
                             "currentDebtUsd": None, "lastReport": None,
@@ -95,6 +112,8 @@ class Kong:
                             value["address"] = ASSET
                         if fixture.omit_composition:
                             value.pop("composition")
+                        if fixture.partial_snapshot:
+                            value = {key: value[key] for key in ("chainId", "address", "blockTime", "blockNumber")}
                 else:
                     value, status = {}, 404
                 body = json.dumps(value).encode()
@@ -134,10 +153,12 @@ async def run(report):
             import mcp_server
         import kong_vaults
         import vault_search_tools
+        import config
         import uvicorn
 
         logging.getLogger().setLevel(logging.ERROR)
         patches.enter_context(patch.object(kong_vaults, "KONG_BASE_URL", f"http://127.0.0.1:{fixture.server.server_port}"))
+        patches.enter_context(patch.object(config, "SUPPORT_DASHBOARD_BASE_URL", f"http://127.0.0.1:{fixture.server.server_port}"))
         kong_vaults._VAULT_CATALOG_CACHE.update(value=None, fetched_at=0.0)
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -209,6 +230,11 @@ async def run(report):
                     assert highest["rows"][0]["estimated_apy"] == 0.1772
                     assert next(r for r in highest["rows"] if r["vault_address"] == STAKED)["estimated_apy"] == 0.1772
                     assert highest["rows"][0]["apy_inputs"]["weekly_net_apy"] == 0.1772
+                    assert highest["rows"][0]["apy_inputs"]["data_source"] == "catalog"
+                    assert highest["rows"][0]["apy_inputs"]["catalog_retrieved_at"] == highest["source"]["retrieved_at"]
+                    staked = await call(query=STAKED)
+                    assert staked["rows"][0]["apy_inputs"]["data_source"] == "snapshot"
+                    assert staked["rows"][0]["apy_inputs"]["block_time"] == staked["rows"][0]["block_time"]
                     report["scenarios"]["apy_aliases_null_zero_projection_and_ybold_ranking"] = True
 
                     before = len(fixture.calls)
@@ -245,10 +271,48 @@ async def run(report):
                     fixture.wrong_identity = False
                     fixture.omit_composition = True
                     missing = await call(query=RETIRED)
-                    assert missing["rows"][0]["strategy_count"] == 17
+                    assert missing["rows"][0]["strategy_count"] is None
                     assert missing["rows"][0]["details"]["strategies"] is None
                     fixture.omit_composition = False
                     report["scenarios"]["details_only_fetch_current_page_and_fail_closed"] = True
+
+                    fixture.partial_snapshot = True
+                    partial = (await call(query=RETIRED))["rows"][0]
+                    assert partial["data_source"] == "snapshot" and partial["detail_status"] == "partial"
+                    assert partial["block_time"] == "1793537183"
+                    assert partial["tvl_usd"] is None and partial["estimated_apy"] is None
+                    assert partial["strategy_count"] is None
+                    assert partial["details"]["price_per_share_raw"] is None
+                    assert partial["details"]["fees"]["performance_fee_bps"] is None
+                    fixture.partial_snapshot = False
+                    report["scenarios"]["partial_snapshot_never_inherits_catalog_financials"] = True
+
+                    original_catalog = fixture.catalog
+                    fixture.snapshot_status = 503
+                    fixture.snapshot_release = threading.Event()
+                    fixture.snapshot_started.clear()
+                    kong_vaults._VAULT_CATALOG_CACHE.update(value=None, fetched_at=0.0)
+                    with patch.object(kong_vaults, "_CACHE_TTL_SECONDS", 0.02):
+                        waiting = asyncio.create_task(call(query=RETIRED))
+                        try:
+                            assert await asyncio.to_thread(fixture.snapshot_started.wait, 3)
+                            original_time = kong_vaults._VAULT_CATALOG_CACHE["retrieved_at"]
+                            await asyncio.sleep(0.05)
+                            fixture.catalog = deepcopy(fixture.catalog)
+                            next(v for v in fixture.catalog if v["address"] == RETIRED)["tvl"] = 5000
+                            fresh = await call(query="USDC", limit=1)
+                            assert fresh["source"]["retrieved_at"] != original_time
+                        finally:
+                            fixture.snapshot_release.set()
+                        previous = await waiting
+                        assert previous["rows"][0]["tvl_usd"] == 991
+                        assert previous["source"]["retrieved_at"] == original_time
+                        assert previous["source"]["cache_age_seconds"] >= 0.05
+                    fixture.snapshot_release = None
+                    fixture.snapshot_status = 200
+                    fixture.catalog = original_catalog
+                    kong_vaults._VAULT_CATALOG_CACHE.update(value=None, fetched_at=0.0)
+                    report["scenarios"]["catalog_generation_and_elapsed_age_survive_concurrent_refresh"] = True
 
                     for args in ({"query": "USDC", "chain": "mainnet"}, {"query": "USDC", "limit": 0},
                                  {"query": "USDC", "offset": -1}, {"query": "USDC", "sort_by": "random"}, {"query": ""}):
@@ -283,6 +347,15 @@ async def run(report):
                     failure = await session.call_tool("search_vaults", {"query": "USDC"})
                     assert failure.structuredContent.get("error") and "rows" not in failure.structuredContent
                     report["scenarios"]["catalog_failure_is_error_not_empty_success"] = True
+                    discover = await session.call_tool("support_dashboard_discover", {"token_symbol": "USDC"})
+                    text = "\n".join(c.text for c in discover.content if hasattr(c, "text"))
+                    projected = json.loads(text[text.index("{"):])
+                    assert set(projected["rows"][0]) == {
+                        "vault_address", "chain_id", "symbol", "tvl_usd", "est_apy",
+                        "realized_apy_30d", "momentum_7d_30d", "market", "token_symbol",
+                    }
+                    assert projected["rows"][0]["est_apy"] == 0.042
+                    report["scenarios"]["discovery_contract_excludes_unavailable_metadata"] = True
         finally:
             http.should_exit = True
             await task
@@ -300,7 +373,7 @@ async def main(args):
         raise
     finally:
         report["source_hashes"] = {n: hashlib.sha256((SOURCE_ROOT/n).read_bytes()).hexdigest() for n in (
-            "mcp_server.py", "vault_search_tools.py", "kong_vaults.py", "tests/vault_lookup_e2e.py",
+            "mcp_server.py", "vault_search_tools.py", "kong_vaults.py", "support_dashboard_tools.py", "tests/vault_lookup_e2e.py",
         )}
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')

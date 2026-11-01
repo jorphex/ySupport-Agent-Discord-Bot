@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+from time import monotonic
 from typing import Any, Literal, Optional
 
 from web3 import Web3
@@ -102,7 +103,7 @@ def _apy_fields(data, staked_ybold):
     return fields
 
 
-def _vault_row(data, *, detailed, detail_status, staked_ybold):
+def _vault_row(data, *, detailed, detail_status, staked_ybold, apy_input_source):
     meta = _metadata(data)
     performance = data.get("performance") or {}
     historical = performance.get("historical") or {}
@@ -131,6 +132,8 @@ def _vault_row(data, *, detailed, detail_status, staked_ybold):
         "data_source": "snapshot" if detailed else "catalog",
         "block_time": data.get("blockTime"), "block_number": data.get("blockNumber"),
     }
+    if "apy_inputs" in row:
+        row["apy_inputs"].update(apy_input_source)
     if detailed:
         fees = data.get("fees") or {}
         row["details"] = {
@@ -201,6 +204,8 @@ async def core_search_vaults(
     if chain and chain_id is None:
         raise ValueError(f"Unsupported chain: '{chain}'.")
     catalog = await fetch_kong_vault_catalog()
+    catalog_source = kong_vaults.vault_catalog_freshness()
+    source_captured_at = monotonic()
     matches = [v for v in catalog if (chain_id is None or v.get("chainId") == chain_id)
                and _matches_query(v, query) and (not recommended_only or _is_recommendable_vault(v))]
     companion = _staked_ybold(catalog)
@@ -227,18 +232,33 @@ async def core_search_vaults(
             valid[(target_chain, address)] = snapshot
         else:
             logging.warning("Kong details unavailable or mismatched for %s/%s", target_chain, address)
-    companion = _staked_ybold(list(valid.values())) or companion
+    snapshot_companion = _staked_ybold(list(valid.values()))
+    companion = snapshot_companion or companion
+    apy_input_source = {
+        "data_source": "snapshot" if snapshot_companion is not None else "catalog",
+        "block_time": companion.get("blockTime") if companion else None,
+        "catalog_retrieved_at": None if snapshot_companion is not None else catalog_source["retrieved_at"],
+    }
     rows = []
     for vault in page:
         target = (int(vault["chainId"]), str(vault["address"]))
         snapshot = valid.get(target)
         status = "available" if snapshot is not None else "unavailable" if target in enriched else "not_requested"
-        data = {**vault, **snapshot} if snapshot is not None else vault
-        rows.append(_vault_row(data, detailed=snapshot is not None, detail_status=status, staked_ybold=companion))
+        if snapshot is not None and any(snapshot.get(key) is None for key in (
+            "performance", "tvl", "fees", "pricePerShare", "composition",
+        )):
+            status = "partial"
+        data = snapshot if snapshot is not None else vault
+        rows.append(_vault_row(data, detailed=snapshot is not None, detail_status=status,
+                               staked_ybold=companion, apy_input_source=apy_input_source))
     next_offset = offset + len(rows) if offset + len(rows) < len(matches) else None
+    if catalog_source["cache_age_seconds"] is not None:
+        catalog_source["cache_age_seconds"] = round(
+            catalog_source["cache_age_seconds"] + monotonic() - source_captured_at, 3,
+        )
     return {
         "source": {"provider": "kong", "catalog_url": kong_vaults.KONG_BASE_URL + "/api/rest/list/vaults",
-                   **kong_vaults.vault_catalog_freshness()},
+                   **catalog_source},
         "filters": {"query": query, "chain_id": chain_id, "sort_by": sort_by, "recommended_only": recommended_only},
         "units": {"apy": "decimal_fraction", "tvl_usd": "USD", "fees": "basis_points", "raw_amounts": "base_units"},
         "sort_source": "cached_catalog; detail snapshots may be newer; missing metrics sort last among active peers",

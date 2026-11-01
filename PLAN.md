@@ -1,60 +1,69 @@
-# Compact vault lookup and explicit tool routing
+# Vault provenance and evaluation repair
 
-Goal: keep Kong vault lookup distinct from dashboard yield browsing, reduce lookup
-payloads and provider calls, and make all matched vaults reachable through paging.
+Goal: fix the three reviewed gaps without mixing catalog/snapshot observations or
+claiming native coverage from fields the real discovery tool never returns.
 
 Acceptance and constraints:
-- Put the same conditional routing rule in both MCP descriptions: prefer dashboard
-  discovery for browsing/comparing current yields; use Kong for identification,
-  exact details and records outside dashboard analytics coverage. Manage tools here;
-  the other server's skill is external and will receive a suggested sentence only.
-- Return real structured MCP rows with numeric USD/APY values, numeric chain IDs,
-  units, metric provenance, source timestamps and explicit total/offset/next-page data.
-- Broad searches use the cached catalog without per-vault snapshots or strategies.
-  Exact vault addresses and explicit details keep useful lifecycle, migration,
-  staking, fees, PPS and strategy evidence; underlying-address searches remain broad.
-- Add highest_apy/lowest_apy and retain the existing APR argument aliases. Preserve
-  projection-before-oracle precedence, genuine zero and the official-address yBOLD
-  display rule, including companion reuse and truthful base-only fallback.
-- Preserve eleven tools and existing argument positions, active-first ordering,
-  exact hidden/retired lookup and internal recommendation filters. No new dependency,
-  ingestion, RPC access, skill file or bot-policy change. No live test messages.
+- A matched snapshot uses its own observations. Missing metrics, fees, PPS or
+  composition remain unknown; cached financial fields never acquire a snapshot
+  timestamp. Partial snapshots preserve their available evidence explicitly.
+- Bind catalog retrieval time to the actual catalog generation used by the call.
+  Include elapsed detail-fetch time in its reported age, even across a concurrent
+  cache refresh. Keep the existing cache policy and provider-call bounds.
+- Native discovery cases exercise the real response projection over controlled raw
+  data. They receive the same fields as production and make genuine metadata/link
+  lookups when needed; no fabricated strategy/lifecycle/link evidence is injected.
+- Preserve paging, APY aliases, yBOLD display behavior, eleven tools and data-only
+  MCP access. No dependency, external skill, bot-policy or RPC changes.
+- No live test messages. Deploy MCP only after checks; keep the bot running.
 
 Failure modes recorded before implementation:
-- Broad lookup still makes snapshot requests or emits strategy cards; full catalog
-  matches are claimed but unreachable, unstable ties skip rows, or filters change.
-- Exact vault/chain gets confused with an underlying match; snapshot failure or
-  wrong identity silently supplies another vault's details or looks current.
-- Null/malformed/non-finite metrics become zero; APY becomes APR, percent scaling
-  changes, yBOLD provenance/ranking breaks, or missing APY sorts as genuine zero.
-- Source retrieval time is mistaken for metric time, or cached catalog ordering is
-  confused with newer detail snapshots. Raw amounts lose precision.
-- Actual structured MCP output breaks fixture callers, legacy tool arguments,
-  native routing, recommendations, or exact retired-vault navigation.
+- An identity/block-only or otherwise partial HTTP 200 snapshot inherits catalog
+  APY/TVL/fees/PPS and is presented as complete/newer snapshot evidence.
+- During a delayed detail read, another request refreshes the catalog and supplies
+  its timestamp for older returned rows; capturing age early also hides elapsed time.
+- Native tests still return impossible discovery fields or bypass the actual
+  projection, omit real tools from the controlled catalog, or ignore filters so
+  unrelated rows satisfy the evaluation.
+- Correct real discovery responses cannot support required URLs, lifecycle or
+  strategy counts without a lookup; tests must verify those reads rather than
+  weakening the expected answer or adding invented provider fields.
 
-- [x] Write HTTP/MCP E2E coverage and migrate obsolete prose fixtures before code.
-- [x] Implement compact pageable lookup, selective details and explicit descriptions.
-- [x] Verify E2E, relevant existing checks and native interpretation/routing; review.
-- [x] Build and verify the hardened MCP candidate and prepare the release procedure.
+- [x] Add HTTP/MCP regression cases and migrate raw native fixtures before code.
+- [x] Separate snapshot data, bind catalog provenance and run the real projection.
+- [x] Run relevant E2E/native/existing checks; review and resolve concrete findings.
+- [x] Verify the hardened candidate and prepare the MCP-only release procedure.
 
-Verified: eight vault HTTP/MCP scenarios, nine Flex scenarios, four real native
-cases, sixteen existing fault probes and 294 existing tests pass. The retired
-prose tests are covered by the provider/MCP scenarios. Review preserved unknown
-strategy composition as null rather than zero and made the yield-question fixture
-explicit rather than requiring an unsolicited APY quote. The live candidate matches
-every runtime source file, retains eleven tools and rejects unauthenticated calls.
-Default USDC text shrank from 11,613 to 6,245 characters, with 209 total matches
-reachable by page. Evidence is in `.cache/verification/vault-lookup-review.json`.
+Snapshot rows now use the snapshot alone and mark missing main fields as partial;
+raw measurements remain null rather than borrowing catalog values. yBOLD retains
+its display rule with separate input-source/time metadata. Catalog provenance is
+captured before detail I/O and its age includes the elapsed time. Native discovery
+runs the real projection over raw fixtures, with scoped filters, an exact eleven-tool
+catalog and real follow-up metadata reads. Controlled lookup fixtures also honor
+identity/chain/paging instead of returning unrelated rows for every query.
 
-Release procedure: commit the reviewed change, retain the current MCP image for
-rollback, activate the verified candidate with existing Compose settings, and verify
-live paging/details/aliases plus legacy reads. Keep the bot running: its policy and
-runtime code are unchanged. Record health, commit/image, live responses and the
-before/after payload measurement in the deployment artifact below. Remove temporary
-candidate resources and evaluation output after preserving the evidence.
+Verified: all eleven HTTP/MCP scenarios pass both on the host and inside the final
+Docker image. Four native cases pass with real projection and matching metadata
+lookups. All 294 existing tests, sixteen fault probes and nine Flex scenarios pass.
+Candidate live reads verify normal lookups plus separate yBOLD input provenance;
+auth and legacy reads pass. Ruff/diff/Compose checks pass and all candidate runtime
+sources match the checkout. Review evidence: `.cache/verification/vault-provenance-review.json`.
 
-Verification evidence: `.cache/verification/vault-lookup-e2e.json`, native replay
-artifacts and `.cache/verification/vault-lookup-deployment.json`.
+Release procedure: commit the reviewed fix, retain the previous image for rollback,
+activate only the verified MCP image, and verify live lookup, source age, pagination,
+aliases and legacy reads. Leave the bot running and preserve canonical auth and
+state. Record results in the deployment artifact below, then remove temporary
+evaluation/container resources after retaining their evidence.
+
+Evidence: `.cache/verification/vault-provenance-e2e.json`, native/evaluation
+artifacts and `.cache/verification/vault-provenance-deployment.json`.
+
+## Completed compact lookup
+
+Commit `0f0f3f5` is the deployed baseline. Paging, selective details, APY aliases
+and structured output remain in scope. Its deployment evidence is
+`.cache/verification/vault-lookup-deployment.json`; the subsequent provenance and
+fixture findings are tracked above rather than treated as resolved by that run.
 
 ## Completed Flex integration
 

@@ -154,7 +154,10 @@ async def search_vaults(
     APYs are decimal fractions, distinct from APR. Estimated and realized metrics
     have separate fields; yBOLD includes its display inputs. Retrieval/cache time
     is not metric time: inspect block_time where available. Ranking uses the catalog;
-    detail snapshots can be newer. Null metrics and unavailable details are unresolved.
+    detail snapshots can be newer. Raw snapshot fields never inherit catalog values;
+    absent fields stay null and incomplete snapshots have detail_status=partial.
+    yBOLD's derived display APY reports its input sources separately. Catalog age belongs to the generation
+    used by this call. Null metrics and unavailable details are unresolved.
     """
     chain_arg = chain if chain else None
     sort_arg = sort_by if sort_by else None
@@ -369,6 +372,8 @@ async def support_dashboard_discover(
     for exact identity/details or a known vault missing from this filtered analytics
     universe; absence here does not establish that a vault does not exist. Keep
     dashboard estimated/realized yields distinct from Kong metrics and source times.
+    Rows contain analytics rather than UI links, strategy counts or lifecycle flags.
+    Resolve selected vaults with search_vaults when those details are needed.
 
     Use the core universe for user-facing context. Extended is for explicitly requested
     smaller vaults. Raw can help attempt to locate a known vault but is not authoritative
