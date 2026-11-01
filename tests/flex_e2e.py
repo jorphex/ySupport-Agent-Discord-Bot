@@ -473,7 +473,10 @@ async def run(args, report):
                     (vault_search_tools, "core_search_vaults"),
                     *[(support_dashboard_tools, "core_" + name) for name in OLD_TOOLS if name.startswith("support_dashboard_")],
                 ]:
-                    patches.enter_context(patch.object(module, name, new=AsyncMock(return_value="No matching observation in this controlled fixture.")))
+                    absent = "No matching observation in this controlled fixture."
+                    patches.enter_context(patch.object(module, name, new=AsyncMock(
+                        return_value={"error": absent} if name == "core_search_vaults" else absent,
+                    )))
                 rpc_probes = []
                 for module, name in ((onchain_tools, "core_inspect_onchain"),
                                      (vault_position_tools, "core_check_all_deposits"),

@@ -2,7 +2,7 @@
 import hmac
 import logging
 import os
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
@@ -112,6 +112,7 @@ async def search_vaults(
     query: Annotated[
         str,
         Field(
+            min_length=1, max_length=256,
             description=(
                 "Token symbol, vault name fragment, or vault/underlying address. "
                 "Examples: 'USDC', 'staked eth', '0x...'"
@@ -129,33 +130,42 @@ async def search_vaults(
         ),
     ] = "",
     sort_by: Annotated[
-        str,
+        vault_search_tools.VaultSort,
         Field(
             default="",
-            description="Optional sorting: 'highest_apr', 'lowest_apr', or leave blank for TVL (default).",
+            description="Sort by highest_apy, lowest_apy, or tvl (default). highest_apr/lowest_apr remain compatibility aliases for APY sorting.",
         ),
     ] = "",
-) -> str:
+    limit: Annotated[int, Field(default=5, ge=1, le=25, description="Vaults per page; defaults to 5.")] = 5,
+    offset: Annotated[int, Field(default=0, ge=0, description="Use next_offset from pagination; repeat the same query, chain and sort. Catalog updates can change page order.")] = 0,
+    include_details: Annotated[bool, Field(default=False, description="Fetch snapshots and strategy details for this page. Exact vault-address matches get details automatically; token and underlying-address searches stay compact by default.")] = False,
+) -> dict[str, Any]:
     """
-    Search for Yearn vaults using Kong's current vault data.
+    Resolve Yearn vault identity and exact details using Kong's canonical catalog.
 
-    Args:
-        query: Token symbol, vault name fragment, or vault/underlying address.
-            Examples: "USDC", "staked eth", "0x..."
-        chain: Optional chain filter. Supported: ethereum, base, arbitrum, optimism, polygon, sonic, katana.
-        sort_by: Optional sorting. Use "highest_apr", "lowest_apr", or omit for TVL (default).
+    Prefer support_dashboard_discover for browsing or comparing current vault yields.
+    Use search_vaults for names/addresses, exact contract details, and hidden/retired
+    or other known vaults outside dashboard analytics coverage. A missing dashboard
+    row does not establish that a vault does not exist.
 
-    Returns:
-        Detailed info including address, version, strategy details, TVL, and APY.
+    Returns structured numeric rows and pagination; follow next_offset with the same
+    filters. Broad lookups use a five-minute cached catalog without snapshot calls.
+    Details are automatic for exact vault addresses or explicit via include_details.
+    APYs are decimal fractions, distinct from APR. Estimated and realized metrics
+    have separate fields; yBOLD includes its display inputs. Retrieval/cache time
+    is not metric time: inspect block_time where available. Ranking uses the catalog;
+    detail snapshots can be newer. Null metrics and unavailable details are unresolved.
     """
     chain_arg = chain if chain else None
     sort_arg = sort_by if sort_by else None
     
     try:
-        return await vault_search_tools.core_search_vaults(query, chain_arg, sort_arg)
+        return await vault_search_tools.core_search_vaults(
+            query, chain_arg, sort_arg, limit=limit, offset=offset, include_details=include_details,
+        )
     except Exception as e:
         logging.error(f"Error in search_vaults: {e}")
-        return f"Error searching vaults: {str(e)}"
+        return {"error": f"Error searching vaults: {e}"}
 
 
 @mcp.tool()
@@ -354,6 +364,11 @@ async def support_dashboard_discover(
     - browsing vaults by chain or market
     - showing the most relevant Yearn vaults in a market such as stablecoins or ETH
     - quickly grounding a support answer with current dashboard-visible vault metadata
+
+    Prefer this tool when browsing/comparing current vault yields. Use search_vaults
+    for exact identity/details or a known vault missing from this filtered analytics
+    universe; absence here does not establish that a vault does not exist. Keep
+    dashboard estimated/realized yields distinct from Kong metrics and source times.
 
     Use the core universe for user-facing context. Extended is for explicitly requested
     smaller vaults. Raw can help attempt to locate a known vault but is not authoritative

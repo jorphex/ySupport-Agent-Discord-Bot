@@ -244,10 +244,11 @@ async def run(args, *, command_override=None, cases_override=None):
                 query = json.dumps([positional, keywords]).lower()
                 matched = name in fixtures and (not terms or any(term.lower() in query for term in terms))
                 value = fixtures.get(name)
-                if name in {"support_dashboard_discover", "support_dashboard_reports"} and "search_vaults" in fixtures:
-                    value, matched = fixtures["search_vaults"], True
                 calls.append({"tool": name, "args": list(positional), "kwargs": keywords, "fixture_matched": matched})
-                return value if matched else "No matching evidence in this controlled evaluation fixture."
+                if matched:
+                    return value
+                error = "No matching evidence in this controlled evaluation fixture."
+                return {"error": error} if name == "search_vaults" else error
             return invoke
 
         def observation(operation, query, *, transport, nonce=None):

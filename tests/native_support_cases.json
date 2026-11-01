@@ -471,7 +471,69 @@
       }
     ],
     "providers": {
-      "search_vaults": "Found 3 Yearn vault(s) matching 'all'. Showing top 3 (sorted by TVL (Descending)) with details:\n\n---\n\nVault: Yearn USDC (yvUSDC)\nAddress: 0x1111111111111111111111111111111111111111\nYearn UI Link: https://yearn.fi/vaults/1/0x1111111111111111111111111111111111111111\nCurrent Estimated Net APY: 4.20%\nTVL (USD): $1000000.00\nRisk Level: 1\n\n---\n\nVault: Yearn DAI (yvDAI)\nAddress: 0x2222222222222222222222222222222222222222\nYearn UI Link: https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222\nCurrent Estimated Net APY: 3.80%\nTVL (USD): $850000.00\nRisk Level: 1\n\n---\n\nVault: Yearn WETH (yvWETH)\nAddress: 0x3333333333333333333333333333333333333333\nYearn UI Link: https://yearn.fi/vaults/1/0x3333333333333333333333333333333333333333\nCurrent Estimated Net APY: 2.10%\nTVL (USD): $780000.00\nRisk Level: 2\n"
+      "search_vaults": {
+        "source": {
+          "provider": "controlled_kong_fixture"
+        },
+        "units": {
+          "apy": "decimal_fraction"
+        },
+        "pagination": {
+          "offset": 0,
+          "limit": 5,
+          "total": 3,
+          "returned": 3,
+          "next_offset": null
+        },
+        "rows": [
+          {
+            "vault_address": "0x1111111111111111111111111111111111111111",
+            "chain_id": 1,
+            "name": "Yearn USDC",
+            "symbol": "yvUSDC",
+            "yearn_url": "https://yearn.fi/vaults/1/0x1111111111111111111111111111111111111111",
+            "estimated_apy": 0.042,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": 1000000.0,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          },
+          {
+            "vault_address": "0x2222222222222222222222222222222222222222",
+            "chain_id": 1,
+            "name": "Yearn DAI",
+            "symbol": "yvDAI",
+            "yearn_url": "https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222",
+            "estimated_apy": 0.038,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": 850000.0,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          },
+          {
+            "vault_address": "0x3333333333333333333333333333333333333333",
+            "chain_id": 1,
+            "name": "Yearn WETH",
+            "symbol": "yvWETH",
+            "yearn_url": "https://yearn.fi/vaults/1/0x3333333333333333333333333333333333333333",
+            "estimated_apy": 0.021,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": 780000.0,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          }
+        ]
+      },
+      "support_dashboard_discover": "{\n  \"source\": \"controlled_yhelper_fixture\",\n  \"filters\": {\n    \"universe\": \"core\"\n  },\n  \"rows\": [\n    {\n      \"vault_address\": \"0x1111111111111111111111111111111111111111\",\n      \"chain_id\": 1,\n      \"name\": \"Yearn USDC\",\n      \"symbol\": \"yvUSDC\",\n      \"yearn_url\": \"https://yearn.fi/vaults/1/0x1111111111111111111111111111111111111111\",\n      \"estimated_apy\": 0.042,\n      \"estimated_apy_source\": \"controlled_kong_fixture\",\n      \"tvl_usd\": 1000000.0,\n      \"is_retired\": false,\n      \"is_hidden\": false,\n      \"kind\": \"Multi Strategy\",\n      \"strategy_count\": 3,\n      \"detail_status\": \"not_requested\",\n      \"est_apy\": 0.042\n    },\n    {\n      \"vault_address\": \"0x2222222222222222222222222222222222222222\",\n      \"chain_id\": 1,\n      \"name\": \"Yearn DAI\",\n      \"symbol\": \"yvDAI\",\n      \"yearn_url\": \"https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222\",\n      \"estimated_apy\": 0.038,\n      \"estimated_apy_source\": \"controlled_kong_fixture\",\n      \"tvl_usd\": 850000.0,\n      \"is_retired\": false,\n      \"is_hidden\": false,\n      \"kind\": \"Multi Strategy\",\n      \"strategy_count\": 3,\n      \"detail_status\": \"not_requested\",\n      \"est_apy\": 0.038\n    },\n    {\n      \"vault_address\": \"0x3333333333333333333333333333333333333333\",\n      \"chain_id\": 1,\n      \"name\": \"Yearn WETH\",\n      \"symbol\": \"yvWETH\",\n      \"yearn_url\": \"https://yearn.fi/vaults/1/0x3333333333333333333333333333333333333333\",\n      \"estimated_apy\": 0.021,\n      \"estimated_apy_source\": \"controlled_kong_fixture\",\n      \"tvl_usd\": 780000.0,\n      \"is_retired\": false,\n      \"is_hidden\": false,\n      \"kind\": \"Multi Strategy\",\n      \"strategy_count\": 3,\n      \"detail_status\": \"not_requested\",\n      \"est_apy\": 0.021\n    }\n  ]\n}"
     },
     "checks": {
       "all": [
@@ -481,19 +543,15 @@
         "no one can decide for you",
         "docs do not specify a single best"
       ],
-      "tools_any": [
-        [
-          "search_vaults",
-          "support_dashboard_reports",
-          "support_dashboard_discover"
-        ]
-      ],
       "any": [
         [
           "yvusdc",
           "yearn usdc",
           "0x1111111111111111111111111111111111111111"
         ]
+      ],
+      "tools": [
+        "support_dashboard_discover"
       ]
     },
     "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired."
@@ -507,18 +565,58 @@
       }
     ],
     "providers": {
-      "search_vaults": "Found 2 Yearn vault(s) matching 'all'. Showing top 2 (sorted by recommendation quality) with details:\n\n---\n\nVault: Yearn USDC (yvUSDC)\nAddress: 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nYearn UI Link: https://yearn.fi/vaults/1/0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nKind: Multi Strategy\nCurrent Estimated Net APY: 4.20%\nTVL (USD): $1000000.00\nStatus Flags: Retired=False, Hidden=False, Highlighted=True\nRisk Level: 1\nStrategies (3):\n  1. Name: Strat One (`0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01`)\n\n---\n\nVault: Yearn DAI (yvDAI)\nAddress: 0xcccccccccccccccccccccccccccccccccccccccc\nYearn UI Link: https://yearn.fi/vaults/1/0xcccccccccccccccccccccccccccccccccccccccc\nKind: Multi Strategy\nCurrent Estimated Net APY: 3.80%\nTVL (USD): $850000.00\nStatus Flags: Retired=False, Hidden=False, Highlighted=True\nRisk Level: 1\nStrategies (2):\n  1. Name: Strat One (`0xcccccccccccccccccccccccccccccccccccccc01`)\n"
+      "search_vaults": {
+        "source": {
+          "provider": "controlled_kong_fixture"
+        },
+        "units": {
+          "apy": "decimal_fraction"
+        },
+        "pagination": {
+          "offset": 0,
+          "limit": 5,
+          "total": 2,
+          "returned": 2,
+          "next_offset": null
+        },
+        "rows": [
+          {
+            "vault_address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "chain_id": 1,
+            "name": "Yearn USDC",
+            "symbol": "yvUSDC",
+            "yearn_url": "https://yearn.fi/vaults/1/0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "estimated_apy": 0.042,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": 1000000.0,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          },
+          {
+            "vault_address": "0xcccccccccccccccccccccccccccccccccccccccc",
+            "chain_id": 1,
+            "name": "Yearn DAI",
+            "symbol": "yvDAI",
+            "yearn_url": "https://yearn.fi/vaults/1/0xcccccccccccccccccccccccccccccccccccccccc",
+            "estimated_apy": 0.038,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": 850000.0,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          }
+        ]
+      },
+      "support_dashboard_discover": "{\n  \"source\": \"controlled_yhelper_fixture\",\n  \"filters\": {\n    \"universe\": \"core\"\n  },\n  \"rows\": [\n    {\n      \"vault_address\": \"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"chain_id\": 1,\n      \"name\": \"Yearn USDC\",\n      \"symbol\": \"yvUSDC\",\n      \"yearn_url\": \"https://yearn.fi/vaults/1/0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"estimated_apy\": 0.042,\n      \"estimated_apy_source\": \"controlled_kong_fixture\",\n      \"tvl_usd\": 1000000.0,\n      \"is_retired\": false,\n      \"is_hidden\": false,\n      \"kind\": \"Multi Strategy\",\n      \"strategy_count\": 3,\n      \"detail_status\": \"not_requested\",\n      \"est_apy\": 0.042\n    },\n    {\n      \"vault_address\": \"0xcccccccccccccccccccccccccccccccccccccccc\",\n      \"chain_id\": 1,\n      \"name\": \"Yearn DAI\",\n      \"symbol\": \"yvDAI\",\n      \"yearn_url\": \"https://yearn.fi/vaults/1/0xcccccccccccccccccccccccccccccccccccccccc\",\n      \"estimated_apy\": 0.038,\n      \"estimated_apy_source\": \"controlled_kong_fixture\",\n      \"tvl_usd\": 850000.0,\n      \"is_retired\": false,\n      \"is_hidden\": false,\n      \"kind\": \"Multi Strategy\",\n      \"strategy_count\": 3,\n      \"detail_status\": \"not_requested\",\n      \"est_apy\": 0.038\n    }\n  ]\n}"
     },
     "checks": {
       "none": [
         "ysusdc"
-      ],
-      "tools_any": [
-        [
-          "search_vaults",
-          "support_dashboard_reports",
-          "support_dashboard_discover"
-        ]
       ],
       "any": [
         [
@@ -531,6 +629,9 @@
           "yearn dai",
           "0xcccccccccccccccccccccccccccccccccccccccc"
         ]
+      ],
+      "tools": [
+        "support_dashboard_discover"
       ]
     },
     "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired. Product display names, symbols and exact addresses identify the same returned multi-strategy choices."
@@ -1139,7 +1240,38 @@
       }
     ],
     "providers": {
-      "search_vaults": "Vault: USDC.e-2\nAddress: 0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B\nYearn UI Link: https://legacy.yearn.fi/v3/42161/0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B\n"
+      "search_vaults": {
+        "source": {
+          "provider": "controlled_kong_fixture"
+        },
+        "units": {
+          "apy": "decimal_fraction"
+        },
+        "pagination": {
+          "offset": 0,
+          "limit": 5,
+          "total": 1,
+          "returned": 1,
+          "next_offset": null
+        },
+        "rows": [
+          {
+            "vault_address": "0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B",
+            "chain_id": 42161,
+            "name": "USDC.e-2",
+            "symbol": "USDC.e-2",
+            "yearn_url": "https://legacy.yearn.fi/v3/42161/0x9FA306b1F4a6a83FEC98d8eBbaBEDfF78C407f6B",
+            "estimated_apy": null,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": null,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          }
+        ]
+      }
     },
     "checks": {
       "all": [
@@ -1440,19 +1572,54 @@
     "legacy_suite": "test_llm_ticket_flow_e2e",
     "turns": [
       {
-        "message": "usdc",
+        "message": "What is the current estimated APY for the USDC vault?",
         "initial_button_intent": "data_deposits_withdrawals_start"
       }
     ],
     "providers": {
-      "search_vaults": "Vault: Yearn USDC (yvUSDC)\nAddress: 0x2222222222222222222222222222222222222222\nCurrent Estimated Net APY: 4.20%"
+      "search_vaults": {
+        "source": {
+          "provider": "controlled_kong_fixture"
+        },
+        "units": {
+          "apy": "decimal_fraction"
+        },
+        "pagination": {
+          "offset": 0,
+          "limit": 5,
+          "total": 1,
+          "returned": 1,
+          "next_offset": null
+        },
+        "rows": [
+          {
+            "vault_address": "0x2222222222222222222222222222222222222222",
+            "chain_id": 1,
+            "name": "Yearn USDC",
+            "symbol": "yvUSDC",
+            "yearn_url": "https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222",
+            "estimated_apy": 0.042,
+            "estimated_apy_source": "controlled_kong_fixture",
+            "tvl_usd": null,
+            "is_retired": false,
+            "is_hidden": false,
+            "kind": "Multi Strategy",
+            "strategy_count": 3,
+            "detail_status": "not_requested"
+          }
+        ]
+      },
+      "support_dashboard_discover": "{\n  \"source\": \"controlled_yhelper_fixture\",\n  \"filters\": {\n    \"universe\": \"core\"\n  },\n  \"rows\": [\n    {\n      \"vault_address\": \"0x2222222222222222222222222222222222222222\",\n      \"chain_id\": 1,\n      \"name\": \"Yearn USDC\",\n      \"symbol\": \"yvUSDC\",\n      \"yearn_url\": \"https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222\",\n      \"estimated_apy\": 0.042,\n      \"estimated_apy_source\": \"controlled_kong_fixture\",\n      \"tvl_usd\": null,\n      \"is_retired\": false,\n      \"is_hidden\": false,\n      \"kind\": \"Multi Strategy\",\n      \"strategy_count\": 3,\n      \"detail_status\": \"not_requested\",\n      \"est_apy\": 0.042\n    }\n  ]\n}"
     },
     "checks": {
       "all": [
         "4.20%"
       ],
-      "tools": [
-        "search_vaults"
+      "tools_any": [
+        [
+          "search_vaults",
+          "support_dashboard_discover"
+        ]
       ]
     },
     "coverage_note": "Checks user-facing outcome on native execution; legacy lane names and SDK-only call order retired.",

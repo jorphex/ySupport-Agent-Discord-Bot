@@ -74,6 +74,13 @@ Runtime boundaries:
   activity and performance. It preserves source freshness, units and partial coverage,
   and bounds returned lists with explicit truncation. Trove health is market-wide;
   historical wallet-filtered performance does not establish current individual LTV.
+- Prefer `support_dashboard_discover` for browsing/comparing current vault yields;
+  use `search_vaults` for identification, exact details or known vaults outside
+  dashboard analytics coverage. Search returns structured numeric rows and
+  `pagination.next_offset`; repeat the same query/chain/sort for the next page.
+  Broad searches use the cached catalog. Exact vault addresses get snapshot details;
+  other searches can request `include_details=true`. APY sorts use `highest_apy` /
+  `lowest_apy`, with the previous APR names retained as aliases.
 
 Verification:
 
@@ -141,14 +148,18 @@ OpenAI Agents remains a runtime dependency for the live outer classifier.
 
 ```sh
 .venv/bin/python -B -m tests.flex_e2e
+.venv/bin/python -B -m tests.vault_lookup_e2e
 ```
 
-This exercises the real authenticated MCP surface and dashboard HTTP client against
+The Flex runner exercises the real authenticated MCP surface and dashboard HTTP client against
 controlled yHelper responses, including identifiers, argument validation, errors,
 freshness, units, pagination and partial/truncated results. Evidence is written to
-`.cache/verification/flex-e2e.json`. Add `--native` as the unprivileged service user
+`.cache/verification/flex-e2e.json`. Add `--native` to `tests.flex_e2e` as the unprivileged service user
 with explicit bot auth and `RUN_NATIVE_SUPPORT_E2E=1` to verify real-model tool
 selection and answer interpretation. No live messages or RPC providers are used.
+The vault lookup E2E also checks paging, catalog-only broad queries, exact details,
+fallbacks, numeric units and yBOLD APY provenance through authenticated MCP HTTP.
+Its evidence is `.cache/verification/vault-lookup-e2e.json`.
 
 Host-native service mode
 

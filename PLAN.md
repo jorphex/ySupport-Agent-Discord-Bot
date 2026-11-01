@@ -1,122 +1,66 @@
-# Flex lending data integration
+# Compact vault lookup and explicit tool routing
 
-Goal: expose yHelper's existing Ethereum Flex lending data to native investigations
-through one MCP read tool, without adding providers, ingestion or RPC exposure.
+Goal: keep Kong vault lookup distinct from dashboard yield browsing, reduce lookup
+payloads and provider calls, and make all matched vaults reachable through paging.
 
 Acceptance and constraints:
-- Support protocol overview, market discovery/detail, redemption priority,
-  aggregate trove health, history, activity and optional wallet-filtered performance.
-- Use the existing dashboard HTTP client and a fixed view-to-route mapping; validate
-  view-specific identifiers/arguments before I/O. Bound lists and retain truncation,
-  cursors, freshness, source blocks, decimals and performance coverage.
-- Preserve null/unknown values. Rates/LTV are decimal ratios; USD values are estimates.
-  Lower-rate debt is not a guaranteed redemption outcome; aggregate trove health
-  and historical PnL do not establish an individual wallet's current LTV or safety.
-- Preserve the ten existing tools. Keep provider credentials/RPC internal. No new
-  model, dependency, automatic routing rule or live test message.
-- Write controlled HTTP/MCP E2E coverage before implementation; verify native tool
-  selection and answer interpretation, live yHelper reads, and an isolated image.
+- Put the same conditional routing rule in both MCP descriptions: prefer dashboard
+  discovery for browsing/comparing current yields; use Kong for identification,
+  exact details and records outside dashboard analytics coverage. Manage tools here;
+  the other server's skill is external and will receive a suggested sentence only.
+- Return real structured MCP rows with numeric USD/APY values, numeric chain IDs,
+  units, metric provenance, source timestamps and explicit total/offset/next-page data.
+- Broad searches use the cached catalog without per-vault snapshots or strategies.
+  Exact vault addresses and explicit details keep useful lifecycle, migration,
+  staking, fees, PPS and strategy evidence; underlying-address searches remain broad.
+- Add highest_apy/lowest_apy and retain the existing APR argument aliases. Preserve
+  projection-before-oracle precedence, genuine zero and the official-address yBOLD
+  display rule, including companion reuse and truthful base-only fallback.
+- Preserve eleven tools and existing argument positions, active-first ordering,
+  exact hidden/retired lookup and internal recommendation filters. No new dependency,
+  ingestion, RPC access, skill file or bot-policy change. No live test messages.
 
 Failure modes recorded before implementation:
-- Wrong view/path/wallet/market reaches the provider, or irrelevant parameters are
-  silently ignored; generic URLs, malformed addresses or cursor injection escape
-  the intended endpoint set.
-- Truncated curves/history/performance look complete; pagination is lost; source
-  coverage is confused with returned rows; null/stale/missing data becomes zero.
-- Decimal rates or raw token units are misread; independent source blocks are mixed;
-  lower-rate debt or market-wide health becomes a personal redemption/safety promise.
-- Provider failures/malformed payloads become successful empty data; existing MCP
-  tools or auth regress; native tests use fake answers instead of observed reads.
-- Tests call live RPC, touch production homes/state, leak credentials, or restart
-  the bot/MCP outside the explicitly approved activation.
+- Broad lookup still makes snapshot requests or emits strategy cards; full catalog
+  matches are claimed but unreachable, unstable ties skip rows, or filters change.
+- Exact vault/chain gets confused with an underlying match; snapshot failure or
+  wrong identity silently supplies another vault's details or looks current.
+- Null/malformed/non-finite metrics become zero; APY becomes APR, percent scaling
+  changes, yBOLD provenance/ranking breaks, or missing APY sorts as genuine zero.
+- Source retrieval time is mistaken for metric time, or cached catalog ordering is
+  confused with newer detail snapshots. Raw amounts lose precision.
+- Actual structured MCP output breaks fixture callers, legacy tool arguments,
+  native routing, recommendations, or exact retired-vault navigation.
 
-- [x] Add controlled HTTP/MCP and native replay cases.
-- [x] Implement one bounded Flex tool using existing yHelper reads.
-- [x] Run E2E/existing checks; review and address concrete findings.
-- [x] Verify live reads and isolated image; retain evidence and clean probes.
+- [x] Write HTTP/MCP E2E coverage and migrate obsolete prose fixtures before code.
+- [x] Implement compact pageable lookup, selective details and explicit descriptions.
+- [x] Verify E2E, relevant existing checks and native interpretation/routing; review.
+- [x] Build and verify the hardened MCP candidate and prepare the release procedure.
 
-The user has now authorized activation after final review and commit, followed by
-live MCP tool verification. The release procedure is below.
+Verified: eight vault HTTP/MCP scenarios, nine Flex scenarios, four real native
+cases, sixteen existing fault probes and 294 existing tests pass. The retired
+prose tests are covered by the provider/MCP scenarios. Review preserved unknown
+strategy composition as null rather than zero and made the yield-question fixture
+explicit rather than requiring an unsolicited APY quote. The live candidate matches
+every runtime source file, retains eleven tools and rejects unauthenticated calls.
+Default USDC text shrank from 11,613 to 6,245 characters, with 209 total matches
+reachable by page. Evidence is in `.cache/verification/vault-lookup-review.json`.
 
-Review findings addressed:
-- Discovery already supplies market metrics; the native check accepts either
-  discovery or exact detail plus the correct market's redemption-priority read.
-- Failed E2E runs now retain recorded model answers/calls and source hashes.
-- Truncated history retains the full window's first/last observations in addition
-  to recent points, while preserving source coverage and explicit output limits.
-- Provider responses must match requested market/status/event/time filters, wallet
-  scope and activity page size; mismatches fail rather than silently changing scope.
+Release procedure: commit the reviewed change, retain the current MCP image for
+rollback, activate the verified candidate with existing Compose settings, and verify
+live paging/details/aliases plus legacy reads. Keep the bot running: its policy and
+runtime code are unchanged. Record health, commit/image, live responses and the
+before/after payload measurement in the deployment artifact below. Remove temporary
+candidate resources and evaluation output after preserving the evidence.
 
-Verified: nine controlled Flex HTTP/MCP E2E scenarios and two real Sol/medium
-probes pass with no internal RPC reads; all 309 existing tests and sixteen existing
-fault probes pass. Ruff, diff and Compose checks pass. The isolated candidate image
-authenticates requests, retains the ten existing tools, and exposes the new Flex
-tool; all eight views returned live yHelper data and legacy repo/stYFI reads passed.
-Source-hashed evidence is in `.cache/verification/flex-review.json` and its linked
-artifacts. The temporary evaluation directory/container/logs and unused intermediate
-image were removed. The final candidate image is retained for activation.
-Pre-activation checks preserved production bot/MCP IDs, loaded instructions/config
-and canonical auth.
+Verification evidence: `.cache/verification/vault-lookup-e2e.json`, native replay
+artifacts and `.cache/verification/vault-lookup-deployment.json`.
 
-## Replay grading repair
+## Completed Flex integration
 
-Goal: make the Flex native replay reject incorrect amounts and unsupported wallet
-claims while accepting equivalent, correct wording. Change evaluation only; keep
-the bot, MCP, prompts and deployment unchanged.
-
-Failure modes recorded before the repair:
-- Amount substrings accept 2,500/1,000, fractional or negative amounts, wrong units,
-  swapped idle-liquidity/debt values, or debt at a different rate. A separate clause
-  mentioning 2% must not satisfy the requested threshold/value pair.
-- A generic uncertainty word hides an invented current LTV, a liquidation-safety
-  assurance, or numeric aggregate PnL despite incomplete position coverage. Both
-  contracted assurances and an unrelated PnL denial must fail.
-- Correct partial-position loss is confused with total wallet PnL, or a missing
-  explicit refusal to infer LTV/safety still passes.
-- Grading changes reject the original correct recorded answers or require a single
-  exact sentence/Markdown layout, keyword, rate/value order or uncertainty wording.
-
-- [x] Add offline negative controls to the existing Flex E2E runner.
-- [x] Tighten the shared native answer checks and regrade saved correct answers.
-- [x] Bind debt amount/rate in one positive fact and safety uncertainty to its predicate.
-- [x] Run controlled E2E, both real-model probes and relevant static checks; review.
-
-The grader checks exact amounts/units, decimal utilization versus percentages and
-the requested debt amount/rate together, without crossing another percentage or
-accepting a negated fact. Each affirmative safety predicate, including straight
-and curly contractions, needs uncertainty that governs that predicate; unrelated
-PnL negation cannot excuse it. Coverage verifies one covered position out of three.
-It accepts the observed correct wording without requiring the keyword "partial".
-
-Verified: all 25 targeted bad-answer controls are rejected, nine controlled E2E
-scenarios and two fresh Sol/medium probes pass, with no internal RPC reads. Six
-saved correct answers pass the current grader; original execution hashes/results,
-including the correct answer rejected for wording, remain intact. All three review
-reproductions are now rejected. Ruff and diff checks pass. Current source hashes
-and evidence are in `.cache/verification/flex-grading-repair.json`. These evaluation
-runs preserved production bot/MCP, loaded instructions/config and canonical auth.
-Temporary evaluation data was removed.
-
-## Approved activation
-
-Goal: deploy the committed Flex integration and verify the real MCP surface.
-Acceptance: the bot reconnects, MCP is healthy and exposes eleven tools, all eight
-Flex views work with live yHelper data, prior tools/auth still work, and no RPC
-credentials are exposed. Canonical auth and persisted ticket/handoff data remain
-intact. No test messages are sent to Discord or Telegram.
-
-Release procedure:
-1. Review code/regression evidence; match every candidate-image runtime file to the
-   checkout. Commit the five integration files and retain the prior image for rollback.
-2. Activate the verified candidate through the existing Compose service, wait for
-   authenticated readiness, then restart the host bot using its existing systemd unit.
-3. Verify Discord readiness and loaded instructions, canonical auth, tool discovery,
-   all eight Flex reads, explicit output bounds, freshness, pagination and legacy reads.
-   Prefer the directly exposed tool when the connected client refreshes its catalog;
-   otherwise exercise the same deployed tool over authenticated MCP HTTP.
-
-Deployment results, commit/image identifiers and live-call evidence are recorded
-in `.cache/verification/flex-deployment.json`.
+Commit `33d838d` is deployed. All eight Flex views passed ten live calls, including
+wallet filtering/pagination; bot and eleven-tool MCP were healthy. Evidence is in
+`.cache/verification/flex-deployment.json`. Current changes preserve that tool.
 
 ## Completed support runtime cleanup
 

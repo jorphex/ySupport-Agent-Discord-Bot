@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from time import monotonic
 from typing import Any
 
@@ -39,7 +40,17 @@ def _cached_value(cache: dict[str, Any]) -> Any | None:
 def _store_cached_value(cache: dict[str, Any], value: Any) -> Any:
     cache["value"] = value
     cache["fetched_at"] = monotonic()
+    cache["retrieved_at"] = datetime.now(timezone.utc).isoformat()
     return value
+
+
+def vault_catalog_freshness() -> dict[str, Any]:
+    present = isinstance(_VAULT_CATALOG_CACHE.get("value"), list)
+    return {
+        "retrieved_at": _VAULT_CATALOG_CACHE.get("retrieved_at") if present else None,
+        "cache_age_seconds": round(monotonic() - _VAULT_CATALOG_CACHE["fetched_at"], 3) if present else None,
+        "cache_ttl_seconds": _CACHE_TTL_SECONDS,
+    }
 
 
 def is_yearn_vault(vault: dict[str, Any]) -> bool:
