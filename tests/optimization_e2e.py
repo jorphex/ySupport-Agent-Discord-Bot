@@ -698,7 +698,7 @@ async def verify_native_evaluation(root):
     """Real controllers, JSON subprocess and HTTP I/O; only model outputs are fixtures.
 
     Failure probes: skipped lookup, wrong wallet/chain/hash, unwanted handoff,
-    and a controller that erroneously keeps running after a handoff.
+    stale discovery coverage, and a controller that keeps running after a handoff.
     """
     from tests import native_support_e2e as evaluation
 
@@ -717,6 +717,12 @@ async def tools():
  async with streamablehttp_client(os.environ["YSUPPORT_EVAL_MCP_URL"],headers={"Authorization":"Bearer "+os.environ["YSUPPORT_EVAL_MCP_TOKEN"]}) as (r,w,_):
   async with ClientSession(r,w) as session:
    await session.initialize()
+   if mode.startswith("coverage"):
+    args={"coverage_empty":{"market":"eth"},"coverage_zero":{"token_symbol":"USDC"},"coverage_page":{}}[mode]
+    result=await session.call_tool("support_dashboard_discover",{"chain_id":1,"limit":1,**args})
+    content="\n".join(item.text for item in result.content if hasattr(item,"text"))
+    data=json.loads(content[content.index("{"):])
+    return json.dumps({"returned_rows":len(data["rows"]),"total":data["pagination"]["total"],**data["coverage"]})
    if mode.startswith("apy"):
     await session.call_tool("search_vaults",{"query":"usdc"})
     return "yvUSDC APY: "+("14.2%" if mode=="apy_wrong" else "4.2%")
@@ -732,7 +738,7 @@ async def tools():
    query="styfi veyfi" if "yfi" in text.lower() else "getting started deposit"
    result=await session.call_tool("search_documentation",{"query":query})
    return "\n".join(item.text for item in result.content if hasattr(item,"text"))
-if mode.startswith(("apy","docs_apy")):
+if mode.startswith(("apy","docs_apy","coverage")):
  answer=asyncio.run(tools());used=["ysupport_mcp"]
 elif handoff:
  answer=asyncio.run(tools())+" A maintainer decision is needed."
@@ -786,6 +792,22 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     probe("apy_wrong", "combined_data_button_routes_vault_query_to_search_tool", "Missing answer fact")
     probe("docs_apy", "apy_mechanics_question_routes_to_docs_not_vault_search")
     probe("docs_apy_wrong", "apy_mechanics_question_routes_to_docs_not_vault_search", "Missing answer concept")
+    coverage_expected = {
+        "coverage_empty": {"returned_rows": 0, "total": 0, "visible_vaults": 0,
+                           "with_realized_apy": 0, "without_realized_apy": 0, "coverage_ratio": None},
+        "coverage_zero": {"returned_rows": 1, "total": 1, "visible_vaults": 1,
+                          "with_realized_apy": 1, "without_realized_apy": 0, "coverage_ratio": 1.0},
+        "coverage_page": {"returned_rows": 1, "total": 2, "visible_vaults": 2,
+                          "with_realized_apy": 1, "without_realized_apy": 1, "coverage_ratio": 0.5},
+    }
+    for mode in coverage_expected:
+        probe(mode, "recommendation_question_avoids_single_strategy_ys_vaults_by_default")
+        case = probes[-1]
+        case["checks"] = {"tools": ["support_dashboard_discover"], "handoff": False}
+        payload = case["providers"]["support_dashboard_discover"]
+        payload["rows"][0]["realized_apy_30d"] = 0.0
+        payload["coverage"] = {"visible_vaults": 2, "with_realized_apy": 1,
+                               "without_realized_apy": 1, "coverage_ratio": 0.5}
     followup = "sdyfi_pasted_poc_followup_stays_repo_grounded_without_browser_questions"
     probe("handoff", followup)
     probe("handoff", followup, "Expected delivery=queued_for_team")
@@ -811,12 +833,18 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
         )
     report = json.loads(output.read_text())
     assert status == 1 and report["complete"] and report["model"] == "external-fixture"
-    for error, result in zip(expected, report["cases"]):
+    coverage_observed = {}
+    for case, error, result in zip(probes, expected, report["cases"]):
         failures = result["failures"]
         assert (any(error in failure for failure in failures) if error else not failures), result
+        mode = case["_fixture_mode"]
+        if mode in coverage_expected:
+            coverage_observed[mode] = json.loads(result["turns"][0]["answer"])
+            assert coverage_observed[mode] == coverage_expected[mode], (mode, coverage_observed[mode])
     failed_attempt = report["cases"][-1]["turns"][-1]
     assert failed_attempt["native_calls"] == 1 and failed_attempt["delivery"] == "error"
-    return {"cases": report["cases"], "all_expected_regressions_rejected": True}
+    return {"cases": report["cases"], "discovery_coverage": coverage_observed,
+            "all_expected_regressions_rejected": True}
 
 
 async def main(artifact):

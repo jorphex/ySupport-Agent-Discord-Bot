@@ -290,6 +290,13 @@ async def run(args, *, command_override=None, cases_override=None):
             field = {"tvl": "tvl_usd", "est_apy": "est_apy", "apy_30d": "realized_apy_30d", "momentum": "momentum_7d_30d"}[params.get("sort_by", "tvl")]
             rows.sort(key=lambda row: (row.get(field) is None,
                 (row.get(field) or 0) * (1 if params.get("direction") == "asc" else -1)))
+            with_realized_apy = sum(row.get("realized_apy_30d") is not None for row in rows)
+            payload["coverage"] = {
+                "visible_vaults": len(rows),
+                "with_realized_apy": with_realized_apy,
+                "without_realized_apy": len(rows) - with_realized_apy,
+                "coverage_ratio": with_realized_apy / len(rows) if rows else None,
+            }
             payload["rows"] = rows[:params.get("limit", 10)]
             payload["filters"].update(params)
             payload["pagination"] = {"limit": params.get("limit", 10), "total": len(rows)}

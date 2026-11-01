@@ -1,4 +1,30 @@
-# Vault provenance and evaluation repair
+# Discovery fixture coverage repair
+
+Goal: recompute native discovery coverage from the filtered population before
+pagination, without changing production tools or fixture-match semantics.
+
+Acceptance and failure modes:
+- Empty filters report zero counts and a null coverage ratio, rather than totals
+  inherited from the unfiltered fixture.
+- A realized APY of zero counts as available; missing APY does not.
+- Limiting the returned page does not reduce the coverage population or total.
+- Exercise the real controller, subprocess, authenticated MCP and production
+  discovery projection with controlled external data; preserve existing probes.
+- Test-only change: no deployment, restart, live messages, RPC or model calls.
+
+- [x] Add HTTP/MCP regression probes and demonstrate the existing failure.
+- [x] Recompute coverage after filtering and before slicing.
+- [x] Run affected E2E and Ruff checks; review the diff and resolve concrete gaps.
+
+Verified: the new empty-result probe fails against the original fixture with
+stale two-vault coverage. After repair, all nineteen native evaluation probes
+behave as expected, including the three coverage cases and existing fault
+detection. The complete optimization E2E workflows, Ruff and diff checks pass;
+final review found no further gaps. Repeatable evidence and source hashes are in
+`.cache/verification/discovery-coverage-e2e.json`; the reproduced failure is in
+`.cache/verification/discovery-coverage-before.json`.
+
+## Completed vault provenance and evaluation repair
 
 Goal: fix the three reviewed gaps without mixing catalog/snapshot observations or
 claiming native coverage from fields the real discovery tool never returns.
