@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 import config
@@ -600,6 +601,74 @@ async def support_dashboard_styfi(
     except Exception as e:
         logging.error(f"Error in support_dashboard_styfi: {e}")
         return f"Error querying support dashboard stYFI state: {str(e)}"
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+async def support_dashboard_flex(
+    view: Annotated[
+        support_dashboard_tools.FlexView,
+        Field(description=(
+            "Flex lending read: protocol totals; markets discovery; market detail/risk/oracle; "
+            "redemption_priority lower-rate debt curve; trove_health market-wide aggregates; "
+            "history sampled metrics; activity events; performance flow-adjusted PnL."
+        )),
+    ],
+    market_address: Annotated[
+        str, Field(default="", pattern=r"^(?:0x[0-9a-fA-F]{40})?$",
+                   description="Required for market, redemption_priority, trove_health and history; optional activity filter. Use markets to discover the exact Flex market address."),
+    ] = "",
+    wallet_address: Annotated[
+        str, Field(default="", pattern=r"^(?:0x[0-9a-fA-F]{40})?$",
+                   description="Optional Ethereum wallet filter for performance only. Omit for protocol-wide performance."),
+    ] = "",
+    status: Annotated[
+        Literal["all", "active", "deprecated", "unendorsed"] | None,
+        Field(default=None, description="Markets view only; defaults to active. Inclusion is not a recommendation."),
+    ] = None,
+    days: Annotated[
+        Literal[7, 30, 90] | None,
+        Field(default=None, description="History or performance only; defaults to 7 days."),
+    ] = None,
+    interval: Annotated[
+        Literal["hour", "day"] | None,
+        Field(default=None, description="History only; defaults to daily samples."),
+    ] = None,
+    event: Annotated[
+        str, Field(default="", max_length=64, description="Optional exact event-name filter for activity only."),
+    ] = "",
+    cursor: Annotated[
+        str, Field(default="", pattern=r"^(?:\d{1,20}:\d{1,20})?$",
+                   description="Activity only: next_cursor from the previous response, formatted block_number:log_index."),
+    ] = "",
+    limit: Annotated[
+        int, Field(default=10, ge=1, le=50,
+                   description="Maximum rows/curve points, or rows per performance side. History keeps the newest points. Truncation is explicit; output limits do not change upstream summary or coverage."),
+    ] = 10,
+) -> str:
+    """Read current and historical Flex lending protocol data from yHelper.
+
+    Use for Flex markets, borrowing, lender liquidity, redemption exposure and PnL.
+    These are Ethereum Flex markets, distinct from Kong's Yearn vault catalog.
+    Check freshness/source blocks on each response; different views can use different
+    snapshots. Null/partial/stale values are unresolved, not zero. Rates and LTV are
+    decimal ratios (0.05 = 5%); USD amounts are estimates. Raw token amounts require
+    the token decimals from market detail. History coverage describes the source
+    window; output_limits describes what this tool actually returned.
+
+    Redemption-priority points contain debt at strictly lower chosen rates and idle
+    liquidity, not a guaranteed personal redemption outcome. Trove health is market
+    aggregates, not an individual's LTV or liquidation safety. Performance can be
+    incomplete and covers active markets; it is not a current wallet-position lookup.
+    Do not infer full-wallet PnL from partial rows or explain its cause without evidence.
+    """
+    try:
+        return await support_dashboard_tools.core_support_dashboard_flex(
+            view=view, market_address=market_address, wallet_address=wallet_address,
+            status=status, days=days, interval=interval, event=event, cursor=cursor, limit=limit,
+        )
+    except Exception as exc:
+        logging.error("Error in support_dashboard_flex: %s", exc)
+        return f"Error querying Flex data: {str(exc)}"
+
 
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "sse")

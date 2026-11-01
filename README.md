@@ -69,6 +69,11 @@ Runtime boundaries:
 - idle session maintenance also removes expired generated plugin catalogs and
   staging snapshots using the configured session age; installed plugins, auth,
   and recent cache files are outside that cache cleanup
+- `support_dashboard_flex` reads yHelper's Ethereum Flex lending data through eight
+  fixed views: protocol, markets, market, redemption_priority, trove_health, history,
+  activity and performance. It preserves source freshness, units and partial coverage,
+  and bounds returned lists with explicit truncation. Trove health is market-wide;
+  historical wallet-filtered performance does not establish current individual LTV.
 
 Verification:
 
@@ -133,6 +138,17 @@ guard must fail. This deterministic check calls no real model.
 
 The offline suite runs with `.venv/bin/python -B -m unittest discover -s tests`.
 OpenAI Agents remains a runtime dependency for the live outer classifier.
+
+```sh
+.venv/bin/python -B -m tests.flex_e2e
+```
+
+This exercises the real authenticated MCP surface and dashboard HTTP client against
+controlled yHelper responses, including identifiers, argument validation, errors,
+freshness, units, pagination and partial/truncated results. Evidence is written to
+`.cache/verification/flex-e2e.json`. Add `--native` as the unprivileged service user
+with explicit bot auth and `RUN_NATIVE_SUPPORT_E2E=1` to verify real-model tool
+selection and answer interpretation. No live messages or RPC providers are used.
 
 Host-native service mode
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import re
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 import aiohttp
@@ -367,3 +368,145 @@ async def core_support_dashboard_styfi(
             "recent_activity": payload.get("recent_activity"),
         },
     )
+
+
+FlexView = Literal[
+    "protocol", "markets", "market", "redemption_priority", "trove_health",
+    "history", "activity", "performance",
+]
+_FLEX_VIEWS = {
+    "protocol": ("/protocol", ("summary",), set()),
+    "markets": ("/markets", ("filters", "summary", "rows"), {"status"}),
+    "market": ("/markets/{market}", ("market", "risk", "oracle"), {"market_address"}),
+    "redemption_priority": (
+        "/markets/{market}/redemption-priority",
+        ("market_address", "borrow_token", "rate_scale", "total_debt_raw", "total_debt",
+         "idle_liquidity_raw", "idle_liquidity", "points", "source_url"), {"market_address"},
+    ),
+    "trove_health": (
+        "/markets/{market}/trove-health",
+        ("market_address", "collateral_token", "borrow_token", "metrics"), {"market_address"},
+    ),
+    "history": (
+        "/markets/{market}/history", ("market_address", "filters", "coverage", "points"),
+        {"market_address", "days", "interval"},
+    ),
+    "activity": ("/activity", ("filters", "pagination", "rows"), {"market_address", "event", "cursor"}),
+    "performance": ("/performance", ("period", "borrowers", "lenders"), {"wallet_address", "days"}),
+}
+
+
+async def core_support_dashboard_flex(
+    *,
+    view: FlexView,
+    market_address: str = "",
+    wallet_address: str = "",
+    status: str | None = None,
+    days: int | None = None,
+    interval: str | None = None,
+    event: str = "",
+    cursor: str = "",
+    limit: int = 10,
+) -> str:
+    if not isinstance(view, str) or view not in _FLEX_VIEWS:
+        raise ValueError("Unknown Flex data view.")
+    suffix, fields, allowed = _FLEX_VIEWS[view]
+    for name, address in (("market_address", market_address), ("wallet_address", wallet_address)):
+        if not isinstance(address, str) or (address and not re.fullmatch(r"0x[0-9a-fA-F]{40}", address)):
+            raise ValueError(f"{name} must be an Ethereum address.")
+    if "{market}" in suffix and not market_address:
+        raise ValueError("This Flex view requires market_address; discover it with the markets view.")
+    if type(limit) is not int or not 1 <= limit <= 50:
+        raise ValueError("Flex output limit must be between 1 and 50.")
+    if status is not None and status not in {"all", "active", "deprecated", "unendorsed"}:
+        raise ValueError("Unknown Flex market status.")
+    if days is not None and days not in {7, 30, 90}:
+        raise ValueError("Flex history/performance days must be 7, 30 or 90.")
+    if interval is not None and interval not in {"hour", "day"}:
+        raise ValueError("Flex history interval must be hour or day.")
+    if not isinstance(event, str) or len(event) > 64:
+        raise ValueError("Flex event must contain at most 64 characters.")
+    if not isinstance(cursor, str) or (cursor and not re.fullmatch(r"\d{1,20}:\d{1,20}", cursor)):
+        raise ValueError("Flex activity cursor must be block_number:log_index.")
+    supplied = {"market_address": market_address or None, "wallet_address": wallet_address or None,
+                "status": status, "days": days, "interval": interval,
+                "event": event or None, "cursor": cursor or None}
+    if any(value is not None and name not in allowed for name, value in supplied.items()):
+        raise ValueError("Arguments do not apply to this Flex view.")
+    if view in {"protocol", "market", "trove_health"} and limit != 10:
+        raise ValueError("limit applies only to Flex views returning lists.")
+    params: dict[str, Any] = {}
+    if view == "markets":
+        params = {"status": status or "active"}
+    elif view == "history":
+        params = {"days": days or 7, "interval": interval or "day"}
+    elif view == "activity":
+        params = {"market_address": market_address or None, "event": event or None,
+                  "cursor": cursor or None, "limit": limit}
+    elif view == "performance":
+        params = {"address": wallet_address or None, "days": days or 7}
+    path = "/api/flex" + suffix.format(market=market_address.lower())
+    payload = await _fetch_dashboard_json(path, params)
+    if not isinstance(payload.get("scope"), dict) or payload["scope"].get("chain_id") != 1:
+        raise ValueError("Flex response has missing or unexpected Ethereum scope.")
+    if not isinstance(payload.get("freshness"), dict) or any(key not in payload for key in fields):
+        raise ValueError("Flex response is missing required data or freshness.")
+    if view in {"markets", "history", "activity"}:
+        filters = payload.get("filters")
+        if not isinstance(filters, dict):
+            raise ValueError("Flex response is missing its request filters.")
+        for name, expected in params.items():
+            if name in {"cursor", "limit"}:
+                continue
+            observed = filters.get(name)
+            if name == "market_address":
+                expected = (expected or "").lower()
+                if observed is None:
+                    observed = ""
+                if isinstance(observed, str):
+                    observed = observed.lower()
+            if observed != expected:
+                raise ValueError("Flex response filters do not match the request.")
+    if view == "activity" and payload.get("pagination", {}).get("limit") != limit:
+        raise ValueError("Flex activity response has a mismatched page limit.")
+    if "{market}" in suffix:
+        identity = (payload.get("market", {}).get("addresses", {}).get("market")
+                    if view == "market" else payload.get("market_address"))
+        if not isinstance(identity, str) or identity.lower() != market_address.lower():
+            raise ValueError("Flex response does not match the requested market.")
+    if view == "performance":
+        identity = payload["scope"].get("address") or ""
+        if not isinstance(identity, str) or identity.lower() != wallet_address.lower():
+            raise ValueError("Flex performance response does not match the requested wallet scope.")
+        if payload.get("period", {}).get("days") != params["days"]:
+            raise ValueError("Flex performance response has a mismatched time window.")
+    result = {"view": view, "source": path, "scope": payload["scope"],
+              "freshness": payload["freshness"], **{key: payload[key] for key in fields}}
+    output_limits = {}
+
+    def bounded_rows(rows, key, *, latest=False):
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError("Flex response contains missing or malformed rows.")
+        selected = rows[-limit:] if latest else rows[:limit]
+        output_limits[key] = {"available": len(rows), "returned": len(selected),
+                              "truncated": len(rows) > limit}
+        return selected
+
+    for key in ("rows", "points"):
+        if key in result:
+            if view == "history" and isinstance(result[key], list) and result[key]:
+                result["window_endpoints"] = {"first": result[key][0], "last": result[key][-1]}
+            result[key] = bounded_rows(result[key], key, latest=view == "history")
+    if view == "performance":
+        for side in ("borrowers", "lenders"):
+            if not isinstance(result[side], dict):
+                raise ValueError("Flex performance response contains a missing side.")
+            result[side] = {**result[side], "rows": bounded_rows(result[side].get("rows"), side + ".rows")}
+    if output_limits:
+        result["output_limits"] = output_limits
+        if view == "history":
+            result["point_selection"] = "Most recent available points; coverage describes the full upstream window."
+    text = _json_block("Flex lending protocol data", result)
+    if len(text) > 60000:
+        raise ValueError("Flex response is too large; request fewer rows.")
+    return text
