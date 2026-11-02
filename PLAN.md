@@ -1,141 +1,98 @@
-# Discovery fixture coverage repair
+# Documentation revision
 
-Goal: recompute native discovery coverage from the filtered population before
-pagination, without changing production tools or fixture-match semantics.
+Goal: shorten maintained documentation without losing meaning, conditions,
+technical identifiers, commands, limits or evidence references. Use direct verbs,
+consistent terms and short sentences, guided by ASD-STE100.
 
-Acceptance and failure modes:
-- Empty filters report zero counts and a null coverage ratio, rather than totals
-  inherited from the unfiltered fixture.
-- A realized APY of zero counts as available; missing APY does not.
-- Limiting the returned page does not reduce the coverage population or total.
-- Exercise the real controller, subprocess, authenticated MCP and production
-  discovery projection with controlled external data; preserve existing probes.
-- Test-only change: no deployment, restart, live messages, RPC or model calls.
+Scope: README, privacy policy, this plan and the two local maintainer guides.
+Preserve runtime instructions and historical ticket notes. No service, policy,
+dependency, credential or ticket-data changes.
 
-- [x] Add HTTP/MCP regression probes and demonstrate the existing failure.
-- [x] Recompute coverage after filtering and before slicing.
-- [x] Run affected E2E and Ruff checks; review the diff and resolve concrete gaps.
+- [x] Inventory documents; check runtime claims against source and deployment evidence.
+- [x] Remove repetition and simplify prose; preserve technical and privacy requirements.
+- [x] Check commands, paths, limits and meaning; review the diff and resolve findings.
 
-Verified: the new empty-result probe fails against the original fixture with
-stale two-vault coverage. After repair, all nineteen native evaluation probes
-behave as expected, including the three coverage cases and existing fault
-detection. The complete optimization E2E workflows, Ruff and diff checks pass;
-final review found no further gaps. Repeatable evidence and source hashes are in
-`.cache/verification/discovery-coverage-e2e.json`; the reproduced failure is in
-`.cache/verification/discovery-coverage-before.json`.
+Acceptance: documentation is shorter, requirements remain explicit, code blocks
+and local references are valid, and completed work has no stale pending actions.
+
+Verified nine CLI modules and their documented flags, referenced source paths,
+Markdown fences and shell-block syntax. Configuration identifiers and privacy
+conditions are preserved. Corrected the completed restart status and the status
+probe description. Runtime instructions and service state are unchanged.
+
+## Completed discovery coverage repair
+
+Commit `8ebf875` computes coverage from filtered rows before pagination. Empty
+results have zero counts and a null ratio; known zero APY counts as available.
+Fixture-match semantics and production tools are unchanged.
+
+The empty-result regression reproduced stale two-vault coverage before repair.
+All nineteen evaluation probes then behaved as expected, including the three
+coverage cases and existing fault detection. Optimization E2E, Ruff and diff
+checks passed. This test-only change required no restart.
+
+Evidence: `.cache/verification/discovery-coverage-{before,e2e}.json`.
 
 ## Completed vault provenance and evaluation repair
 
-Goal: fix the three reviewed gaps without mixing catalog/snapshot observations or
-claiming native coverage from fields the real discovery tool never returns.
+Commit `332beca` separates catalog and snapshot observations. Missing snapshot
+APY, TVL, fees, PPS or composition remain unknown; incomplete snapshots are
+`partial`. Catalog timestamps identify the generation used by the call, even
+during concurrent refreshes; reported age includes detail-fetch time. yBOLD
+preserves its display rule and reports each input's source and time separately.
 
-Acceptance and constraints:
-- A matched snapshot uses its own observations. Missing metrics, fees, PPS or
-  composition remain unknown; cached financial fields never acquire a snapshot
-  timestamp. Partial snapshots preserve their available evidence explicitly.
-- Bind catalog retrieval time to the actual catalog generation used by the call.
-  Include elapsed detail-fetch time in its reported age, even across a concurrent
-  cache refresh. Keep the existing cache policy and provider-call bounds.
-- Native discovery cases exercise the real response projection over controlled raw
-  data. They receive the same fields as production and make genuine metadata/link
-  lookups when needed; no fabricated strategy/lifecycle/link evidence is injected.
-- Preserve paging, APY aliases, yBOLD display behavior, eleven tools and data-only
-  MCP access. No dependency, external skill, bot-policy or RPC changes.
-- No live test messages. Deploy MCP only after checks; keep the bot running.
+Native discovery cases use the production response projection over controlled
+raw data and the exact eleven-tool catalog. Fixtures honor identity, chain,
+filters and pagination. Answers requiring links, lifecycle flags or strategy
+counts must fetch them; discovery fixtures cannot invent those fields.
 
-Failure modes recorded before implementation:
-- An identity/block-only or otherwise partial HTTP 200 snapshot inherits catalog
-  APY/TVL/fees/PPS and is presented as complete/newer snapshot evidence.
-- During a delayed detail read, another request refreshes the catalog and supplies
-  its timestamp for older returned rows; capturing age early also hides elapsed time.
-- Native tests still return impossible discovery fields or bypass the actual
-  projection, omit real tools from the controlled catalog, or ignore filters so
-  unrelated rows satisfy the evaluation.
-- Correct real discovery responses cannot support required URLs, lifecycle or
-  strategy counts without a lookup; tests must verify those reads rather than
-  weakening the expected answer or adding invented provider fields.
+All eleven HTTP/MCP scenarios passed on the host and in the final Docker image.
+Four real-model native cases, 294 existing tests, sixteen fault probes and nine
+Flex scenarios passed. Candidate reads verified lookup, yBOLD inputs, auth and
+existing tools. Ruff, diff, Compose and deployed source comparisons passed.
 
-- [x] Add HTTP/MCP regression cases and migrate raw native fixtures before code.
-- [x] Separate snapshot data, bind catalog provenance and run the real projection.
-- [x] Run relevant E2E/native/existing checks; review and resolve concrete findings.
-- [x] Verify the hardened candidate and prepare the MCP-only release procedure.
+The MCP-only release retained a rollback image, canonical auth and ticket state.
+Live checks confirmed pagination, aliases, provenance and existing reads. The bot
+stayed running; temporary evaluation and container resources were removed after
+their evidence was saved.
 
-Snapshot rows now use the snapshot alone and mark missing main fields as partial;
-raw measurements remain null rather than borrowing catalog values. yBOLD retains
-its display rule with separate input-source/time metadata. Catalog provenance is
-captured before detail I/O and its age includes the elapsed time. Native discovery
-runs the real projection over raw fixtures, with scoped filters, an exact eleven-tool
-catalog and real follow-up metadata reads. Controlled lookup fixtures also honor
-identity/chain/paging instead of returning unrelated rows for every query.
+Evidence: `.cache/verification/vault-provenance-{e2e,review,deployment}.json`.
 
-Verified: all eleven HTTP/MCP scenarios pass both on the host and inside the final
-Docker image. Four native cases pass with real projection and matching metadata
-lookups. All 294 existing tests, sixteen fault probes and nine Flex scenarios pass.
-Candidate live reads verify normal lookups plus separate yBOLD input provenance;
-auth and legacy reads pass. Ruff/diff/Compose checks pass and all candidate runtime
-sources match the checkout. Review evidence: `.cache/verification/vault-provenance-review.json`.
+## Completed compact lookup and Flex integration
 
-Release procedure: commit the reviewed fix, retain the previous image for rollback,
-activate only the verified MCP image, and verify live lookup, source age, pagination,
-aliases and legacy reads. Leave the bot running and preserve canonical auth and
-state. Record results in the deployment artifact below, then remove temporary
-evaluation/container resources after retaining their evidence.
-
-Evidence: `.cache/verification/vault-provenance-e2e.json`, native/evaluation
-artifacts and `.cache/verification/vault-provenance-deployment.json`.
-
-## Completed compact lookup
-
-Commit `0f0f3f5` is the deployed baseline. Paging, selective details, APY aliases
-and structured output remain in scope. Its deployment evidence is
-`.cache/verification/vault-lookup-deployment.json`; the subsequent provenance and
-fixture findings are tracked above rather than treated as resolved by that run.
-
-## Completed Flex integration
-
-Commit `33d838d` is deployed. All eight Flex views passed ten live calls, including
-wallet filtering/pagination; bot and eleven-tool MCP were healthy. Evidence is in
-`.cache/verification/flex-deployment.json`. Current changes preserve that tool.
+- `0f0f3f5`: compact numeric vault rows, pagination, selective snapshot details
+  and APY sort aliases. Evidence: `.cache/verification/vault-lookup-deployment.json`.
+- `33d838d`: Ethereum Flex lending data through eight views. Ten live calls
+  verified views, wallet filters and pagination; bot and eleven-tool MCP were
+  healthy. Evidence: `.cache/verification/flex-deployment.json`.
 
 ## Completed support runtime cleanup
 
-Goal: finish the authorized runtime, indexing and answer-grounding work while
-preserving useful investigation tools, ticket data and existing deployment settings.
+- Removed the stale marketing contact; retained the complete business policy.
+- Replaced the local specialist engine and worker with native Codex execution.
+  Preserved explicit external JSON backends and saved-request/replay compatibility.
+- Added shallow/sparse docs refresh, verified reuse of unchanged sources,
+  incremental repository indexing and cached namespace discovery.
+- Persisted accepted Telegram replies before acknowledgement; a separate worker
+  delivers them while preserving staff takeover and pending handoffs.
+- Reclaimed idle locks and expired generated caches while preserving auth,
+  installed plugins, recent data and active sessions.
+- Kept transaction, position, withdrawal and basic chain reads internal, with
+  per-turn operation, provider-call, log-range and time limits. Preserved both
+  helper modules, chain resolution and the older-vault registry. MCP has no RPC
+  credentials or RPC tools.
+- Required evidence for each claimed cause. Relevant bridge delivery requires
+  destination evidence or an explicit statement that arrival is unconfirmed.
 
-Completed:
-- [x] Remove the stale marketing contact and show the complete business policy.
-- [x] Use native Codex execution; retire the local specialist engine and worker.
-- [x] Preserve explicit external JSON backends and saved/replay compatibility.
-- [x] Refresh docs with a shallow/sparse checkout and reuse verified unchanged sources.
-- [x] Incrementally index repository context; cache namespace discovery metadata.
-- [x] Persist accepted Telegram replies before acknowledgement and deliver them in a
-  separate worker; preserve staff takeover and pending-handoff behavior.
-- [x] Reclaim idle locks and expired generated caches without touching auth,
-  installed plugins, recent data or active sessions.
-- [x] Keep transaction, position, withdrawal and basic chain-state reads internal
-  through a private per-turn connection with operation/call/time/log bounds.
-- [x] Preserve both helper modules, chain resolution and the older-vault registry.
-  MCP retains ten docs/data tools and receives no RPC credentials.
-- [x] Require evidence for the specific cause claimed; verify relevant bridge
-  destination delivery or explicitly leave it unconfirmed.
+The 44 former LLM scenario IDs map to 42 native cases. Two more cases cover
+confirmed bridge arrival and unavailable destination receipts. The original
+cases passed a full native run; targeted grounding checks passed four cases/six
+turns and sixteen fault probes. Regrading accepted equivalent uncertainty wording
+without changing execution inputs or model answers. Original grades and hashes
+remain in the evidence. Temporary evaluation logs and proven orphaned bytecode
+were removed; repeatable JSON evidence remains in `.cache/verification/`.
 
-Verification:
-- Existing offline checks, helper/provider E2E and optimization fault probes use
-  isolated state and controlled external services; add no unit tests.
-- The 44 original LLM scenario IDs map to 42 distinct native cases. Two additional
-  ticket-grounding cases cover confirmed arrival and unavailable destination receipts.
-- The prior complete native run passed all original cases. The grounding pass
-  verified four targeted cases/six turns and sixteen fault probes with real native
-  answers and exact internal lookup identifiers. Equivalent uncertainty wording was
-  accepted by regrading recorded answers; execution hashes and original grades remain
-  in the evidence. No execution inputs or model answers were changed.
-- Repeatable JSON artifacts and source hashes remain in `.cache/verification/`;
-  temporary evaluation directories/logs and proven orphaned bytecode were removed.
-- [x] Finish current offline checks, review the staged changes and commit.
-
-Deployment constraint:
-- The runtime/MCP changes were deployed and verified healthy on 2026-10-30.
-- The latest two instruction refinements remain pending activation. Do not restart
-  the bot or overwrite its loaded instructions until the user authorizes that step.
-- This cleanup/commit pass sends no live messages and makes no deployment, credential,
-  ticket-data or unrelated-service changes.
+Runtime/MCP cleanup was deployed on October 30, 2026. The authorized November 1
+bot restart completed. Discord reconnected, the configured MCP exposed all eleven
+current tools, and live lookup returned both yvUSD variants.
+Evidence: `.cache/verification/bot-restart-20261101.json`.

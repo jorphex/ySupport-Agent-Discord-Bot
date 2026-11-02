@@ -1,52 +1,76 @@
 # ySupport Privacy Policy
 
-Last updated: August 3, 2026
+Last updated: November 2, 2026
 
-ySupport is an AI-assisted support bot for the official Yearn Discord community. This policy explains how it handles information when people use it.
+ySupport provides AI-assisted support in the official Yearn Discord. This policy
+explains how it processes information.
 
-## Information ySupport processes
+## Information processed
 
 ySupport may process:
 
-- messages and attachments submitted in designated support ticket channels;
-- Discord user, message, channel, and server identifiers needed to operate a ticket;
-- wallet addresses, transaction hashes, URLs, error messages, and other support details users voluntarily provide;
-- a public message specifically referenced when an authorized contributor invokes ySupport; and
-- closed ticket transcripts manually selected by an authorized maintainer for support-quality analysis.
+- Messages and attachments in designated support tickets.
+- Discord user, message, channel and server identifiers needed to operate tickets.
+- Wallet addresses, transaction hashes, URLs, errors and other details users provide
+  voluntarily.
+- A public message referenced when an authorized contributor invokes ySupport.
+- Closed ticket transcripts selected by an authorized maintainer for support-quality
+  analysis.
 
-The bot's application logic ignores unrelated channels and messages that are not part of these support workflows.
+Application logic ignores unrelated channels and messages outside these workflows.
 
-## How the information is used
+## Uses
 
-Information is used only to:
+ySupport uses this information only to:
 
-- respond to and investigate support requests;
-- maintain conversation continuity;
-- consult relevant documentation, source code, and on-chain information;
-- escalate issues to authorized human support contributors;
-- operate, secure, and troubleshoot the service; and
-- identify recurring documentation or support-quality gaps through manual internal review.
+- Answer and investigate support requests; maintain conversation continuity.
+- Consult documentation, source code and on-chain information.
+- Escalate issues to authorized human support contributors.
+- Operate, secure and troubleshoot the service.
+- Identify recurring documentation or support-quality gaps through manual internal
+  review.
 
-ySupport does not sell message data, use it for advertising, or build advertising profiles.
+It does not sell message data, use it for advertising or build advertising profiles.
 
-## AI processing and service providers
+## AI and service providers
 
-Selected support content and attachments may be processed by OpenAI services, including Codex, to generate and verify support responses. ySupport does not train its own machine-learning model using Discord messages. OpenAI's handling of submitted data is governed by its applicable terms and account data controls.
+OpenAI services, including Codex, may process selected support content and
+attachments to generate and verify responses. ySupport does not train its own
+machine-learning model on Discord messages. OpenAI's applicable terms and account
+data controls govern its handling of submitted data.
 
-Discord provides the messaging platform. When human assistance is required, a limited support summary may be sent to an authorized internal support channel through Telegram. The bot's hosting and storage infrastructure also processes this information solely to operate ySupport.
+Discord provides messaging. When human help is required, Telegram may carry a
+limited support summary to an authorized internal support channel. Hosting and
+storage infrastructure processes this information solely to operate ySupport.
 
 ## Storage and retention
 
-ySupport stores limited conversation state, identifiers, and attachment metadata outside Discord while needed for support continuity. Ticket state is deleted when its Discord ticket channel is deleted, temporary public-conversation state expires after 30 minutes of inactivity, and resumable AI support sessions expire after seven days. These expired records are periodically removed. Per-turn AI workspaces, including downloaded attachment copies, are temporary and are deleted after processing. Persistent diagnostic run exports are disabled by default; if an operator explicitly enables them for troubleshooting, the operator is responsible for limiting and deleting those records.
+Limited conversation state, identifiers and attachment metadata are stored outside
+Discord while needed for support continuity:
 
-Access to stored support data is limited to authorized operators and contributors who need it to provide or maintain the service.
+- Ticket state is deleted when its Discord ticket channel is deleted.
+- Public-conversation state expires after 30 minutes of inactivity.
+- Resumable AI support sessions expire after seven days.
+- Expired records are removed periodically.
+- Per-turn AI workspaces, including downloaded attachments, are temporary and
+  deleted after processing.
+- Persistent diagnostic run exports are disabled by default. Operators who enable
+  them for troubleshooting are responsible for limiting and deleting those records.
 
-## User choices and deletion requests
+Stored support data is accessible only to authorized operators and contributors
+who need it to provide or maintain the service.
 
-Using ySupport is optional. A ticket owner may avoid automated processing by not selecting a ySupport category or may use the **Stop Bot** control to stop automatic responses in that ticket. After the bot is stopped, an authorized support contributor may explicitly invoke ySupport for a single reply. Stopping the bot does not by itself guarantee deletion of previously created operational records.
+## User choices, requests and contact
 
-To request access to or deletion of information associated with a support ticket, open a ticket in the official Yearn Discord and state that the request concerns ySupport privacy or data deletion. Include the relevant Discord user ID and ticket channel ID when available. Requests are subject to applicable security, legal, and operational requirements.
+Using ySupport is optional. Ticket owners can avoid automated processing by not
+selecting a ySupport category, or stop automatic replies with **Stop Bot**.
+An authorized contributor can still explicitly invoke one reply after the bot
+stops. Stopping the bot does not guarantee deletion of existing operational records.
 
-## Contact
+For privacy questions or access/deletion requests, open a support ticket in the
+official Yearn Discord. State that the request concerns ySupport privacy or data
+deletion. Include the relevant Discord user and ticket channel IDs when available.
+Requests remain subject to applicable security, legal and operational requirements.
 
-Privacy questions, access requests, and deletion requests can be submitted through a support ticket in the official Yearn Discord. This policy may be updated when ySupport's data practices change; the date at the top identifies the latest version.
+This policy may change when data practices change. The date above identifies the
+latest version.

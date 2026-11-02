@@ -1,184 +1,145 @@
 # ySupport Discord Bot
 
-Discord support bot for Yearn.
+Yearn support for Discord tickets and public trigger conversations. The bot answers
+docs/process questions and performs bounded investigation of vaults, deposits,
+withdrawals, transactions and repository behavior. It prioritizes official sources
+for product/process answers and tool evidence for stateful issues. Human help is
+requested when the remaining action requires it. This repo includes the live bot,
+ticket execution boundary and manual transcript-review tools.
 
-It handles:
-- support tickets
-- public trigger conversations
-- docs/process answers
-- vault/deposit/withdrawal help
-- bounded repo/docs/onchain investigation
+Staff participation pauses automatic Discord replies. Pending Telegram handoffs
+retain their context. A later substantive Telegram reply sends one Discord update
+and closes the handoff; the bot stays paused. Telegram dismissal or Discord
+**Stop Bot** closes the handoff and prevents further team-reply delivery. Accepted
+Telegram replies are saved before acknowledgement. One background worker delivers
+them, so slow replies do not block polling or dismissal of other handoffs.
 
-The bot is built to keep support grounded:
-- official-source-first for docs/process/product questions
-- tool-grounded for tx/account/protocol/runtime issues
-- explicit human handoff where the bot should not guess
+## Documentation ingestion
 
-The repo also contains:
-- the live Discord bot runtime
-- the ticket investigation runtime and execution boundary
-- transcript-fetch tooling for ticket review
+- `yearn_rag/update_docs.sh` runs daily. It requires the repo `.venv` and permits
+  one refresh at a time. Docs and repository stages run independently; either
+  failure makes the job fail. Neither stage publishes an incomplete corpus.
+- The generated docs checkout is shallow and sparse. Refresh preserves unchanged
+  file timestamps and refuses to discard local edits or commits.
+- Successful source fingerprints use `.cache/docs_ingestion/`. Unchanged sources
+  skip OpenAI embeddings and Pinecone writes only after verification of the live
+  namespace count and exact vector IDs. Current vectors are upserted before stale
+  IDs are removed, so provider failure cannot empty the namespace.
+- Repository indexing checks each source's current commit and the full manifest.
+  Unchanged sources reuse verified cached files and rows. Changed revisions,
+  settings, parser code or damaged caches trigger a rebuild. Artifact references
+  stay stable for unchanged sections.
+- Set `DOCS_INGESTION_FORCE_REFRESH=1` for a full repair. Per-stage status and last
+  success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron overwrites
+  `yearn_rag/update_docs.log` each run to bound log growth.
 
-When support staff joins a Discord ticket, automatic bot replies pause. Any pending
-Telegram handoff stays open, with its ticket context preserved. A later substantive
-Telegram reply produces one Discord update and closes that handoff; the bot stays
-paused afterward. Telegram dismissal or an explicit Discord **Stop Bot** action
-closes the handoff and prevents further team-reply delivery.
-Accepted Telegram replies are persisted before their updates are acknowledged.
-One background worker delivers them, so a slow support turn does not block
-polling or dismissal of another ticket's handoff.
+## Runtime and tools
 
-Documentation ingestion:
-- `yearn_rag/update_docs.sh` is the tracked daily refresh entrypoint
-- the refresh uses the repository `.venv` and fails closed if that environment is missing
-- successful source fingerprints are stored under `.cache/docs_ingestion/`
-- the generated Yearn docs checkout is shallow and sparse; refreshes preserve
-  unchanged documentation timestamps and refuse to discard local edits/commits
-- unchanged sources skip OpenAI embeddings and Pinecone writes only after the
-  live namespace count and exact vector IDs are verified
-- refresh runs are single-instance; documentation and repo-context stages run
-  independently, while each refuses to publish an incomplete corpus
-- any failed stage makes the job exit unsuccessfully; per-stage status and last
-  successful completion are kept in `.cache/docs_ingestion/{docs,repo}.status`
-- repo-context builds verify each source's current commit and cover the complete
-  manifest; unchanged sources reuse verified cached files and indexed rows
-- changed revisions, source settings, parser code, or damaged caches trigger a
-  rebuild while artifact references remain stable for unchanged sections
-- set `DOCS_INGESTION_FORCE_REFRESH=1` for an explicit full repair
-- refreshes upsert current vectors before removing stale IDs, so a provider
-  failure does not empty the live namespace
-- the production cron entry overwrites `yearn_rag/update_docs.log` on each run
-  instead of retaining unbounded historical output
-
-Runtime boundaries:
-- production support turns and the default configuration use `codex_support_exec`
-- `support_boundary.py` owns the live outer classifier and its prompt; native evaluations use it too
-- the local specialist engine and its JSON worker are retired; `local` configuration fails explicitly
-- `subprocess` remains available for an external JSON backend only when
-  `TICKET_EXECUTION_SUBPROCESS_COMMAND` names its command
-- `ticket_execution.replay_cli` supports native or explicit external backends;
-  replay sessions stay separate from live sessions by default
-- RPC investigation stays inside the bot. Native turns use a private per-turn
-  command for the existing transaction, contract, position and withdrawal helpers,
-  plus a restricted set of basic balance/nonce/fee/block/storage reads.
-  Provider credentials stay with the bot; MCP exposes no RPC tools and receives
-  no RPC credentials. Calls, operations, log ranges and time are bounded.
-- `ticket_transcript_fetch.py` is a manual read-only review tool and is not imported by live support turns
-- documentation namespace discovery is shared for five minutes; answers and
-  wallet observations are not cached by this metadata optimization
-- idle session maintenance also removes expired generated plugin catalogs and
-  staging snapshots using the configured session age; installed plugins, auth,
-  and recent cache files are outside that cache cleanup
+- Production and defaults use `codex_support_exec`. `support_boundary.py` owns the
+  outer classifier and prompt; native evaluations use the same classifier.
+- The local specialist engine and JSON worker are retired; `local` fails explicitly.
+  An external JSON backend requires `subprocess` and an explicit
+  `TICKET_EXECUTION_SUBPROCESS_COMMAND`. `ticket_execution.replay_cli` supports
+  native and explicit external backends; replay sessions are isolated by default.
+- RPC investigation runs inside the bot through a private per-turn command.
+  Transaction, contract, position and withdrawal helpers support bounded reads,
+  plus allowed balance, nonce, fee, block and storage queries. Operations, provider
+  calls, log ranges and time are limited. MCP has no RPC tools or credentials.
+- `ticket_transcript_fetch.py` provides manual, read-only review; live turns do not
+  import it. Docs namespace discovery is cached for five minutes; this cache does
+  not store answers or wallet observations.
+- Idle session cleanup also removes expired generated plugin catalogs and staging
+  snapshots. It uses the configured session age and preserves auth, installed
+  plugins and recent cache files.
 - `support_dashboard_flex` reads yHelper's Ethereum Flex lending data through eight
-  fixed views: protocol, markets, market, redemption_priority, trove_health, history,
-  activity and performance. It preserves source freshness, units and partial coverage,
-  and bounds returned lists with explicit truncation. Trove health is market-wide;
-  historical wallet-filtered performance does not establish current individual LTV.
-- Prefer `support_dashboard_discover` for browsing/comparing current vault yields;
-  use `search_vaults` for identification, exact details or known vaults outside
-  dashboard analytics coverage. Search returns structured numeric rows and
-  `pagination.next_offset`; repeat the same query/chain/sort for the next page.
-  Broad searches use the cached catalog. Exact vault addresses get snapshot details;
-  other searches can request `include_details=true`. APY sorts use `highest_apy` /
-  `lowest_apy`, with the previous APR names retained as aliases.
-  Raw snapshot fields never inherit cached catalog measurements; missing values stay
-  null and incomplete snapshots are marked `partial`. Catalog age stays bound to
-  the generation used by the call, and yBOLD reports its input sources separately.
+  views: `protocol`, `markets`, `market`, `redemption_priority`, `trove_health`,
+  `history`, `activity` and `performance`. Results retain freshness, units and partial
+  coverage; bounded lists report truncation. Trove health is market-wide. Historical
+  wallet-filtered performance does not establish current individual LTV.
+- Prefer `support_dashboard_discover` for browsing vaults and comparing current
+  yields. Use `search_vaults` for identity, exact details or known vaults outside
+  dashboard coverage. Search returns numeric rows and `pagination.next_offset`;
+  repeat the query, chain and sort for subsequent pages. Broad searches use the
+  cached catalog. Exact vault addresses get snapshot details; other searches can
+  set `include_details=true`. Sorts use `highest_apy` / `lowest_apy`; previous APR
+  names remain aliases. Missing snapshot measurements stay null; incomplete
+  snapshots are `partial`. Catalog age identifies the generation used by the call.
+  yBOLD reports its APY input sources separately.
 
-Verification:
+## Verification
 
-```sh
-.venv/bin/python -B -m tests.optimization_e2e
-```
+Run offline checks with `.venv/bin/python -B -m unittest discover -s tests`.
+OpenAI Agents remains a runtime dependency for the outer classifier.
 
-This runs the real support controllers, native execution protocol, persistence,
-Git checkout refresh, and SQLite indexing with controlled external responses.
-It sends no live Discord/Telegram messages and calls no model. Repeatable JSON
-evidence, including source hashes and scenario outcomes, is written to
-`.cache/verification/optimization-e2e.json`.
+Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 
-The 44 former specialist LLM scenarios map to 42 distinct native cases. Equivalent
-inputs share an evaluation while retaining their IDs and combined assertions.
-Additional ticket regressions cover confirmed bridge delivery and unavailable
-recipient-chain receipts without changing that original coverage map.
-The runner uses real ticket controllers, the outer classifier, native execution,
-and the production MCP tool schemas:
+| Module | Coverage | JSON evidence under `.cache/verification/` |
+| --- | --- | --- |
+| `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
+| `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
+| `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
+| `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
+
+These runners use controlled external responses, send no live Discord/Telegram
+messages and call no model or live RPC provider. Optimization probes must reject
+skipped/wrong lookups, unwanted handoffs, stale discovery coverage and a broken
+pending-team guard. Its evidence includes outcomes and source hashes.
+
+Real-model native evaluation:
 
 ```sh
 RUN_NATIVE_SUPPORT_E2E=1 .venv/bin/python -B -m tests.native_support_e2e \
   --output /private/native-support-e2e.json
 ```
 
-Run as an unprivileged service user with an explicit, service-owned
+Run as an unprivileged service user. Set an explicit, service-owned
 `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` and `OPENAI_API_KEY` for the classifier.
-The runner imports runtime code from a temporary working directory, so it does
-not read the checkout's protected `.env`; explicit environment settings are used.
-Homes, sessions, ticket state and provider observations stay private. Relative
-output paths are resolved before changing the working directory.
+The runner imports code from a temporary working directory and uses explicit
+settings, without reading the checkout's protected `.env`. Homes, sessions, ticket
+state and provider observations stay private. Relative output paths are resolved
+before the working directory changes.
 
-Only Discord/Telegram I/O and data providers are fixtures. The native agent must
-issue a private internal read with the correct wallet, chain, vault or hash before
-it receives an observation; report artifacts use a read-only HTTP fixture.
-Documentation/repository/vault MCP calls must match the fixture subject. No lookup
-answers are injected into the turn context. These scenarios verify collection and
-interpretation; their helper responses are controlled fixtures.
+The 44 former specialist LLM scenario IDs map to 42 distinct native cases, retaining
+IDs and combined assertions for equivalent inputs. Two additional cases cover
+confirmed bridge delivery and unavailable destination receipts. Use `--case <id>`
+to select a scenario or alias.
 
-```sh
-.venv/bin/python -B -m tests.internal_rpc_e2e
-```
+Native cases use real controllers, the outer classifier, native execution and
+production MCP schemas. Only Discord/Telegram I/O and data providers are fixtures.
+An internal read must match the wallet, chain, vault or hash to obtain an observation;
+report artifacts use read-only HTTP. Docs, repository and vault calls must match
+the fixture subject. Lookup answers are never injected into turn context. These
+cases verify collection and interpretation using controlled helper responses.
 
-This additionally exercises the real helpers against a local HTTP JSON-RPC node
-and controlled Kong data, through the native execution protocol and private client.
-It covers wallet/gauge/older-vault balances, withdrawals, receipts, partial scans,
-balances/nonces, budgets, rejected writes and cancellation. Evidence is written to
-`.cache/verification/internal-rpc-e2e.json`. Add `--native` under the service user
-with explicit bot auth and `RUN_NATIVE_SUPPORT_E2E=1` to run a real-model
-investigation through those same helpers/providers. No live RPC quota is used.
+Multi-turn messages pass through `TicketBot.on_message`. After handoff, follow-ups
+must stay in saved team context and make zero native calls. Checks cover handoff
+flags, including docs cases that forbid escalation. JSON evidence records actual
+requests, Discord output, state transitions, source/fixture hashes, failures and
+timings. No live Discord/Telegram messages are sent.
 
-Multi-turn messages go through `TicketBot.on_message`. After a handoff, a user
-follow-up must remain in persisted team context and make zero further native
-calls. Cases also grade handoff flags, including the docs cases where escalation
-is forbidden. JSON evidence records actual requests, Discord output, controller
-transitions, source/fixture hashes, failures, and timings. Use `--case <id>` for a
-scenario or alias. No live Discord/Telegram messages are sent.
+For real-model helper/provider or Flex checks, add `--native` to
+`tests.internal_rpc_e2e` or `tests.flex_e2e` under the same service-user, auth and
+`RUN_NATIVE_SUPPORT_E2E=1` requirements. Internal RPC checks use a local HTTP
+JSON-RPC node and controlled Kong data; Flex checks use controlled yHelper data.
+Neither uses live RPC quota.
 
-The optimization E2E also exercises these gates with an external model fixture:
-skipped/wrong lookups, unwanted handoffs, and a deliberately broken pending-team
-guard must fail. This deterministic check calls no real model.
+## Deployment
 
-The offline suite runs with `.venv/bin/python -B -m unittest discover -s tests`.
-OpenAI Agents remains a runtime dependency for the live outer classifier.
+Production runs `ysupport.py` on the host under an unprivileged `ysupport` systemd
+user. `mcp_server.py` runs in Docker. Use a dedicated bot `CODEX_HOME` and
+service-owned auth; do not expose an operator's home directory.
 
-```sh
-.venv/bin/python -B -m tests.flex_e2e
-.venv/bin/python -B -m tests.vault_lookup_e2e
-```
+MCP listens on `127.0.0.1:8001` and requires the configured bearer token before
+executing tools. Its dedicated image pins the base image and full Python dependency
+graph, contains only MCP runtime files, and runs read-only as a non-root user.
+`compose.mcp.yaml` mounts only the generated repository SQLite database read-only
+and passes only listed provider settings, without Discord/Telegram credentials.
+Keep the existing `MCP_SERVER_API_KEY` in `.env`.
 
-The Flex runner exercises the real authenticated MCP surface and dashboard HTTP client against
-controlled yHelper responses, including identifiers, argument validation, errors,
-freshness, units, pagination and partial/truncated results. Evidence is written to
-`.cache/verification/flex-e2e.json`. Add `--native` to `tests.flex_e2e` as the unprivileged service user
-with explicit bot auth and `RUN_NATIVE_SUPPORT_E2E=1` to verify real-model tool
-selection and answer interpretation. No live messages or RPC providers are used.
-The vault lookup E2E also checks paging, catalog-only broad queries, exact details,
-fallbacks, numeric units and yBOLD APY provenance through authenticated MCP HTTP.
-Its evidence is `.cache/verification/vault-lookup-e2e.json`.
-
-Host-native service mode
-
-The bot can be run outside Docker under `systemd` while keeping the MCP server in Docker.
-
-Recommended shape:
-- keep `mcp_server.py` in Docker
-- run `ysupport.py` on the host
-- run the bot as a dedicated, unprivileged `ysupport` service user
-- keep a dedicated bot `CODEX_HOME` for generated Codex config
-- keep bot auth in service-owned state rather than exposing an operator's home directory
-
-The MCP listener is host-local and bearer-authenticated. Its dedicated image
-pins the base image and complete Python dependency graph, contains only the MCP
-runtime, runs read-only as a non-root user, and receives only its explicitly
-listed provider settings. Keep the existing `MCP_SERVER_API_KEY` in `.env`.
+Before rebuilding for dependency or MCP source changes, tag the current image as
+`ysupport-mcp:rollback`. `Dockerfile.mcp.dockerignore` permits only files copied by
+`Dockerfile.mcp`; credentials, caches, tests and evidence cannot enter the build
+context.
 
 ```sh
 docker compose -f compose.mcp.yaml build
@@ -186,27 +147,17 @@ docker compose -f compose.mcp.yaml up -d
 docker compose -f compose.mcp.yaml ps
 ```
 
-`compose.mcp.yaml` publishes only `127.0.0.1:8001`, mounts only the generated
-repo-context SQLite database read-only, and does not pass Discord or Telegram
-credentials into MCP. HTTP requests without the configured bearer token are
-rejected before tool execution. Before rebuilding after dependency or MCP source
-changes, tag the current image as `ysupport-mcp:rollback`. The tracked
-`Dockerfile.mcp.dockerignore` is an allowlist containing only the files copied by
-`Dockerfile.mcp`, so local credentials, caches, tests, and evidence assets never
-enter the build context.
+Host setup:
 
-Important:
-- do not point `TICKET_EXECUTION_CODEX_HOME` at your normal `~/.codex`
-- the bot writes `config.toml` and instructions into its `CODEX_HOME`
-- use `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to point at a `0600` auth file owned by the service user
-- keep the checkout and Codex installation read-only; only the dedicated state directory and private temporary directory need writes
-- keep `.env` root-owned with mode `0600`; systemd reads it before dropping privileges and then hides it from the service namespace
-
-Minimal host-native setup:
-- create a host venv and `pip install -r requirements.txt`; direct dependencies are pinned to the reviewed deployment versions
-- ensure `codex exec` works for the service user
-- leave `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path
-- set `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` to the service-owned auth file
-- use `scripts/run_ysupport_host.sh` as the service entrypoint
-- use `systemd/ysupport.service` as the hardened deployment unit
-- if the checkout or Codex version path changes, update `WorkingDirectory`, `EnvironmentFile`, `ExecStart`, and the two `BindReadOnlyPaths` entries together
+1. Create a host venv; run `pip install -r requirements.txt`. Direct dependencies
+   are pinned to reviewed versions. Verify `codex exec` works for the service user.
+2. Keep `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path. The bot writes
+   `config.toml` and instructions there; do not use your normal `~/.codex`.
+3. Point `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` at a service-owned `0600` auth
+   file. Keep `.env` root-owned with mode `0600`; systemd loads it before dropping
+   privileges, then hides it from the service namespace.
+4. Use `scripts/run_ysupport_host.sh` and the hardened `systemd/ysupport.service`.
+   Keep the checkout and Codex installation read-only. Only dedicated state and
+   private temporary directories need writes.
+5. If checkout or Codex paths change, update `WorkingDirectory`, `EnvironmentFile`,
+   `ExecStart` and both `BindReadOnlyPaths` entries together.
