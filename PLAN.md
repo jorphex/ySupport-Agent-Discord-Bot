@@ -1,4 +1,36 @@
-# Metrics and indexer repository context
+# Cross-product source scope repair
+
+Goal: retain cross-product metrics/indexer retrieval without admitting unrelated
+risk reports into scoped security or contract queries.
+
+Acceptance and failure modes:
+- Official disclosure guidance remains retrievable for the reproduced security
+  query; unrelated risk documents cannot bypass its product scope.
+- Apply the same restriction to metadata fallback. Keep risk reports available
+  to unscoped queries, and preserve metrics/indexer retrieval and legacy filtering.
+- Add regression coverage before implementation. Verify production-index search,
+  authenticated MCP search/fetch, source hashes and deployment health.
+- No manifest, index, parser, dependency, credential, RPC or bot restart changes.
+
+- [x] Reproduce authority competition; cover metadata leakage through ingestion E2E.
+- [x] Narrow the exception to metrics/indexer support data; verify existing coverage.
+- [x] Review and deploy a verified MCP image; retain rollback and verify live tools.
+
+Only `support_data` tagged `metrics` or `indexing` bypasses product scope, in both
+section search and metadata fallback. Risk reports retain normal unscoped access.
+The new ingestion E2E reproduced six competing risk results before repair, then
+verified official guidance, rejected out-of-scope metadata and retained data access.
+
+Optimization E2E, fourteen existing repo/MCP tests, Ruff and diff checks passed.
+Four security and seven existing search/fetch cases passed on candidate and live
+MCP. Auth, legacy filtering, unscoped risk access and attached-tool retrieval pass.
+Final review found no further gap. The MCP-only fix is active; the bot PID, index
+hash, manifest and bearer key are unchanged. Rollback is retained; temporary
+candidate resources were removed.
+
+Evidence: `.cache/verification/security-source-{before,e2e,search-fetch,candidate-mcp,production-mcp,deployment}.json`.
+
+## Completed metrics and indexer repository context
 
 Goal: ingest selected `yearn-metrics` and `yearn-envio` documentation as
 `support_data`, with useful search/fetch results for normal support questions.
@@ -38,7 +70,8 @@ E2E then passed, including metadata fallback and contract scoping. Fourteen exis
 repo/MCP tests, Ruff and diff checks passed. Seven search/fetch cases passed against
 the candidate and production MCP, including existing contract lookup. Legacy
 filtering, eleven-tool discovery, unauthenticated rejection and attached-tool
-search/fetch passed. Review found no remaining in-scope gap.
+search/fetch passed. Follow-up review found the broad support-data exception could
+displace official security guidance; the repair is tracked above.
 
 The verified MCP image and index are active. The previous image/index remain
 available for rollback. The bot PID and MCP bearer key are unchanged; no RPC

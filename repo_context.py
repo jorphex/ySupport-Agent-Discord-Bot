@@ -408,7 +408,11 @@ def search_repo_context(
         filter_clauses.append("segments.legacy = 0")
     if product_filters:
         placeholders = ", ".join("?" for _ in product_filters)
-        filter_clauses.append(f"(segments.product_tag IN ({placeholders}) OR segments.authority_tag = 'support_data')")
+        # Only metrics/indexer methodology bypasses product scope, not all support data.
+        filter_clauses.append(
+            f"(segments.product_tag IN ({placeholders}) OR "
+            "(segments.authority_tag = 'support_data' AND segments.product_tag IN ('metrics', 'indexing')))"
+        )
         params.extend(product_filters)
 
     where_clause = f"WHERE {' AND '.join(filter_clauses)}"
@@ -450,7 +454,10 @@ def search_repo_context(
                 fact_filter_clauses.append("facts.legacy = 0")
             if product_filters:
                 placeholders = ", ".join("?" for _ in product_filters)
-                fact_filter_clauses.append(f"(facts.product_tag IN ({placeholders}) OR facts.authority_tag = 'support_data')")
+                fact_filter_clauses.append(
+                    f"(facts.product_tag IN ({placeholders}) OR "
+                    "(facts.authority_tag = 'support_data' AND facts.product_tag IN ('metrics', 'indexing')))"
+                )
                 fact_params.extend(product_filters)
             fact_params.append(result_limit)
 

@@ -241,6 +241,7 @@ def verify_repo_refresh(root):
     revisions = {"one": "1" * 40, "two": "2" * 40}
     archives = []
     fail = set()
+    documents = {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -259,13 +260,13 @@ def verify_repo_refresh(root):
                 archives.append((name, revision))
                 buffer = io.BytesIO()
                 with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-                    content = f"# Vault {name}\nVerified withdrawal revision {revision}.\n".encode()
+                    content = documents.get(name, f"# Vault {name}\nVerified withdrawal revision {revision}.\n").encode()
                     info = tarfile.TarInfo(f"{name}-{revision}/README.md")
                     info.size = len(content)
                     tar.addfile(info, io.BytesIO(content))
-                    if name == "two":
+                    if name in {"two", "risk"}:
                         metadata = json.dumps({**{f"field{i}": "ordinary" for i in range(80)},
-                                               "metric": "raremetric"}).encode()
+                                               "metric": "raremetric" if name == "two" else "riskmetric"}).encode()
                         info = tarfile.TarInfo(f"{name}-{revision}/data.json")
                         info.size = len(metadata)
                         tar.addfile(info, io.BytesIO(metadata))
@@ -393,6 +394,29 @@ def verify_repo_refresh(root):
             manifest.write_text(json.dumps(payload))
             assert build()["repos_indexed"] == 1
             assert not (root / "cache/yearn__two@main").exists()
+            revisions.update(security="5" * 40, risk="6" * 40, indexing="7" * 40)
+            documents.update(
+                security="# Yearn security disclosure\nOfficial private report process.\n",
+                risk="".join(f"# Security disclosure private report {i}\nThird-party protocol due diligence.\n" for i in range(8)),
+                indexing="# Indexer event coverage\nNormalized strategy events are not a complete timeline.\n",
+            )
+            payload["repos"].extend({
+                "repo": name, "ref": "main", "product_tag": name,
+                "authority_tag": "security" if name == "security" else "support_data",
+                "legacy": False, "include": ["README.md", "data.json"],
+            } for name in ("security", "risk", "indexing"))
+            manifest.write_text(json.dumps(payload))
+            assert build()["repos_indexed"] == 4
+            security = repo_context.search_repo_context("security disclosure private report", db_path=db)
+            assert security and security[0].repo_name == "yearn/security", [r.repo_name for r in security]
+            assert all(r.repo_name != "yearn/risk" for r in security)
+            assert repo_context.fetch_repo_artifacts([security[0].artifact_ref], db_path=db)
+            assert not repo_context.search_repo_context("router riskmetric", db_path=db)
+            risk = repo_context.search_repo_context("due diligence", db_path=db)
+            assert risk and risk[0].repo_name == "yearn/risk"
+            indexing = repo_context.search_repo_context("strategy indexer event coverage", db_path=db)
+            assert indexing and indexing[0].repo_name == "yearn/indexing"
+            assert repo_context.fetch_repo_artifacts([indexing[0].artifact_ref], db_path=db)
     finally:
         server.shutdown()
         server.server_close()
@@ -406,6 +430,9 @@ def verify_repo_refresh(root):
         "parser_and_manifest_changes_invalidated_reuse": True,
         "empty_source_did_not_publish_freshness": True,
         "support_data_across_product_filters": scoped_support,
+        "security_priority_and_risk_scope": True,
+        "risk_metadata_cannot_bypass_scope": True,
+        "unscoped_risk_and_scoped_indexer_retrieval": True,
     }
 
 
@@ -879,6 +906,7 @@ async def main(artifact):
             "views.py",
             "bot_behavior.py",
             "docs_repo_tools.py",
+            "repo_context.py",
             "repo_context_build.py",
             "codex_support_home.py",
             "ticket_investigation/codex_support_endpoint.py",
