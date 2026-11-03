@@ -29,10 +29,16 @@ them, so slow replies do not block polling or dismissal of other handoffs.
   Unchanged sources reuse verified cached files and rows. Changed revisions,
   settings, parser code or damaged caches trigger a rebuild. Artifact references
   stay stable for unchanged sections.
-- Selected `yearn-metrics` and `yearn-envio` docs provide accounting, product
+- Selected `yearn-metrics` and `yearn-envio` docs and source files provide accounting, product
   relationships and event-coverage context as `support_data`. Relevant sections
   remain eligible across product filters. Dated examples do not establish live
   balances or yields; generated data and unrelated operations files are excluded.
+- Python, TypeScript, GraphQL, YAML and other text sources use overlapping chunks
+  of at most 1,600 characters with a 200-character overlap. Later chunk titles
+  identify line and character ranges; fetch returns the exact bounded chunk.
+  Markdown, Solidity, Vyper and JSON keep their existing parsers.
+  Broad support questions favor methodology docs over code chunks; explicit
+  source filenames and identifiers retain code retrieval priority.
 - Set `DOCS_INGESTION_FORCE_REFRESH=1` for a full repair. Per-stage status and last
   success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron overwrites
   `yearn_rag/update_docs.log` each run to bound log growth.

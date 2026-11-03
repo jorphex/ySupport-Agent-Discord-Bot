@@ -205,9 +205,11 @@ async def search_repo_context(
     """
     Search Yearn contract, spec, deployment, security, accounting and indexer context.
 
-    Includes selected yearn-metrics and yearn-envio documentation as support_data.
+    Includes selected yearn-metrics and yearn-envio docs and source as support_data.
     Use it for methodology, product relationships and event-coverage limits;
     dated examples and repository code do not establish current protocol state.
+    Long text sources use overlapping chunks with line/character locations. Fetch
+    the returned references for exact bounded excerpts before drawing conclusions.
 
     Args:
         query: Yearn behavior, accounting, event coverage, migration or bug-triage query.

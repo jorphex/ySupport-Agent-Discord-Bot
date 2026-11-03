@@ -245,6 +245,9 @@ def _rerank_repo_rows(rows: list[sqlite3.Row], query: str, *, limit: int) -> lis
     contract_hints = hints["contract_hints"]
     file_hints = hints["file_hints"]
     code_oriented = bool(hints["code_oriented"])
+    explicit_source = bool(file_hints or identifier_hints or re.search(
+        r"\b[\w-]+\.(?:py|[cm]?tsx?|[cm]?jsx?|graphql|gql|ya?ml|toml|txt|rst)\b", query_lower,
+    ))
     markdown_names = {"security.md", "readme.md", "specification.md", "tech_spec.md"}
 
     def score(row: sqlite3.Row) -> tuple[float, float]:
@@ -299,6 +302,11 @@ def _rerank_repo_rows(rows: list[sqlite3.Row], query: str, *, limit: int) -> lis
             boost -= 8.0
         if code_oriented and segment_type == "section":
             boost -= 3.0
+        if (
+            not explicit_source and segment_type in {"file", "chunk"}
+            and row["authority_tag"] == "support_data" and row["product_tag"] in {"metrics", "indexing"}
+        ):
+            boost -= 8.0
 
         base_rank = -float(row["rank_score"])
         return (boost, base_rank)
@@ -647,7 +655,7 @@ def fetch_repo_artifacts(
                     "product_tag": row["product_tag"],
                     "authority_tag": row["authority_tag"],
                     "legacy": bool(row["legacy"]),
-                    "file_excerpt": _extract_file_excerpt(row["content"] or "", row["snippet"]),
+                    "file_excerpt": row["snippet"] if row["segment_type"] == "chunk" else _extract_file_excerpt(row["content"] or "", row["snippet"]),
                 }
             )
     return artifacts

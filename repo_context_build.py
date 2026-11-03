@@ -29,6 +29,8 @@ _EVENT_RE = re.compile(r"^\s*event\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
 _ERROR_RE = re.compile(r"^\s*error\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
 _STRUCT_RE = re.compile(r"^\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)")
 _JSON_ADDRESS_KEYWORDS = {"address", "vault", "router", "strategy", "token", "gauge"}
+_TEXT_CHUNK_CHARS = 1600
+_TEXT_CHUNK_OVERLAP = 200
 
 
 @dataclass(frozen=True)
@@ -498,6 +500,30 @@ def _iter_json_segments(path: str, content: str) -> tuple[list[tuple[str, str, s
     return segments, fact_rows
 
 
+def _iter_text_segments(path: str, content: str) -> Iterator[tuple[str, str, str]]:
+    start = 0
+    while start < len(content):
+        end = min(start + _TEXT_CHUNK_CHARS, len(content))
+        if end < len(content):
+            boundary = content.rfind("\n", start + _TEXT_CHUNK_CHARS // 2, end)
+            if boundary >= 0:
+                end = boundary + 1
+        body = content[start:end].strip()
+        if body:
+            # Keep the existing first-file identity; subsequent chunks carry locations.
+            title = Path(path).name
+            kind = "file"
+            if start:
+                first = content.count("\n", 0, start) + 1
+                last = content.count("\n", 0, end - 1) + 1
+                title += f": lines {first}-{last}, chars {start}-{end}"
+                kind = "chunk"
+            yield kind, title, body
+        if end == len(content):
+            return
+        start = end - _TEXT_CHUNK_OVERLAP
+
+
 def _iter_repo_segments(repo_file: RepoFile) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
     if repo_file.language == "markdown":
         return list(_iter_markdown_segments(repo_file.path, repo_file.content)), []
@@ -506,8 +532,7 @@ def _iter_repo_segments(repo_file: RepoFile) -> tuple[list[tuple[str, str, str]]
     if repo_file.language == "json":
         return _iter_json_segments(repo_file.path, repo_file.content)
 
-    body = repo_file.content[:2000].strip()
-    return ([("file", Path(repo_file.path).name, body)] if body else []), []
+    return list(_iter_text_segments(repo_file.path, repo_file.content)), []
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:

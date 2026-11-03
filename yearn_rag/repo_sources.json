@@ -465,7 +465,10 @@
       "include": [
         "docs/allocation-history/README.md",
         "docs/allocation-history/ABI_AUDIT.md",
-        "docs/morpho-governance.md"
+        "docs/morpho-governance.md",
+        "src/EventHandlers.ts",
+        "src/eventCore.ts",
+        "schema.graphql"
       ],
       "exclude": []
     },
@@ -488,7 +491,15 @@
         "docs/tvl-history.md",
         "docs/tvl-overlaps.md",
         "docs/canonical-tvl-ownership.md",
-        "docs/tvl-curation-corrections.md"
+        "docs/tvl-curation-corrections.md",
+        "src/yearn_data/fees.py",
+        "src/yearn_data/yvusd_fees.py",
+        "src/yearn_data/ybold_fees.py",
+        "src/yearn_data/fee_products.py",
+        "src/yearn_data/fee_views.py",
+        "src/yearn_data/tvl.py",
+        "src/yearn_data/tvl_graph.py",
+        "src/yearn_data/incident_adjustments.py"
       ],
       "exclude": []
     },

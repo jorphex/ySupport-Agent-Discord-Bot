@@ -1,4 +1,58 @@
-# Cross-product source scope repair
+# Full text-source retrieval
+
+Goal: replace the 2,000-character fallback prefix with bounded, overlapping
+source chunks, then add selected Envio handlers/schema and Metrics fee/TVL code.
+
+Acceptance and failure modes:
+- E2E first: search/fetch start, middle and end markers in Python, TypeScript,
+  GraphQL and YAML, including long lines and evidence crossing a chunk boundary.
+- Keep existing Markdown, Solidity, Vyper and JSON handlers. Preserve first-file
+  references and deterministic chunk references across unchanged full rebuilds.
+- Index all non-whitespace source content with bounded chunks and small overlap.
+  Chunk locations must match the source; repeated text must not fetch other context.
+- Preserve search/fetch result limits and snippet bounds. New chunk fetches return
+  their exact bounded source excerpt; existing artifact fetch behavior is retained.
+- Verify useful real-source queries, security-source priority, legacy filtering,
+  auth and existing contract lookup through candidate and production MCP.
+- Explanatory queries retain concise methodology docs when code chunks compete;
+  explicit filenames/identifiers retain source retrieval priority.
+- Add explicit source paths only. No generated code, broad source globs, dependency,
+  model, service, RPC, credential or bot restart changes. Retain rollback.
+
+- [x] Add ingestion/search/fetch regressions and reproduce the missing-tail failure.
+- [x] Implement fallback chunks and bounded fetch; select useful source files.
+- [x] Build and verify candidate index/image, growth, references and retrieval.
+- [x] Review, resolve findings, deploy the verified pair and verify live tools.
+
+Fallback sources now use at most 1,600 characters per chunk with 200-character
+overlap and line-aware endings. Later chunks carry exact line/character ranges
+and fetch their stored excerpt, avoiding ambiguous repeated-text anchors. First
+file identities and existing specialized parsers are preserved.
+
+Added eleven explicit source files: three Envio handler/schema files and eight
+Metrics fee/product/TVL files. Fresh Git HEADs were resolved for all fifteen repos;
+thirteen verified cached snapshots avoided redundant downloads. The index grew
+from 50,532,352 to 54,644,736 bytes, with 393 files and 7,266 sections. All 7,076
+prior section references remain valid. Full non-whitespace coverage and locations passed
+for fourteen real text-source files.
+
+Candidate verification caught code chunks displacing a concise fee-definition
+document. A regression now preserves broad explanatory retrieval while explicit
+source filenames/identifiers retain code priority. The specialized Markdown,
+Solidity, Vyper and JSON parsers are unchanged.
+
+E2E covered Python/TypeScript/GraphQL/YAML start/middle/end, long lines, overlap,
+bounded responses, repeated text and deterministic full rebuilds. Fourteen existing
+repo/MCP tests, Ruff and diff checks passed. Twenty-two authenticated search/fetch
+cases passed against candidate and production, including four security queries and
+existing contract lookups. Auth, legacy filters and attached deep-source retrieval
+passed. Final review found no remaining gap.
+
+The verified MCP image/index pair is active. The bot PID, bearer key, dependencies
+and RPC boundary are unchanged. Rollback is retained; temporary candidate resources
+were removed. Evidence: `.cache/verification/source-chunks-{before,ranking-before,e2e,build,search-fetch,candidate-mcp,production-mcp,deployment}.json`.
+
+## Completed cross-product source scope repair
 
 Goal: retain cross-product metrics/indexer retrieval without admitting unrelated
 risk reports into scoped security or contract queries.

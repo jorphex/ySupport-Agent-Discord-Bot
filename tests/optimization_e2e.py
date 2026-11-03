@@ -19,6 +19,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -242,6 +243,7 @@ def verify_repo_refresh(root):
     archives = []
     fail = set()
     documents = {}
+    extra_files = {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -270,6 +272,11 @@ def verify_repo_refresh(root):
                         info = tarfile.TarInfo(f"{name}-{revision}/data.json")
                         info.size = len(metadata)
                         tar.addfile(info, io.BytesIO(metadata))
+                    for path, text in extra_files.get(name, {}).items():
+                        data = text.encode()
+                        info = tarfile.TarInfo(f"{name}-{revision}/{path}")
+                        info.size = len(data)
+                        tar.addfile(info, io.BytesIO(data))
                 body = buffer.getvalue()
             self.send_response(200)
             self.end_headers()
@@ -417,6 +424,73 @@ def verify_repo_refresh(root):
             indexing = repo_context.search_repo_context("strategy indexer event coverage", db_path=db)
             assert indexing and indexing[0].repo_name == "yearn/indexing"
             assert repo_context.fetch_repo_artifacts([indexing[0].artifact_ref], db_path=db)
+            text_files = {}
+            text_markers = {}
+            for ext, prefix, template in (
+                ("py", "#", "{marker} = True\n"),
+                ("ts", "//", "export const {marker} = true;\n"),
+                ("graphql", "#", "type {marker} {{ value: Boolean }}\n"),
+                ("yaml", "#", "{marker}: true\n"),
+            ):
+                path = f"src/long.{ext}"
+                markers = [f"{ext}{place}marker" for place in ("head", "middle", "tail")]
+                padding = (f"{prefix} repeated source padding with context\n" * 160)
+                text_files[path] = template.format(marker=markers[0]) + padding + template.format(marker=markers[1]) + padding + template.format(marker=markers[2])
+                text_markers[path] = markers
+            bridge = "bridgeleftmarker bridgerightmarker"
+            text_files["src/oneline.ts"] = "x" * 1589 + " " + bridge + " " + "x" * 14999 + " onelinetailmarker\n"
+            text_markers["src/oneline.ts"] = ["onelinetailmarker"]
+            text_files["contracts/Example.sol"] = "contract Example {\nfunction solmethodmarker() external {}\n}\n"
+            text_files["contracts/Example.vy"] = "@external\ndef vymethodmarker():\n    pass\n"
+            text_files["src/fees.py"] = "state = 'strategy known zero unavailable'\n" * 300
+            text_files["docs/fee-accounting.md"] = "# Definitions\nA known zero is verified; unavailable means missing evidence. These states differ for strategy fees.\n"
+            extra_files["indexing"] = text_files
+            payload["repos"][-1]["include"].extend(text_files)
+            manifest.write_text(json.dumps(payload))
+            build()
+            definitions = repo_context.search_repo_context("strategy fees known zero unavailable", db_path=db)
+            assert definitions and definitions[0].path == "docs/fee-accounting.md", [r.path for r in definitions]
+            explicit = repo_context.search_repo_context("fees.py known zero", db_path=db)
+            assert explicit and explicit[0].path == "src/fees.py"
+            text_refs = {}
+            for path, markers in text_markers.items():
+                for marker in markers:
+                    rows = repo_context.search_repo_context(marker, db_path=db)
+                    matching = [r for r in rows if r.path == path and marker in r.snippet]
+                    assert matching, (path, marker)
+                    fetched = repo_context.fetch_repo_artifacts([matching[0].artifact_ref], db_path=db)[0]
+                    assert marker in fetched["file_excerpt"] and fetched["path"] == path
+                    assert len(fetched["snippet"]) <= config.REPO_CONTEXT_MAX_SNIPPET_CHARS
+                    assert len(fetched["file_excerpt"]) <= 4808
+                    text_refs[marker] = matching[0].artifact_ref
+            rows = repo_context.search_repo_context("bridgeleftmarker bridgerightmarker", db_path=db)
+            assert any(bridge in r.snippet for r in rows)
+            assert len({r.artifact_ref for r in rows}) == len(rows)
+            for marker in ("solmethodmarker", "vymethodmarker"):
+                rows = repo_context.search_repo_context(marker, db_path=db)
+                assert rows and rows[0].segment_type == "function"
+                text_refs[marker] = rows[0].artifact_ref
+            with sqlite3.connect(db) as conn:
+                chunks = conn.execute("SELECT id,path,segment_type,title,snippet FROM segments WHERE repo_name='yearn/indexing' AND path != 'README.md' ORDER BY id").fetchall()
+            for row_id, path, kind, title, snippet in chunks:
+                if path not in text_markers:
+                    continue
+                assert len(snippet) <= 1600
+                if kind == "chunk":
+                    match = re.search(r"lines (\d+)-(\d+), chars (\d+)-(\d+)$", title)
+                    assert match, title
+                    first, last, start, end = map(int, match.groups())
+                    original = text_files[path]
+                    assert original[start:end].strip() == snippet
+                    assert first == original.count("\n", 0, start) + 1
+                    assert last == original.count("\n", 0, end - 1) + 1
+                    fetched = repo_context.fetch_repo_artifacts([f"segment:{row_id}"], db_path=db)[0]
+                    assert fetched["file_excerpt"] == snippet
+            with patch.dict(os.environ, {"DOCS_INGESTION_FORCE_REFRESH": "1"}):
+                build()
+            with sqlite3.connect(db) as conn:
+                assert chunks == conn.execute("SELECT id,path,segment_type,title,snippet FROM segments WHERE repo_name='yearn/indexing' AND path != 'README.md' ORDER BY id").fetchall()
+            assert all(repo_context.fetch_repo_artifacts([ref], db_path=db) for ref in text_refs.values())
     finally:
         server.shutdown()
         server.server_close()
@@ -433,6 +507,10 @@ def verify_repo_refresh(root):
         "security_priority_and_risk_scope": True,
         "risk_metadata_cannot_bypass_scope": True,
         "unscoped_risk_and_scoped_indexer_retrieval": True,
+        "full_text_search_fetch": text_refs,
+        "chunk_boundaries_overlap_and_budgets": True,
+        "unchanged_rebuild_preserves_refs": True,
+        "explanatory_docs_and_explicit_source_queries": True,
     }
 
 
