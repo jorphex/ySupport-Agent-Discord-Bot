@@ -177,7 +177,7 @@ async def search_repo_context(
         str,
         Field(
             description=(
-                "A Yearn protocol, contract, router, periphery, migration, or bug-claim query. "
+                "A Yearn protocol, contract, accounting, indexer, migration, or bug-claim query. "
                 "Examples: 'VaultV3 _redeem accounting', 'stYFI unstake stream', "
                 "'ERC4626 router withdraw flow', 'veYFI migration behavior'."
             ),
@@ -203,10 +203,14 @@ async def search_repo_context(
     ] = False,
 ) -> str:
     """
-    Search the local Yearn repo-context index for contract, spec, deployment, or security artifacts.
+    Search Yearn contract, spec, deployment, security, accounting and indexer context.
+
+    Includes selected yearn-metrics and yearn-envio documentation as support_data.
+    Use it for methodology, product relationships and event-coverage limits;
+    dated examples and repository code do not establish current protocol state.
 
     Args:
-        query: Contract-aware Yearn query for protocol behavior, migrations, or bug triage.
+        query: Yearn behavior, accounting, event coverage, migration or bug-triage query.
         limit: Maximum number of search results to return.
         include_legacy: Whether to include legacy repos such as veYFI and vaults-v1.
 

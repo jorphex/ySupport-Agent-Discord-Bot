@@ -457,6 +457,42 @@
       ]
     },
     {
+      "repo": "yearn-envio",
+      "ref": null,
+      "product_tag": "indexing",
+      "authority_tag": "support_data",
+      "legacy": false,
+      "include": [
+        "docs/allocation-history/README.md",
+        "docs/allocation-history/ABI_AUDIT.md",
+        "docs/morpho-governance.md"
+      ],
+      "exclude": []
+    },
+    {
+      "repo": "yearn-metrics",
+      "ref": null,
+      "product_tag": "metrics",
+      "authority_tag": "support_data",
+      "legacy": false,
+      "include": [
+        "docs/fee-accounting.md",
+        "docs/earnings-pricing.md",
+        "docs/parity-price-policy.md",
+        "docs/powerglove-accounting-contract.md",
+        "docs/accounting/effective-fee-products.md",
+        "docs/accounting/yvusd-product.md",
+        "docs/yvusd-fee-accounting.md",
+        "docs/yvusd-effective-fees.md",
+        "docs/ybold-fee-accounting.md",
+        "docs/tvl-history.md",
+        "docs/tvl-overlaps.md",
+        "docs/canonical-tvl-ownership.md",
+        "docs/tvl-curation-corrections.md"
+      ],
+      "exclude": []
+    },
+    {
       "repo": "risk-score",
       "ref": null,
       "product_tag": "risk",

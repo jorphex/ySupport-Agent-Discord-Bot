@@ -1,4 +1,52 @@
-# Documentation revision
+# Metrics and indexer repository context
+
+Goal: ingest selected `yearn-metrics` and `yearn-envio` documentation as
+`support_data`, with useful search/fetch results for normal support questions.
+
+Acceptance and constraints:
+- Pull explicit Markdown paths only. Exclude generated data, benchmarks, tests,
+  dependencies and unrelated operations material. Keep daily incremental refresh.
+- Make relevant support data eligible across product filters while retaining
+  contract-code scoping, legacy filtering, result bounds and artifact references.
+- Verify yvUSD product membership, fees/earnings, TVL overlap and indexed-event
+  limits through real ingestion, search, fetch and authenticated MCP calls.
+- Treat methodology and dated examples as source context, not live state.
+- No parser expansion, new service/tool, RPC, dependency, credential or bot restart.
+
+Failure modes recorded before implementation:
+- Product filtering silently excludes relevant metrics/indexer documentation.
+- Cross-product eligibility leaks unrelated contract code or legacy-only sources.
+- Metadata fallback still applies the old filter and loses relevant support data.
+- Broad globs ingest generated or operational noise; source documents are missing
+  or produce no searchable sections; source changes break existing contract lookup.
+- MCP serves a database and manifest from different versions after deployment.
+
+- [x] Add E2E regression coverage and reproduce the filtering failure.
+- [x] Add narrow source lists and correct support-data eligibility.
+- [x] Build a candidate index; verify live-source search/fetch and existing queries.
+- [x] Review, run relevant checks and activate a verified MCP/index pair.
+
+Added 16 exact Markdown paths: thirteen metrics docs and three indexer docs,
+107,159 characters and 79 sections. Generic READMEs were omitted because the
+existing basename matcher also selected nested operations material. No parser
+change was needed. The index now covers fifteen repositories and reused thirteen
+unchanged source configurations. GitHub throttled repeat metadata lookups; the
+narrowed build used commit revisions already resolved live in this pass.
+
+Verification: the new product-filter regression failed before repair; optimization
+E2E then passed, including metadata fallback and contract scoping. Fourteen existing
+repo/MCP tests, Ruff and diff checks passed. Seven search/fetch cases passed against
+the candidate and production MCP, including existing contract lookup. Legacy
+filtering, eleven-tool discovery, unauthenticated rejection and attached-tool
+search/fetch passed. Review found no remaining in-scope gap.
+
+The verified MCP image and index are active. The previous image/index remain
+available for rollback. The bot PID and MCP bearer key are unchanged; no RPC
+credentials were added. Temporary candidate resources were removed.
+
+Evidence: `.cache/verification/repo-sources-{before,optimization-e2e,build,search-fetch,candidate-mcp,production-mcp,deployment}.json`.
+
+## Completed documentation revision
 
 Goal: shorten maintained documentation without losing meaning, conditions,
 technical identifiers, commands, limits or evidence references. Use direct verbs,

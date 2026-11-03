@@ -408,7 +408,7 @@ def search_repo_context(
         filter_clauses.append("segments.legacy = 0")
     if product_filters:
         placeholders = ", ".join("?" for _ in product_filters)
-        filter_clauses.append(f"segments.product_tag IN ({placeholders})")
+        filter_clauses.append(f"(segments.product_tag IN ({placeholders}) OR segments.authority_tag = 'support_data')")
         params.extend(product_filters)
 
     where_clause = f"WHERE {' AND '.join(filter_clauses)}"
@@ -450,7 +450,7 @@ def search_repo_context(
                 fact_filter_clauses.append("facts.legacy = 0")
             if product_filters:
                 placeholders = ", ".join("?" for _ in product_filters)
-                fact_filter_clauses.append(f"facts.product_tag IN ({placeholders})")
+                fact_filter_clauses.append(f"(facts.product_tag IN ({placeholders}) OR facts.authority_tag = 'support_data')")
                 fact_params.extend(product_filters)
             fact_params.append(result_limit)
 

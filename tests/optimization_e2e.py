@@ -263,6 +263,12 @@ def verify_repo_refresh(root):
                     info = tarfile.TarInfo(f"{name}-{revision}/README.md")
                     info.size = len(content)
                     tar.addfile(info, io.BytesIO(content))
+                    if name == "two":
+                        metadata = json.dumps({**{f"field{i}": "ordinary" for i in range(80)},
+                                               "metric": "raremetric"}).encode()
+                        info = tarfile.TarInfo(f"{name}-{revision}/data.json")
+                        info.size = len(metadata)
+                        tar.addfile(info, io.BytesIO(metadata))
                 body = buffer.getvalue()
             self.send_response(200)
             self.end_headers()
@@ -278,10 +284,10 @@ def verify_repo_refresh(root):
             {
                 "repo": name,
                 "ref": "main",
-                "product_tag": "vaults",
-                "authority_tag": "contract_code",
+                "product_tag": "metrics" if name == "two" else "vaults",
+                "authority_tag": "support_data" if name == "two" else "contract_code",
                 "legacy": False,
-                "include": ["README.md"],
+                "include": ["README.md", "data.json"],
             }
             for name in revisions
         ],
@@ -318,6 +324,17 @@ def verify_repo_refresh(root):
             assert refs and repo_context.fetch_repo_artifacts(
                 [next(iter(refs))], db_path=db
             )
+            scoped_support = {}
+            for query in ("vault withdrawal", "strategy withdrawal", "strategy raremetric"):
+                matches = repo_context.search_repo_context(query, db_path=db)
+                assert any(r.repo_name == "yearn/two" for r in matches), query
+                if query.startswith("strategy"):
+                    assert all(r.repo_name == "yearn/two" for r in matches)
+                fetched = repo_context.fetch_repo_artifacts([matches[0].artifact_ref], db_path=db)
+                assert fetched and fetched[0]["authority_tag"] == matches[0].authority_tag
+                if "raremetric" in query:
+                    assert any(r.artifact_ref.startswith("fact:") for r in matches)
+                scoped_support[query] = [r.artifact_ref for r in matches]
             second = build()
             assert second["repos_reused"] == 2 and len(archives) == 2
             revisions["one"] = "3" * 40
@@ -388,6 +405,7 @@ def verify_repo_refresh(root):
         "removed_sources_pruned": True,
         "parser_and_manifest_changes_invalidated_reuse": True,
         "empty_source_did_not_publish_freshness": True,
+        "support_data_across_product_filters": scoped_support,
     }
 
 

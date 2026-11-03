@@ -29,6 +29,10 @@ them, so slow replies do not block polling or dismissal of other handoffs.
   Unchanged sources reuse verified cached files and rows. Changed revisions,
   settings, parser code or damaged caches trigger a rebuild. Artifact references
   stay stable for unchanged sections.
+- Selected `yearn-metrics` and `yearn-envio` docs provide accounting, product
+  relationships and event-coverage context as `support_data`. Relevant sections
+  remain eligible across product filters. Dated examples do not establish live
+  balances or yields; generated data and unrelated operations files are excluded.
 - Set `DOCS_INGESTION_FORCE_REFRESH=1` for a full repair. Per-stage status and last
   success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron overwrites
   `yearn_rag/update_docs.log` each run to bound log growth.
