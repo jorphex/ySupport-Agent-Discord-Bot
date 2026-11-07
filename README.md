@@ -11,8 +11,10 @@ Staff participation pauses automatic Discord replies. Pending Telegram handoffs
 retain their context. A later substantive Telegram reply sends one Discord update
 and closes the handoff; the bot stays paused. Telegram dismissal or Discord
 **Stop Bot** closes the handoff and prevents further team-reply delivery. Accepted
-Telegram replies are saved before acknowledgement. One background worker delivers
-them, so slow replies do not block polling or dismissal of other handoffs.
+Telegram replies are saved before acknowledgement. Bounded background workers
+deliver independent handoffs; polling and dismissal remain responsive.
+Explicit stop also cancels that handoff's queued or active investigation and
+releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
 
 ## Documentation ingestion
 
@@ -47,6 +49,19 @@ them, so slow replies do not block polling or dismissal of other handoffs.
 
 - Production and defaults use `codex_support_exec`. `support_boundary.py` owns the
   outer classifier and prompt; native evaluations use the same classifier.
+- `TICKET_EXECUTION_MAX_CONCURRENT_TURNS` permits two investigations at once by
+  default (range 1–8); production sets it to 8. Turns within a conversation remain
+  serial. Session/cache maintenance starts only when idle and yields after its current deletion if
+  support work queues. Remaining cleanup resumes on an idle pass. Telegram workers
+  share the execution bound and claim each handoff once. Queue, setup and execution
+  timings include ticket IDs and completed/error/canceled outcomes. Native token
+  totals can include earlier turns in resumed sessions.
+- Native prompts include the current request, response schema and compact tool
+  map. Ordinary intake collects messages for two seconds. Owner follow-ups retain
+  active work, suppress an outdated draft and run next without another collection
+  delay. Original and new images remain available. Staff takeover and Stop Bot
+  preserve their cancellation rules. `y:` also includes up to four recent user
+  images from its bounded ticket history, with staff attachments labeled separately.
 - The local specialist engine and JSON worker are retired; `local` fails explicitly.
   An external JSON backend requires `subprocess` and an explicit
   `TICKET_EXECUTION_SUBPROCESS_COMMAND`. `ticket_execution.replay_cli` supports
@@ -87,6 +102,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 | --- | --- | --- |
 | `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
 | `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
+| `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
 | `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
 | `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
 

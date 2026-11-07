@@ -10,6 +10,7 @@ from state import (
     active_ticket_executor_tasks,
     active_ticket_payloads,
     apply_initial_button_intent,
+    cancel_handoff_delivery,
     cancel_pending_ticket_task,
     channels_awaiting_initial_button_press,
     conversation_threads,
@@ -76,6 +77,7 @@ async def stop_ticket_for_manual_support(channel_id: int) -> bool:
     handoff_notice = team_handoff_notice_by_channel.get(channel_id)
     stopped_durably = stop_ticket_channel(channel_id)
     await cancel_pending_ticket_task(channel_id)
+    await cancel_handoff_delivery(channel_id)
 
     if not stopped_durably:
         if handoff_notice is not None:

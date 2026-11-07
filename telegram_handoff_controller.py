@@ -30,11 +30,13 @@ from handoff import (
     TelegramApiError,
 )
 from state import (
+    cancel_handoff_delivery,
     cancel_pending_ticket_task,
     channel_intent_after_button,
     clear_team_handoff_notice,
     conversation_threads,
     get_or_create_ticket_investigation_job,
+    handoff_delivery_tasks,
     last_bot_reply_ts_by_channel,
     load_telegram_update_offset,
     mark_team_handoff_notice_delivered,
@@ -64,8 +66,9 @@ class TelegramHandoffController:
     def __init__(self, bot: _TelegramBotHost) -> None:
         self.bot = bot
         self.task: asyncio.Task[None] | None = None
-        self._delivery_task: asyncio.Task[None] | None = None
-        self._delivery_wakeup = asyncio.Event()
+        self._delivery_tasks: list[asyncio.Task[None]] = []
+        self._delivery_wakeups: list[asyncio.Event] = []
+        self._delivery_channels: set[int] = set()
         self._telegram_update_offset = load_telegram_update_offset()
         self._telegram_recovery_attempts: set[tuple[int, int, str]] = set()
 
@@ -90,22 +93,25 @@ class TelegramHandoffController:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-        if self._delivery_task is not None:
-            delivery_task = self._delivery_task
-            self._delivery_task = None
-            delivery_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await delivery_task
+        delivery_tasks, self._delivery_tasks = self._delivery_tasks, []
+        self._delivery_wakeups.clear()
+        for task in delivery_tasks:
+            task.cancel()
+        await asyncio.gather(*delivery_tasks, return_exceptions=True)
 
     def _wake_delivery_worker(self) -> None:
-        if self._delivery_task is None or self._delivery_task.done():
-            self._delivery_task = asyncio.create_task(self._delivery_loop())
-        self._delivery_wakeup.set()
+        for index in range(config.TICKET_EXECUTION_MAX_CONCURRENT_TURNS):
+            if index == len(self._delivery_tasks):
+                self._delivery_wakeups.append(asyncio.Event())
+                self._delivery_tasks.append(asyncio.create_task(self._delivery_loop(self._delivery_wakeups[index])))
+            elif self._delivery_tasks[index].done():
+                self._delivery_tasks[index] = asyncio.create_task(self._delivery_loop(self._delivery_wakeups[index]))
+            self._delivery_wakeups[index].set()
 
-    async def _delivery_loop(self) -> None:
+    async def _delivery_loop(self, wakeup: asyncio.Event) -> None:
         while not self.bot.is_closed():
-            await self._delivery_wakeup.wait()
-            self._delivery_wakeup.clear()
+            await wakeup.wait()
+            wakeup.clear()
             try:
                 await self._resume_pending_telegram_handoff_replies()
             except asyncio.CancelledError:
@@ -140,40 +146,46 @@ class TelegramHandoffController:
 
     async def _resume_pending_telegram_handoff_replies(self) -> None:
         for channel_id, notice in list(team_handoff_notice_by_channel.items()):
+            if not self._can_deliver_handoff(channel_id, notice):
+                continue
             recovery_key = (
                 channel_id,
                 notice.telegram_message_id,
                 notice.status,
             )
-            if recovery_key in self._telegram_recovery_attempts:
+            if recovery_key in self._telegram_recovery_attempts or channel_id in self._delivery_channels:
                 continue
-            if notice.status == "pending_delivery" and notice.pending_reply_text:
-                self._telegram_recovery_attempts.add(recovery_key)
-                delivered = await self._deliver_telegram_handoff_reply(
-                    channel_id=channel_id,
-                    notice=notice,
-                    team_reply_text=notice.pending_reply_text,
-                )
-                if not delivered and self._can_deliver_handoff(channel_id, notice):
-                    await edit_handoff_notice(
-                        chat_id=notice.telegram_chat_id,
-                        message_id=notice.telegram_message_id,
-                        message_text=build_failed_delivery_handoff_notice(
-                            notice.message_text
-                            or "Update delivery failed. Handle in Discord."
-                        ),
+            self._delivery_channels.add(channel_id)
+            try:
+                if notice.status == "pending_delivery" and notice.pending_reply_text:
+                    self._telegram_recovery_attempts.add(recovery_key)
+                    delivered = await self._run_handoff_delivery(
+                        channel_id=channel_id,
+                        notice=notice,
+                        team_reply_text=notice.pending_reply_text,
                     )
-                continue
-            if notice.status == "delivered_pending_close":
-                if not persist_ticket_state(channel_id):
-                    raise RuntimeError(
-                        "Could not persist the delivered Telegram handoff state."
+                    if delivered is False and self._can_deliver_handoff(channel_id, notice):
+                        await edit_handoff_notice(
+                            chat_id=notice.telegram_chat_id,
+                            message_id=notice.telegram_message_id,
+                            message_text=build_failed_delivery_handoff_notice(
+                                notice.message_text
+                                or "Update delivery failed. Handle in Discord."
+                            ),
+                        )
+                    continue
+                if notice.status == "delivered_pending_close":
+                    if not persist_ticket_state(channel_id):
+                        raise RuntimeError(
+                            "Could not persist the delivered Telegram handoff state."
+                        )
+                    self._telegram_recovery_attempts.add(recovery_key)
+                    await self._finalize_telegram_handoff_notice_close(
+                        channel_id=channel_id,
+                        notice=notice,
                     )
-                self._telegram_recovery_attempts.add(recovery_key)
-                await self._finalize_telegram_handoff_notice_close(
-                    channel_id=channel_id,
-                    notice=notice,
-                )
+            finally:
+                self._delivery_channels.discard(channel_id)
         active_recovery_keys = {
             (channel_id, notice.telegram_message_id, notice.status)
             for channel_id, notice in team_handoff_notice_by_channel.items()
@@ -279,6 +291,7 @@ class TelegramHandoffController:
 
         stopped_durably = stop_ticket_channel(matched_channel_id)
         await cancel_pending_ticket_task(matched_channel_id)
+        await cancel_handoff_delivery(matched_channel_id)
 
         if not stopped_durably:
             team_handoff_notice_by_channel[matched_channel_id] = matched_notice
@@ -318,6 +331,26 @@ class TelegramHandoffController:
             message_id,
             retry_persisted,
         )
+
+    async def _run_handoff_delivery(self, *, channel_id, notice, team_reply_text) -> bool | None:
+        task = asyncio.create_task(self._deliver_telegram_handoff_reply(
+            channel_id=channel_id, notice=notice, team_reply_text=team_reply_text,
+        ))
+        handoff_delivery_tasks[channel_id] = task
+        try:
+            # Child cancellation is a result; worker cancellation still propagates.
+            result, = await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+            if isinstance(result, asyncio.CancelledError):
+                return None
+            if isinstance(result, BaseException):
+                raise result
+            return result
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if handoff_delivery_tasks.get(channel_id) is task:
+                handoff_delivery_tasks.pop(channel_id, None)
 
     async def _deliver_telegram_handoff_reply(
         self,

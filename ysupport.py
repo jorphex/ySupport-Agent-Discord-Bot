@@ -26,6 +26,7 @@ from discord_support_runtime import (
     _build_turn_request,
     _classify_ticket_message_action,
     _detect_ticket_owner_user_id,
+    _dedupe_attachment_payloads,
     _discard_pending_ticket_payload,
     _execute_ticket_turn,
     _handoff_delivery_failure_reply,
@@ -441,8 +442,10 @@ class TicketBot(discord.Client):
         self,
         channel_id: int,
         run_context: BotRunContext,
+        *,
+        skip_debounce: bool = False,
     ) -> tuple[str | None, list[dict[str, Any]]]:
-        debounce_seconds = _ticket_debounce_seconds(channel_id, run_context)
+        debounce_seconds = 0 if skip_debounce else _ticket_debounce_seconds(channel_id, run_context)
         try:
             await asyncio.sleep(debounce_seconds)
         except asyncio.CancelledError:
@@ -496,8 +499,26 @@ class TicketBot(discord.Client):
             conversation_owner_id=run_context.conversation_owner_id,
         )
         pending_tasks[channel_id] = asyncio.create_task(
-            self.process_ticket_message(channel_id, followup_context)
+            self.process_ticket_message(channel_id, followup_context, skip_debounce=True)
         )
+
+    def _defer_ticket_reply_for_followups(self, channel_id, history, attachments) -> bool:
+        if not pending_messages.get(channel_id):
+            return False
+        pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
+            [*attachments, *pending_attachments_by_channel.get(channel_id, [])]
+        )
+        conversation_threads[channel_id] = [*history, {
+            "role": "system",
+            "content": (
+                "The last generated reply was not sent because a user follow-up arrived. "
+                "Answer the latest message and attachments using the completed investigation. "
+                "Reuse relevant observations and refresh any state that may have changed."
+            ),
+        }]
+        persist_ticket_state(channel_id)
+        logging.info("Deferred outdated ticket draft in %s for queued follow-up.", channel_id)
+        return True
 
     async def _handle_ticket_staff_summon(
         self,
@@ -534,11 +555,17 @@ class TicketBot(discord.Client):
         turn_result = None
         preserve_handoff_history = channel_id in team_handoff_notice_by_channel
         try:
+            attachments = []
             current_history = await _build_staff_summon_history(
                 message.channel,
                 exclude_message_id=message.id,
                 ticket_owner_user_id=ticket_owner_user_id_by_channel.get(channel_id),
                 bot_user_id=self.user.id if self.user is not None else None,
+                attachments=attachments,
+            )
+            attachments.extend(
+                {**item, "source_author_role": "internal_team"}
+                for item in _attachment_payloads_from_message(message)
             )
             async with message.channel.typing():
                 turn_result = await _run_internal_instruction_turn(
@@ -549,9 +576,15 @@ class TicketBot(discord.Client):
                     prompt_text=prompt_text,
                     instruction_text=instruction_text,
                     workflow_suffix="staff summon",
-                    attachments=_attachment_payloads_from_message(message),
+                    attachments=attachments,
                     current_history_override=current_history,
                 )
+            if not was_stopped and self._defer_ticket_reply_for_followups(
+                channel_id, [*current_history, {
+                    "role": "system", "content": "Internal support staff instruction: " + prompt_text,
+                }], attachments,
+            ):
+                return
             await send_long_message(
                 message.channel,
                 turn_result.reply,
@@ -850,44 +883,30 @@ class TicketBot(discord.Client):
         normalized_message_text = _message_text_for_turn(message)
         message_attachments = _attachment_payloads_from_message(message)
         existing_task = pending_tasks.get(channel_id)
-        interrupted_active_executor = False
         if existing_task and not existing_task.done():
-            if (
-                channel_id not in active_ticket_payloads
-                and active_ticket_executor_tasks.get(channel_id) is not existing_task
-            ):
-                _merge_pending_ticket_payload(
-                    channel_id,
-                    normalized_message_text,
-                    message_attachments,
-                )
+            if active_ticket_executor_tasks.get(channel_id) is existing_task:
+                first_followup = not pending_messages.get(channel_id)
+                _merge_pending_ticket_payload(channel_id, normalized_message_text, message_attachments)
+                if first_followup:
+                    try:
+                        await message.channel.send(
+                            "Got it. I’ve added your follow-up to your previous request for context, "
+                            "and I’m continuing to work on it now. Please wait for my response. "
+                            "There’s no need to resend anything.",
+                            suppress_embeds=True,
+                        )
+                        last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+                    except Exception:
+                        pass
                 return
-            interrupted_active_executor = (
-                active_ticket_executor_tasks.get(channel_id) is existing_task
-            )
+            if channel_id not in active_ticket_payloads:
+                _merge_pending_ticket_payload(channel_id, normalized_message_text, message_attachments)
+                return
             _restore_active_ticket_payload(channel_id)
             existing_task.cancel()
 
-        _merge_pending_ticket_payload(
-            channel_id,
-            normalized_message_text,
-            message_attachments,
-        )
-
+        _merge_pending_ticket_payload(channel_id, normalized_message_text, message_attachments)
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
-        if interrupted_active_executor:
-            try:
-                await message.channel.send(
-                    "Got it. I’ve added your follow-up to your previous request for context, "
-                    "and I’m continuing to work on it now. Please wait for my response. "
-                    "There’s no need to resend anything.",
-                    suppress_embeds=True,
-                )
-                last_bot_reply_ts_by_channel[channel_id] = datetime.now(
-                    timezone.utc
-                )
-            except Exception:
-                pass
         debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
         logging.debug(f"Scheduled processing task for channel {channel_id} in {debounce_seconds}s")
 
@@ -895,6 +914,8 @@ class TicketBot(discord.Client):
         self,
         channel_id: int,
         run_context: BotRunContext,
+        *,
+        skip_debounce: bool = False,
     ) -> None:
         current_task = asyncio.current_task()
         try:
@@ -902,6 +923,7 @@ class TicketBot(discord.Client):
             aggregated_text, attachments = await self._collect_aggregated_ticket_payload(
                 channel_id,
                 run_context,
+                skip_debounce=skip_debounce,
             )
             if not aggregated_text:
                 return
@@ -967,6 +989,14 @@ class TicketBot(discord.Client):
                         proposed_history = flow_outcome.conversation_history
 
                         raw_final_reply = flow_outcome.raw_final_reply
+                        if self._defer_ticket_reply_for_followups(
+                            channel_id, [*current_history, {"role": "user", "content": aggregated_text}],
+                            attachments,
+                        ):
+                            if not flow_outcome.requires_human_handoff:
+                                investigation_job.apply_snapshot(proposed_job)
+                                persist_ticket_state(channel_id)
+                            return
                         if flow_outcome.requires_human_handoff:
                             handoff_reason = (
                                 flow_outcome.handoff_reason
@@ -1007,6 +1037,11 @@ class TicketBot(discord.Client):
                             )
                     except Exception as e:
                         logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
+                        if pending_messages.get(channel_id):
+                            reset_ticket_codex_session(channel_id)
+                            active_ticket_payloads.setdefault(channel_id, (current_task, aggregated_text, attachments))
+                            _restore_active_ticket_payload(channel_id)
+                            return
                         final_reply = "An unexpected error occurred."
                         should_stop_processing = True
                         stop_reason = "runtime_error"
@@ -1016,6 +1051,14 @@ class TicketBot(discord.Client):
                 active_payload = active_ticket_payloads.get(channel_id)
                 if active_payload is not None and active_payload[0] is current_task:
                     active_ticket_payloads.pop(channel_id, None)
+
+                if proposed_job is not None and not handoff_state_committed and self._defer_ticket_reply_for_followups(
+                    channel_id, [*current_history, {"role": "user", "content": aggregated_text}], attachments,
+                ):
+                    if not flow_outcome.requires_human_handoff:
+                        investigation_job.apply_snapshot(proposed_job)
+                        persist_ticket_state(channel_id)
+                    return
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None

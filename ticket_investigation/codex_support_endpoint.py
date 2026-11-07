@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import re
+from time import monotonic
 from typing import Sequence
 from weakref import WeakValueDictionary
 
@@ -111,6 +112,52 @@ class _ConversationExecutionLocks:
             lock.release()
 
 
+class _RuntimeConcurrency:
+    """Bound executions while reserving cache maintenance for idle periods."""
+
+    def __init__(self, limit: int):
+        if type(limit) is not int or not 1 <= limit <= 8:
+            raise ValueError("Concurrent support turns must be between 1 and 8.")
+        self.slots = asyncio.Semaphore(limit)
+        self.condition = asyncio.Condition()
+        self.active = 0
+        self.waiting = 0
+        self.maintaining = False
+
+    @asynccontextmanager
+    async def turn(self):
+        self.waiting += 1
+        admitted = False
+        try:
+            async with self.slots:
+                async with self.condition:
+                    await self.condition.wait_for(lambda: not self.maintaining)
+                    self.waiting -= 1
+                    self.active += 1
+                    admitted = True
+                try:
+                    yield
+                finally:
+                    self.active -= 1
+        finally:
+            if not admitted:
+                self.waiting -= 1
+
+    @asynccontextmanager
+    async def idle_maintenance(self):
+        async with self.condition:
+            admitted = not self.active and not self.waiting and not self.maintaining
+            if admitted:
+                self.maintaining = True
+        try:
+            yield admitted
+        finally:
+            if admitted:
+                async with self.condition:
+                    self.maintaining = False
+                    self.condition.notify_all()
+
+
 class CodexSupportTicketExecutionJsonEndpoint:
     def __init__(
         self,
@@ -131,6 +178,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         inherit_parent_env: bool = False,
         artifact_dir: str | None = None,
         timeout_seconds: float = 300.0,
+        max_concurrent_turns: int = 2,
         max_output_chars: int = 200000,
         max_error_chars: int = 4000,
     ) -> None:
@@ -173,7 +221,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self.max_output_chars = max_output_chars
         self.max_error_chars = max_error_chars
         self.execution_locks = _ConversationExecutionLocks()
-        self.codex_runtime_lock = asyncio.Lock()
+        self.runtime = _RuntimeConcurrency(max_concurrent_turns)
         self.ysupport_mcp_enabled = self._prepare_support_home()
 
     async def prune_expired_sessions(self) -> int:
@@ -183,7 +231,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
             or self.codex_home is None
         ):
             return 0
-        async with self.codex_runtime_lock:
+        async with self.runtime.idle_maintenance() as admitted:
+            if not admitted:
+                return 0
             active_session_ids = {
                 record.session_id for record in self.session_manager.list_records()
             }
@@ -195,11 +245,14 @@ class CodexSupportTicketExecutionJsonEndpoint:
             )
             removed = 0
             for session_id in session_ids:
+                if self.runtime.waiting:
+                    break
                 if await self._delete_codex_session(session_id):
                     removed += 1
-            await asyncio.to_thread(
-                prune_codex_support_caches, self.codex_home, cutoff=cutoff
-            )
+            if not self.runtime.waiting:
+                await asyncio.to_thread(
+                    prune_codex_support_caches, self.codex_home, cutoff=cutoff
+                )
             return removed
 
     async def _delete_codex_session(self, session_id: str) -> bool:
@@ -273,134 +326,134 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 endpoint_mode="codex_support_exec",
             ).to_json()
         conversation_key = _conversation_key_for_request(request)
-        async with self.execution_locks.acquire(conversation_key):
-            workspace = TicketExecutionWorkspace(
-                artifact_dir=self.artifact_dir or None,
-                prefix="ticket-codex-support-run-",
+        started = monotonic()
+        timings = {"queue_ms": None, "setup_ms": None, "execution_ms": None}
+        outcome = "error"
+        try:
+            async with self.execution_locks.acquire(conversation_key), self.runtime.turn():
+                timings["queue_ms"] = round((monotonic() - started) * 1000)
+                result = await self._execute_admitted_turn(request, hooks, conversation_key, timings)
+                outcome = "completed"
+                return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            total_ms = round((monotonic() - started) * 1000)
+            logging.info(
+                "Support turn timings channel_id=%s conversation=%s outcome=%s "
+                "queue_ms=%s setup_ms=%s execution_ms=%s total_ms=%s",
+                request.run_context.get("channel_id"), conversation_key, outcome,
+                timings["queue_ms"] if timings["queue_ms"] is not None else total_ms,
+                timings["setup_ms"], timings["execution_ms"], total_ms,
             )
-            with workspace as run_dir:
-                async with self.codex_runtime_lock, InternalRpcServer(
-                    run_dir, timeout_seconds=self.timeout_seconds
-                ) as internal_rpc:
-                    support_request = SupportTurnRequest.from_ticket_execution_request(
-                        request,
-                        ysupport_mcp_enabled=self.ysupport_mcp_enabled,
+
+    async def _execute_admitted_turn(self, request, hooks, conversation_key, timings):
+        setup_started = monotonic()
+        workspace = TicketExecutionWorkspace(
+            artifact_dir=self.artifact_dir or None,
+            prefix="ticket-codex-support-run-",
+        )
+        with workspace as run_dir:
+            async with InternalRpcServer(
+                run_dir, timeout_seconds=self.timeout_seconds
+            ) as internal_rpc:
+                support_request = SupportTurnRequest.from_ticket_execution_request(
+                    request,
+                    ysupport_mcp_enabled=self.ysupport_mcp_enabled,
+                )
+                support_request.support_state["internal_rpc"] = internal_rpc.description
+                workflow_context = support_request.support_state.get("workflow_context", {})
+                session_record = (
+                    self.session_manager.load_for_turn(
+                        conversation_key=conversation_key,
+                        requested_intent=support_request.requested_intent,
+                        guardrail_profile=workflow_context.get("guardrail_profile"),
+                        human_handoff_active=bool(
+                            support_request.support_state.get("human_handoff_active")
+                        ),
                     )
-                    support_request.support_state["internal_rpc"] = internal_rpc.description
-                    workflow_context = support_request.support_state.get("workflow_context", {})
-                    session_record = (
-                        self.session_manager.load_for_turn(
-                            conversation_key=conversation_key,
-                            requested_intent=support_request.requested_intent,
-                            guardrail_profile=workflow_context.get("guardrail_profile"),
-                            human_handoff_active=bool(
-                                support_request.support_state.get("human_handoff_active")
-                            ),
-                        )
-                        if self.session_manager is not None and conversation_key is not None
-                        else None
-                    )
-                    await prepare_support_request_attachments(
-                        support_request,
+                    if self.session_manager is not None and conversation_key is not None
+                    else None
+                )
+                await prepare_support_request_attachments(
+                    support_request,
+                    run_dir=run_dir,
+                )
+                bundle = _build_codex_support_execution_bundle(
+                    support_request=support_request,
+                    run_dir=run_dir,
+                    codex_command=self.codex_command,
+                    model=self.model,
+                    reasoning_effort=self.reasoning_effort,
+                    resume_session_id=session_record.session_id if session_record else None,
+                )
+                persist_session = True
+                export_workspace = True
+                exported_run_dir: Path | None = None
+                timings["setup_ms"] = round((monotonic() - setup_started) * 1000)
+                execution_started = monotonic()
+                try:
+                    execution_output = await self._run_codex(
+                        bundle=bundle,
                         run_dir=run_dir,
+                        hooks=hooks,
                     )
-                    bundle = _build_codex_support_execution_bundle(
-                        support_request=support_request,
-                        run_dir=run_dir,
-                        codex_command=self.codex_command,
-                        model=self.model,
-                        reasoning_effort=self.reasoning_effort,
-                        resume_session_id=session_record.session_id if session_record else None,
-                    )
-                    persist_session = True
-                    export_workspace = True
-                    exported_run_dir: Path | None = None
                     try:
-                        execution_output = await self._run_codex(
-                            bundle=bundle,
-                            run_dir=run_dir,
-                            hooks=hooks,
+                        support_result = verify_support_turn_result(
+                            SupportTurnResult.from_json(
+                                execution_output.final_response_text
+                            ),
+                            support_request,
                         )
+                    except SignedTransactionSafetyViolation:
+                        persist_session = False
+                        export_workspace = False
+                        logging.warning(
+                            "Codex support output crossed the signed-transaction "
+                            "safety boundary for %s; requesting one safe rewrite.",
+                            conversation_key or "unkeyed conversation",
+                        )
+                        rewrite_session_id = (
+                            self._extract_session_id_from_run_dir(run_dir)
+                            or bundle.resumed_session_id
+                        )
+                        _discard_unsafe_execution_stdout(run_dir)
+                        if rewrite_session_id is None:
+                            raise
                         try:
+                            if (
+                                self.session_manager is not None
+                                and conversation_key is not None
+                            ):
+                                self.session_manager.reset(conversation_key)
+                            rewrite_run_dir = (
+                                run_dir / "transaction-safety-rewrite"
+                            )
+                            rewrite_bundle = _build_codex_support_execution_bundle(
+                                support_request=support_request,
+                                run_dir=rewrite_run_dir,
+                                codex_command=self.codex_command,
+                                model=self.model,
+                                reasoning_effort=self.reasoning_effort,
+                                resume_session_id=rewrite_session_id,
+                                transaction_safety_rewrite=True,
+                            )
+                            rewrite_output = await self._run_codex(
+                                bundle=rewrite_bundle,
+                                run_dir=rewrite_run_dir,
+                                hooks=hooks,
+                            )
                             support_result = verify_support_turn_result(
                                 SupportTurnResult.from_json(
-                                    execution_output.final_response_text
+                                    rewrite_output.final_response_text
                                 ),
                                 support_request,
                             )
-                        except SignedTransactionSafetyViolation:
-                            persist_session = False
-                            export_workspace = False
-                            logging.warning(
-                                "Codex support output crossed the signed-transaction "
-                                "safety boundary for %s; requesting one safe rewrite.",
-                                conversation_key or "unkeyed conversation",
+                        finally:
+                            await self._retire_contaminated_session(
+                                rewrite_session_id
                             )
-                            rewrite_session_id = (
-                                self._extract_session_id_from_run_dir(run_dir)
-                                or bundle.resumed_session_id
-                            )
-                            _discard_unsafe_execution_stdout(run_dir)
-                            if rewrite_session_id is None:
-                                raise
-                            try:
-                                if (
-                                    self.session_manager is not None
-                                    and conversation_key is not None
-                                ):
-                                    self.session_manager.reset(conversation_key)
-                                rewrite_run_dir = (
-                                    run_dir / "transaction-safety-rewrite"
-                                )
-                                rewrite_bundle = _build_codex_support_execution_bundle(
-                                    support_request=support_request,
-                                    run_dir=rewrite_run_dir,
-                                    codex_command=self.codex_command,
-                                    model=self.model,
-                                    reasoning_effort=self.reasoning_effort,
-                                    resume_session_id=rewrite_session_id,
-                                    transaction_safety_rewrite=True,
-                                )
-                                rewrite_output = await self._run_codex(
-                                    bundle=rewrite_bundle,
-                                    run_dir=rewrite_run_dir,
-                                    hooks=hooks,
-                                )
-                                support_result = verify_support_turn_result(
-                                    SupportTurnResult.from_json(
-                                        rewrite_output.final_response_text
-                                    ),
-                                    support_request,
-                                )
-                            finally:
-                                await self._retire_contaminated_session(
-                                    rewrite_session_id
-                                )
-                    except Exception as exc:
-                        if (
-                            self.session_manager is not None
-                            and conversation_key is not None
-                            and session_record is not None
-                        ):
-                            self.session_manager.record_failure(
-                                conversation_key=conversation_key,
-                                error_text=str(exc),
-                            )
-                        raise
-                    finally:
-                        await internal_rpc.close()
-                        if export_workspace:
-                            exported_run_dir = safe_export_workspace_copy(
-                                workspace,
-                                logger_name=__name__,
-                                context="codex support execution",
-                            )
-
-                try:
-                    response_json = support_result_to_transport_result(
-                        support_result,
-                        request,
-                    ).to_json()
                 except Exception as exc:
                     if (
                         self.session_manager is not None
@@ -410,33 +463,59 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         self.session_manager.record_failure(
                             conversation_key=conversation_key,
                             error_text=str(exc),
-                            artifact_dir=(
-                                str(exported_run_dir) if exported_run_dir else None
-                            ),
                         )
                     raise
-
-                if (
-                    persist_session
-                    and self.session_manager is not None
-                    and conversation_key is not None
-                ):
-                    session_id = (
-                        self._extract_session_id_from_run_dir(run_dir)
-                        or bundle.resumed_session_id
-                    )
-                    if session_id is not None:
-                        self.session_manager.record_success(
-                            conversation_key=conversation_key,
-                            session_id=session_id,
-                            artifact_dir=str(exported_run_dir) if exported_run_dir else None,
-                            requested_intent=support_request.requested_intent,
-                            guardrail_profile=workflow_context.get("guardrail_profile"),
-                            human_handoff_active=bool(
-                                support_request.support_state.get("human_handoff_active")
-                            ),
+                finally:
+                    timings["execution_ms"] = round((monotonic() - execution_started) * 1000)
+                    await internal_rpc.close()
+                    if export_workspace:
+                        exported_run_dir = safe_export_workspace_copy(
+                            workspace,
+                            logger_name=__name__,
+                            context="codex support execution",
                         )
-                return response_json
+
+            try:
+                response_json = support_result_to_transport_result(
+                    support_result,
+                    request,
+                ).to_json()
+            except Exception as exc:
+                if (
+                    self.session_manager is not None
+                    and conversation_key is not None
+                    and session_record is not None
+                ):
+                    self.session_manager.record_failure(
+                        conversation_key=conversation_key,
+                        error_text=str(exc),
+                        artifact_dir=(
+                            str(exported_run_dir) if exported_run_dir else None
+                        ),
+                    )
+                raise
+
+            if (
+                persist_session
+                and self.session_manager is not None
+                and conversation_key is not None
+            ):
+                session_id = (
+                    self._extract_session_id_from_run_dir(run_dir)
+                    or bundle.resumed_session_id
+                )
+                if session_id is not None:
+                    self.session_manager.record_success(
+                        conversation_key=conversation_key,
+                        session_id=session_id,
+                        artifact_dir=str(exported_run_dir) if exported_run_dir else None,
+                        requested_intent=support_request.requested_intent,
+                        guardrail_profile=workflow_context.get("guardrail_profile"),
+                        human_handoff_active=bool(
+                            support_request.support_state.get("human_handoff_active")
+                        ),
+                    )
+            return response_json
 
     def _prepare_support_home(self) -> bool:
         if self.codex_home is None:
@@ -550,6 +629,7 @@ def _build_codex_support_execution_bundle(
         )
     else:
         prompt_text = _codex_support_prompt(
+            support_request=support_request,
             support_request_path=support_request_path,
             response_schema_path=response_schema_path,
         )
@@ -695,6 +775,7 @@ def _expired_unreferenced_rollout_ids(
 
 def _codex_support_prompt(
     *,
+    support_request: SupportTurnRequest,
     support_request_path: Path,
     response_schema_path: Path,
 ) -> str:
@@ -704,6 +785,20 @@ def _codex_support_prompt(
         "Execute one ySupport turn using the standing instructions.\n"
         f"Support request: {support_request_path}\n"
         f"Response schema: {response_schema_path}\n"
+        "Use the current JSON below directly; the files are identical snapshots.\n"
+        f"Support request JSON:\n{support_request.to_json()}\n"
+        f"Response schema JSON:\n{json.dumps(CODEX_SUPPORT_RESULT_SCHEMA)}\n"
+        + (
+            "ySupport MCP tools (use the matching callable; no full catalog listing needed):\n"
+            "search_documentation: official docs; search_repo_context then fetch_repo_artifacts: source code.\n"
+            "search_vaults: vault identity/exact details; support_dashboard_discover: current vault yields.\n"
+            "support_dashboard_styfi: stYFI; support_dashboard_flex: Flex lending.\n"
+            "support_dashboard_reports, support_dashboard_changes, support_dashboard_status: dashboard reports/changes/health.\n"
+            "repo_context_status: repository index health.\n"
+            if "ysupport_mcp" in support_request.constraints.get("allowed_tools", []) else ""
+        )
+        + "Use support_state.internal_rpc.command for chain reads; its operations and parameters are in the request. "
+        "Batch independent reads in one shell invocation. Preserve exact integer units; decimal strings are accepted for integer contract arguments. "
         "Return only schema-valid JSON."
     )
 

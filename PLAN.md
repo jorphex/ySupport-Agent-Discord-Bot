@@ -1,3 +1,179 @@
+# Deleted-ticket handoff race
+
+Goal: prevent queued delivery workers from overwriting a deleted ticket's archived
+Telegram notice. Preserve staff takeover, active cancellation and ticket deletion.
+
+Failure modes and acceptance (before implementation):
+- Invalidate the handoff before waiting for ordinary-task cancellation or Telegram
+  archiving. A newly available worker must not start delivery or send failure
+  feedback during either wait, including when Discord has removed the channel.
+- Workers can hold older notice snapshots while another ticket runs. Deleted or
+  replaced notices must not send edits or recreate deleted persisted ticket state,
+  including the delivered-pending-close path.
+- Archive the captured notice once and remove ticket state. Preserve cancellation
+  of active native work and unrelated deliveries. No unit tests or live messages.
+
+- [x] Extend controller E2E and reproduce the queued/snapshot orderings.
+- [x] Apply the smallest invalidation/eligibility fix and verify the regressions.
+- [x] Review, run existing checks, and activate while idle with rollback retained.
+
+The deletion handler captures and durably invalidates its notice before any wait.
+Delivery workers check notice identity and eligibility before claiming work or
+persisting recovered state. E2E reproduced both archive overwrite and deleted
+state recreation before the fix; both now pass alongside native cancellation,
+staff takeover and unrelated delivery. All 292 existing tests, optimization E2E,
+Ruff safe-fix/non-mutating checks and diff checks pass. Runtime hashes match the
+E2E evidence. Review found no further gap in this change.
+
+Evidence: `.cache/verification/deleted-handoff-{before,e2e,optimization-e2e}.json`
+and `deleted-handoff-existing-tests.log`. The two prior deployed runtime files are
+verified and retained in `deleted-handoff-rollback.tar`.
+
+Activated after a fresh idle check. Discord reconnected, Telegram polling resumed,
+MCP stayed healthy and ticket 1633 stayed stopped. No live test messages were sent.
+Deployment evidence: `.cache/verification/deleted-handoff-deployment.json`.
+
+# Cancellation and maintenance review repairs
+
+Goal: release investigation capacity when a Telegram update is stopped, and let
+new support work proceed after the current maintenance operation finishes.
+Preserve the existing latency changes, ticket state and staff takeover behavior.
+
+Failure modes and acceptance (before implementation):
+- Explicit Discord Stop Bot cancels only that handoff's task, kills its native
+  process, closes its RPC socket and releases its slot. Another ticket stays live;
+  queued work starts without releasing a test gate on the stopped model.
+- A queued handoff can be canceled before native admission and must never start.
+  Staff takeover still permits an accepted Telegram reply. Worker cancellation on
+  shutdown cancels its child and retains durable pending-delivery state.
+- Deletion and reinitialization cancel their handoff execution. Per-channel task
+  ownership and delivery claims are released on success, error and cancellation.
+  Cancellation must not overwrite archived notices with delivery-failure feedback.
+- Maintenance finishes its current deletion, then yields if a support turn waits.
+  It skips cache mutation while yielding, retains remaining cleanup for an idle
+  pass, and still excludes execution while a deletion/cache operation is active.
+  A canceled waiter must not leave a stale queue count or block later cleanup.
+- Extend production-controller/native-process E2E first; reproduce both reviewed
+  failures. No unit tests added, model/dependency/auth changes or live messages.
+
+- [x] Add E2E assertions for active/queued handoff cancellation and cleanup yielding.
+- [x] Implement separate handoff tasks and explicit cancellation paths; verify.
+- [x] Track waiting executions and yield maintenance between operations; verify.
+- [x] Review the diff, resolve findings and run relevant existing/E2E checks.
+- [x] Activate only while idle, retain rollback, and verify the live service.
+
+Separate per-channel handoff tasks now isolate explicit cancellation from their
+persistent workers. Stop kills active native processes, closes private RPC sockets
+and releases capacity; queued cancellation cannot start a model. Staff takeover
+keeps accepted updates eligible. Deletion and shutdown cancel their children;
+shutdown retains durable pending state. A review regression also prevents canceled
+channel deletion from being mislabeled as a delivery failure in Telegram.
+
+Maintenance counts waiting executions, yields after the current deletion and
+skips cache work ahead of support. Remaining cleanup resumes when idle. Canceled
+waiters release their count and do not defer idle cleanup indefinitely.
+
+Expanded native-process/controller E2E and the optimization E2E pass, as do all
+292 existing tests, Ruff safe fixes/non-mutating checks and diff checks. Before-fix
+artifacts reproduce both findings and the related cancellation-status race.
+Evidence: `.cache/verification/latency-repair-{before,e2e,optimization-e2e}.json` and
+`latency-repair-existing-tests.log`. A verified copy of the prior deployed runtime
+is retained in `latency-repair-rollback.tar`.
+
+Activated after confirming no active processes, recent support turns or accepted
+pending Telegram deliveries. Discord reconnected, Telegram polling resumed, MCP
+remained healthy and ticket 1633 stayed stopped. No live test messages were sent.
+Deployment evidence: `.cache/verification/latency-repair-deployment.json`.
+
+# Support latency and concurrent investigations
+
+Goal: remove measured investigation delays while preserving grounding, ticket
+isolation, staff control and bounded internal RPC access. Cover all five reviewed
+items: serial decisions, failed detours, burst messages, investigation scope and
+cross-ticket concurrency, including independent Telegram delivery workers.
+
+Constraints: no model change, dependency, public RPC tool, external message,
+credential change or broad refactor. Preserve existing source-chunk work. Prepare
+and verify changes before any runtime activation; do not interrupt live turns.
+
+Failure modes and acceptance (recorded before implementation):
+- Different tickets must overlap up to a configurable bound (default two); a
+  third waits. Same-conversation turns remain serial and isolated. Cancellation
+  while queued or active releases capacity and closes its own RPC/process only.
+- Session/cache maintenance must never delete an active session or mutate caches
+  during execution. Idle maintenance excludes new executions; busy cleanup skips
+  until a later idle pass, rather than queueing ahead of live support.
+- Initial requests/schema and concise tool routing are available in the native
+  prompt without a separate file-read/model cycle. Retain request files, image
+  arguments, output validation, current per-turn RPC socket and safety rewrite.
+- Nullable catalog assets/symbols cannot abort filtered position scans. Receipt
+  symbols and underlying symbols both resolve, and optional chain scope avoids
+  unrelated chains. Failed/partial reads remain unknown, never zero.
+- Katana guidance uses the official Katanascan URL. Preserve valid redemption
+  signatures, raw units and loss semantics; a rounded maxRedeem difference alone
+  must not be described as proof a full-balance redemption fails.
+- Ordinary message collection is shorter; bug-report collection remains intact.
+  Owner follow-ups queue behind active work without discarding observations.
+  Suppress a draft/handoff overtaken by a follow-up, process the latest evidence
+  immediately next, and preserve the fact an intermediate draft was not sent.
+  Staff takeover and explicit Stop Bot still cancel work and prevent late replies.
+- Staff summons include bounded recent ticket-user images and current command
+  attachments, with source attribution; do not silently treat staff as the user.
+- Routine support gives one evidence-backed next action and asks only for the next
+  missing detail. No personality classifier, keyword router or hard accuracy cap.
+- Emit ticket-correlated queue/setup/execution timings for completed, failed and
+  canceled turns. Do not confuse first item timing or cumulative session tokens
+  with provider-only latency or per-turn context size.
+- E2E scenarios precede runtime edits. Exercise real controllers, native process
+  boundaries and private RPC with controlled providers, saving repeatable JSON.
+  Check existing suites and real-model selected cases, including simultaneous
+  executions sharing a service-owned home; send no Discord/Telegram messages.
+
+Steps:
+- [x] Review this plan against callers, session lifecycle, cleanup and follow-ups.
+- [x] Extend E2E coverage and reproduce concurrency, intake and metadata failures.
+- [x] Implement bounded concurrency, idle maintenance and correlated timings;
+  verify cancellation, isolation and cleanup before continuing.
+- [x] Remove request-read/tool-discovery cycles and repair provider/explorer
+  detours; run RPC and native-boundary E2E.
+- [x] Queue owner follow-ups, shorten collection, preserve recent user images and
+  tighten generic investigation instructions; verify full ticket transitions.
+- [x] Review the complete diff, address concrete findings, run required checks and
+  selected real-model replays; record measured outcomes and remaining limits.
+
+Implementation checks: native-process E2E proves two overlapping executions,
+a bounded third, same-ticket serialization, isolated sockets and cancellation.
+Idle cleanup excludes work and busy cleanup skips. Private RPC E2E reproduces and
+repairs nullable metadata, receipt-symbol filtering and exact decimal-string ABI
+arguments; chain scoping and the official Katana explorer are verified. Ticket
+E2E covers retained original/latest images, deferred drafts and handoffs, queued
+follow-ups after failed execution, staff control and explicit stops. A second
+serialization point in Telegram delivery is replaced by bounded workers with
+per-channel claims; simultaneous delivery, one-time delivery and stop guards pass.
+
+The first full suite exposed one obsolete assertion requiring global serialization;
+it is retired in favor of the real-process concurrency E2E. Existing authentication,
+same-conversation, safety-rewrite and delivery checks are retained. Four selected
+real-model replays pass, including two terse withdrawal cases (17.0s and 26.0s).
+Two real Codex executions sharing one service-owned home overlap for 11.94s with
+separate sessions and correct private-provider results. These controlled replays
+are evidence of behavior, not a production latency guarantee.
+
+Final verification: 292 existing tests, latency E2E, private RPC E2E and the
+broader optimization E2E pass. Retired two obsolete tests asserting one global
+execution/worker count; end-to-end overlap, bounded capacity, fresh pending-state
+recovery, same-ticket isolation and cancellation now verify the intended behavior.
+Ruff safe fixes, non-mutating checks and diff checks pass. Reviewed runtime hashes
+match the final deterministic evidence.
+
+Activated only after a live-idle check, retaining
+`.cache/verification/latency-runtime-rollback.tar`. The bot reconnected with
+`codex_concurrency=2`, Telegram polling started, MCP remained healthy, and ticket
+1633 remained stopped. No test messages were sent to Discord or Telegram.
+Aggregate evidence: `.cache/verification/latency-deployment.json`; detailed
+latency/RPC/optimization evidence is in the same directory. Real-model evidence:
+`/var/lib/ysupport-codex/verification/latency-native-{rpc,replays}.json`.
+
 # Full text-source retrieval
 
 Goal: replace the 2,000-character fallback prefix with bounded, overlapping

@@ -154,6 +154,7 @@ conversation_threads: Dict[int, List[TResponseInputItem]] = {}
 pending_messages: Dict[int, str] = {}
 pending_attachments_by_channel: Dict[int, List[Dict[str, Any]]] = {}
 pending_tasks: Dict[int, asyncio.Task] = {}
+handoff_delivery_tasks: Dict[int, asyncio.Task[bool]] = {}
 active_ticket_executor_tasks: Dict[int, asyncio.Task] = {}
 active_ticket_payloads: Dict[
     int,
@@ -174,6 +175,16 @@ async def cancel_pending_ticket_task(channel_id: int) -> bool:
         return False
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+    return True
+
+
+async def cancel_handoff_delivery(channel_id: int) -> bool:
+    task = handoff_delivery_tasks.pop(channel_id, None)
+    if task is None:
+        return False
+    task.cancel()
+    if task is not asyncio.current_task():
+        await asyncio.gather(task, return_exceptions=True)
     return True
 
 # Last known wallet address per channel (checksummed)

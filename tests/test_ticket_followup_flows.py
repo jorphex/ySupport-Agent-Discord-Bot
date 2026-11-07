@@ -471,7 +471,7 @@ class TicketFlowTests(TicketFlowTestCase):
                 task.cancel()
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
-    async def test_active_followup_restarts_with_complete_payload(
+    async def test_active_followup_reuses_work_before_answering_latest_payload(
         self,
     ) -> None:
         channel_id = 394
@@ -481,6 +481,7 @@ class TicketFlowTests(TicketFlowTestCase):
         owner = SimpleNamespace(id=777, bot=False, name="owner")
         first_started = asyncio.Event()
         first_cancelled = asyncio.Event()
+        release_first = asyncio.Event()
         second_completed = asyncio.Event()
         captured_requests: list[TicketTurnRequest] = []
 
@@ -499,7 +500,7 @@ class TicketFlowTests(TicketFlowTestCase):
                 if len(captured_requests) == 1:
                     first_started.set()
                     try:
-                        await asyncio.Event().wait()
+                        await release_first.wait()
                     except asyncio.CancelledError:
                         first_cancelled.set()
                         raise
@@ -543,7 +544,8 @@ class TicketFlowTests(TicketFlowTestCase):
                 await bot.on_message(ticket_message(2001, "Initial vault issue."))
                 await asyncio.wait_for(first_started.wait(), timeout=1)
                 await bot.on_message(ticket_message(2002, "The tx hash is 0xabc."))
-                await asyncio.wait_for(first_cancelled.wait(), timeout=1)
+                self.assertFalse(first_cancelled.is_set())
+                release_first.set()
                 await asyncio.wait_for(second_completed.wait(), timeout=1)
                 while channel_id in pending_tasks:
                     await asyncio.sleep(0)
@@ -551,7 +553,7 @@ class TicketFlowTests(TicketFlowTestCase):
             self.assertEqual(len(captured_requests), 2)
             self.assertEqual(
                 captured_requests[1].aggregated_text,
-                "Initial vault issue.\nThe tx hash is 0xabc.",
+                "The tx hash is 0xabc.",
             )
             self.assertEqual(
                 fake_channel.sent_messages,
@@ -664,14 +666,14 @@ class TicketFlowTests(TicketFlowTestCase):
                 self.assertFalse(first_replacement.done())
                 self.assertEqual(
                     pending_messages[channel_id],
-                    "Initial vault issue.\nIt is on Base.\nThe tx hash is 0xabc.",
+                    "It is on Base.\nThe tx hash is 0xabc.",
                 )
                 self.assertEqual(
                     [
                         attachment["filename"]
                         for attachment in pending_attachments_by_channel[channel_id]
                     ],
-                    ["initial.png", "base.png", "transaction.png"],
+                    ["base.png", "transaction.png"],
                 )
                 self.assertEqual(
                     channel.sent_messages,
@@ -685,8 +687,8 @@ class TicketFlowTests(TicketFlowTestCase):
                 release_acknowledgement.set()
                 await asyncio.wait_for(first_handler, timeout=1)
 
-            with self.assertRaises(asyncio.CancelledError):
-                await active_task
+            self.assertFalse(active_task.done())
+            self.assertIs(pending_tasks[channel_id], active_task)
         finally:
             release_acknowledgement.set()
             if first_handler is not None and not first_handler.done():

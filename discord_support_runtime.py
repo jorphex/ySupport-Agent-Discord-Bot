@@ -785,10 +785,12 @@ async def _build_staff_summon_history(
     bot_user_id: int | None,
     scan_limit: int = 30,
     history_limit: int = 12,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> List[TResponseInputItem]:
     messages = [message async for message in channel.history(limit=scan_limit)]
     messages.reverse()
     history: List[TResponseInputItem] = []
+    user_images: list[tuple[int, dict[str, Any]]] = []
     for message in messages:
         if message.id == exclude_message_id:
             continue
@@ -809,6 +811,15 @@ async def _build_staff_summon_history(
             continue
         if ticket_owner_user_id is None or message.author.id == ticket_owner_user_id:
             history.append({"role": "user", "content": content})
+            if message.author.id == ticket_owner_user_id:
+                user_images.extend(
+                    (len(history) - 1, {**item, "source_author_role": "ticket_user"})
+                    for item in _attachment_payloads_from_message(message)
+                    if item["is_image"]
+                )
+    if attachments is not None:
+        offset = max(0, len(history) - history_limit)
+        attachments.extend([item for index, item in user_images if index >= offset][-4:])
     return history[-history_limit:]
 
 

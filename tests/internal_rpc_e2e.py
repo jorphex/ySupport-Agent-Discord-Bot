@@ -323,6 +323,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
                     reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
                     codex_home=root / "native-home",
                     codex_auth_link_source=os.environ["TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE"],
+                    session_dir=root / "native-sessions",
                     artifact_dir=str(native_exports), web_search_mode="disabled",
                     env={"PATH": os.environ["PATH"], "HOME": str(root)}, timeout_seconds=180,
                 )
@@ -347,6 +348,38 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
                 assert "0.5" in answer and re.search(r"(?:latest|confirmed)\D{0,40}\b5\b", answer, re.I) and re.search(r"pending\D{0,40}\b6\b", answer, re.I), answer
                 assert SECRET not in json.dumps(result) and not list(native_exports.rglob("*.sock"))
                 report["native_probe"] = {"passed": True, "model": real.model, "reasoning_effort": real.reasoning_effort, "answer": answer, "usage": usage, "rpc_calls": node.calls}
+
+                intervals = []
+                run_codex = real._run_codex
+
+                async def measured(**kwargs):
+                    interval = {"started": time.monotonic()}
+                    intervals.append(interval)
+                    try:
+                        return await run_codex(**kwargs)
+                    finally:
+                        interval["ended"] = time.monotonic()
+
+                real._run_codex = measured
+                async def concurrent_turn(channel):
+                    prompt = (f"Read wallet {WALLET}'s native ETH balance on Ethereum using the private command. "
+                              f"Reply with the balance and marker ticket-{channel}. No other reads or tools are needed.")
+                    request = replace(build_smoke_transport_request(), smoke_mode=None,
+                        aggregated_text=prompt, run_context={"channel_id": channel, "project_context": "yearn"},
+                        investigation_job={"channel_id": channel, "mode": "idle", "evidence": {}})
+                    result = json.loads(await real.execute_json_turn(request.to_json()))
+                    text = result["flow_outcome"]["raw_final_reply"]
+                    assert "0.5" in text and f"ticket-{channel}" in text, text
+                    assert f"ticket-{9103 if channel == 9102 else 9102}" not in text
+                    return text
+
+                answers = await asyncio.gather(concurrent_turn(9102), concurrent_turn(9103))
+                assert len(intervals) == 2
+                overlap = min(i["ended"] for i in intervals) - max(i["started"] for i in intervals)
+                assert overlap > 0, intervals
+                assert real.session_manager.load("ticket:9102").session_id != real.session_manager.load("ticket:9103").session_id
+                report["native_concurrency"] = {"passed": True, "overlap_seconds": round(overlap, 3),
+                    "intervals": intervals, "answers": answers, "shared_home": True, "separate_sessions": True}
 
         report["rpc_methods_observed"] = sorted({c["method"] for c in node.calls})
         assert not any("send" in method.lower() for method in report["rpc_methods_observed"])

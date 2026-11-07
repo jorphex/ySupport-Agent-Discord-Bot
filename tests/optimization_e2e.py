@@ -655,6 +655,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
 
     try:
         with (
+            patch.object(config, "TICKET_EXECUTION_MAX_CONCURRENT_TURNS", 1),
             patch.object(config, "TELEGRAM_BOT_TOKEN", "fixture"),
             patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
             patch.dict(os.environ, {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}),
@@ -672,8 +673,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             os.utime(old_cache, (old, old))
             os.utime(old_cache.parent, (old, old))
             pruning = asyncio.create_task(endpoint.prune_expired_sessions())
-            await asyncio.sleep(0)
-            assert not pruning.done() and old_cache.exists()
+            assert await pruning == 0 and old_cache.exists()
             await updates.put(
                 [
                     {
@@ -701,6 +701,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             (root / "501.release").touch()
             await eventually(lambda: 501 not in state.team_handoff_notice_by_channel)
             await pruning
+            await endpoint.prune_expired_sessions()
             assert not old_cache.exists()
             assert channels[501].sent_messages == ["The withdrawal is queued."]
             assert state.stop_reasons_by_channel[501] == "staff_takeover"

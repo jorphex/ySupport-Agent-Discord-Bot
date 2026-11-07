@@ -2140,5 +2140,94 @@
         "result": "Observation unavailable: destination receipt read timed out. No destination transaction status, transfer logs or delivered amount could be obtained."
       }
     ]
+  },
+  {
+    "id": "terse_known_vault_withdrawal_uses_targeted_read",
+    "turns": [
+      {
+        "message": "withdraw yvvbUSDT katana\nwallet 0x1111111111111111111111111111111111111111\nvault 0x2222222222222222222222222222222222222222",
+        "history": []
+      }
+    ],
+    "providers": {},
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x1111111111111111111111111111111111111111",
+          "chain": "katana",
+          "vault": "0x2222222222222222222222222222222222222222"
+        },
+        "result": "Confirmed vbUSDT yVault on Katana. Wallet: 0x1111111111111111111111111111111111111111. Vault: 0x2222222222222222222222222222222222222222. Official current contract form: https://katanascan.com/address/0x2222222222222222222222222222222222222222#writeContract. Verified redeem(uint256 shares,address receiver,address owner): shares=5893694 raw units; receiver=0x1111111111111111111111111111111111111111; owner=0x1111111111111111111111111111111111111111. Read-only simulation for this amount succeeded. The result is vbUSDT. The old explorer route is unusable; this current route exposes the form. Do not confirm if a fresh wallet simulation fails."
+      }
+    ],
+    "checks": {
+      "all": [
+        "katanascan.com",
+        "redeem",
+        "5893694",
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "none": [
+        "please provide your wallet",
+        "what chain",
+        "no redeem form available",
+        "explorer.katanarpc.com"
+      ],
+      "no_tools": [
+        "positions"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Terse ticket replay: a known target needs one relevant private lookup and a concise actionable reply, without broad scans or repeating supplied questions."
+  },
+  {
+    "id": "terse_unusable_explorer_uses_current_verified_route",
+    "turns": [
+      {
+        "message": "no redeem form. yearn doesnt work either",
+        "history": [
+          {
+            "role": "user",
+            "content": "withdraw yvvbUSDT on Katana, wallet 0x1111111111111111111111111111111111111111, vault 0x2222222222222222222222222222222222222222"
+          },
+          {
+            "role": "assistant",
+            "content": "Use https://explorer.katanarpc.com/address/0x2222222222222222222222222222222222222222 to redeem."
+          }
+        ]
+      }
+    ],
+    "providers": {},
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x1111111111111111111111111111111111111111",
+          "chain": "katana",
+          "vault": "0x2222222222222222222222222222222222222222"
+        },
+        "result": "Confirmed vbUSDT yVault on Katana. Wallet: 0x1111111111111111111111111111111111111111. Vault: 0x2222222222222222222222222222222222222222. Official current contract form: https://katanascan.com/address/0x2222222222222222222222222222222222222222#writeContract. Verified redeem(uint256 shares,address receiver,address owner): shares=5893694 raw units; receiver=0x1111111111111111111111111111111111111111; owner=0x1111111111111111111111111111111111111111. Read-only simulation for this amount succeeded. The result is vbUSDT. The old explorer route is unusable; this current route exposes the form. Do not confirm if a fresh wallet simulation fails."
+      }
+    ],
+    "checks": {
+      "all": [
+        "katanascan.com",
+        "redeem",
+        "5893694",
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "none": [
+        "please provide your wallet",
+        "what chain",
+        "no redeem form available",
+        "explorer.katanarpc.com"
+      ],
+      "no_tools": [
+        "positions"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Terse ticket replay: a known target needs one relevant private lookup and a concise actionable reply, without broad scans or repeating supplied questions."
   }
 ]

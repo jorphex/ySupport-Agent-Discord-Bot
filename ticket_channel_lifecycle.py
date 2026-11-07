@@ -10,7 +10,9 @@ import config
 from discord_support_runtime import _detect_ticket_owner_user_id
 from handoff import build_archived_handoff_notice, edit_handoff_notice
 from state import (
+    cancel_handoff_delivery,
     cancel_pending_ticket_task,
+    clear_team_handoff_notice,
     clear_ticket_channel_state,
     last_bot_reply_ts_by_channel,
     mark_ticket_awaiting_initial_button,
@@ -35,6 +37,7 @@ async def initialize_ticket_channel(channel: discord.abc.GuildChannel) -> None:
     )
     clear_ticket_channel_state(channel.id, keep_stopped=False, delete_persisted=True)
     await cancel_pending_ticket_task(channel.id)
+    await cancel_handoff_delivery(channel.id)
     await asyncio.sleep(1.5)
     ticket_owner_user_id = await _detect_ticket_owner_user_id(channel)
     if ticket_owner_user_id is not None:
@@ -81,8 +84,11 @@ async def initialize_ticket_channel(channel: discord.abc.GuildChannel) -> None:
 async def clear_deleted_ticket_channel(channel: discord.abc.GuildChannel) -> None:
     if not isinstance(channel, discord.TextChannel):
         return
-    await cancel_pending_ticket_task(channel.id)
     notice = team_handoff_notice_by_channel.get(channel.id)
+    # Invalidate queued delivery before cancellation or Telegram requests can yield.
+    clear_team_handoff_notice(channel.id)
+    await cancel_pending_ticket_task(channel.id)
+    await cancel_handoff_delivery(channel.id)
     if notice is not None:
         try:
             await edit_handoff_notice(

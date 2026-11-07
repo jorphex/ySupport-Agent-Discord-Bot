@@ -149,45 +149,6 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             await bot.close()
 
-    async def test_telegram_loop_checks_for_new_pending_state_each_poll(
-        self,
-    ) -> None:
-        bot = TicketBot(intents=discord.Intents.none())
-        recovery_calls = 0
-        fetch_calls = 0
-
-        async def fake_recover_pending() -> None:
-            nonlocal recovery_calls
-            recovery_calls += 1
-
-        async def fake_fetch_updates(_offset):
-            nonlocal fetch_calls
-            fetch_calls += 1
-            await asyncio.sleep(0)
-            if fetch_calls == 1:
-                return []
-            raise asyncio.CancelledError
-
-        try:
-            with (
-                patch.object(
-                    bot.telegram_handoffs,
-                    "_resume_pending_telegram_handoff_replies",
-                    new=fake_recover_pending,
-                ),
-                patch(
-                    "telegram_handoff_controller.fetch_telegram_updates",
-                    new=fake_fetch_updates,
-                ),
-            ):
-                with self.assertRaises(asyncio.CancelledError):
-                    await bot.telegram_handoffs._telegram_handoff_reply_loop()
-
-            self.assertEqual(recovery_calls, 2)
-            self.assertEqual(fetch_calls, 2)
-        finally:
-            await bot.close()
-
     async def test_pending_telegram_recovery_is_bounded_per_notice_state(
         self,
     ) -> None:

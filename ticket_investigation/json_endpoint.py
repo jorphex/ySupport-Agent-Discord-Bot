@@ -274,6 +274,7 @@ def _build_single_ticket_execution_json_endpoint(
             codex_command=command,
             model=config.TICKET_EXECUTION_CODEX_MODEL,
             reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
+            max_concurrent_turns=config.TICKET_EXECUTION_MAX_CONCURRENT_TURNS,
             codex_home=config.TICKET_EXECUTION_CODEX_HOME,
             codex_auth_link_source=config.TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE,
             session_dir=config.TICKET_EXECUTION_CODEX_SESSION_DIR,

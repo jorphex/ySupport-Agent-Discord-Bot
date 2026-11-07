@@ -148,7 +148,7 @@ TICKET_STAFF_SUMMON_PREFIX = "y:"
 MAX_DISCORD_MESSAGE_LENGTH = 1990
 
 # --- Bot Behavior ---
-COOLDOWN_SECONDS = 5
+COOLDOWN_SECONDS = 2
 BUG_REPORT_COOLDOWN_SECONDS = _env_int("BUG_REPORT_COOLDOWN_SECONDS", 60)
 MAX_RESULTS_TO_SHOW = 5
 PUBLIC_TRIGGER_TIMEOUT_MINUTES = 30
@@ -176,6 +176,7 @@ TICKET_EXECUTION_CODEX_REASONING_EFFORT = os.getenv(
     "TICKET_EXECUTION_CODEX_REASONING_EFFORT",
     "medium",
 ).strip().lower() or "medium"
+TICKET_EXECUTION_MAX_CONCURRENT_TURNS = _env_int("TICKET_EXECUTION_MAX_CONCURRENT_TURNS", 2)
 TICKET_EXECUTION_STATE_ROOT = Path(
     os.getenv("TICKET_EXECUTION_STATE_ROOT", "/var/lib/ysupport-codex").strip()
     or "/var/lib/ysupport-codex"
@@ -292,6 +293,7 @@ def ticket_execution_runtime_summary() -> str:
             "codex_reasoning="
             f"{TICKET_EXECUTION_CODEX_REASONING_EFFORT or 'default'}"
         )
+        parts.append(f"codex_concurrency={TICKET_EXECUTION_MAX_CONCURRENT_TURNS}")
     if TICKET_EXECUTION_STATE_ROOT:
         parts.append(f"state_root={TICKET_EXECUTION_STATE_ROOT}")
     if TICKET_EXECUTION_CODEX_HOME:
@@ -315,6 +317,8 @@ def ticket_execution_runtime_warnings() -> list[str]:
 
 
 def validate_ticket_execution_runtime_config() -> None:
+    if not 1 <= TICKET_EXECUTION_MAX_CONCURRENT_TURNS <= 8:
+        raise ValueError("TICKET_EXECUTION_MAX_CONCURRENT_TURNS must be between 1 and 8.")
     if not TICKET_EXECUTION_ENDPOINT:
         raise ValueError("TICKET_EXECUTION_ENDPOINT must name a supported backend.")
     configured_modes = (

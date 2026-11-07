@@ -1,6 +1,5 @@
 import tests as _test_environment  # noqa: F401
 
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -222,110 +221,6 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 canonical_source.read_text(encoding="utf-8"),
                 '{"auth_mode":"canonical-fresh"}',
             )
-
-    async def test_codex_support_endpoint_serializes_codex_runs_across_conversations(
-        self,
-    ) -> None:
-        response = SupportTurnResult(
-            answer="support-ok",
-            requires_human_handoff=False,
-            handoff_reason=None,
-            evidence_summary="checked",
-            used_tools=["shell"],
-        ).to_json()
-        first_entered = asyncio.Event()
-        release_first = asyncio.Event()
-        second_entered = asyncio.Event()
-        in_flight = 0
-        max_in_flight = 0
-
-        async def fake_run_streaming_subprocess(**kwargs):
-            nonlocal in_flight, max_in_flight
-            in_flight += 1
-            max_in_flight = max(max_in_flight, in_flight)
-            if not first_entered.is_set():
-                first_entered.set()
-                await release_first.wait()
-            else:
-                second_entered.set()
-            in_flight -= 1
-            return CodexSupportExecutionOutput(final_response_text=response)
-
-        endpoint = CodexSupportTicketExecutionJsonEndpoint(
-            codex_command=["codex", "exec"],
-            allowed_command_prefixes=[["codex", "exec"]],
-        )
-        request_one = TicketExecutionTransportRequest(
-            aggregated_text="first",
-            input_list=[],
-            current_history=[],
-            run_context={
-                "channel_id": 201,
-                "project_context": "yearn",
-                "repo_last_search_artifact_refs": [],
-            },
-            investigation_job={
-                "channel_id": 201,
-                "requested_intent": "docs_qa",
-                "mode": "waiting_for_user",
-                "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
-            },
-            workflow_name="tests.endpoint.codex_support_exec",
-        )
-        request_two = TicketExecutionTransportRequest(
-            aggregated_text="second",
-            input_list=[],
-            current_history=[],
-            run_context={
-                "channel_id": 202,
-                "project_context": "yearn",
-                "repo_last_search_artifact_refs": [],
-            },
-            investigation_job={
-                "channel_id": 202,
-                "requested_intent": "docs_qa",
-                "mode": "waiting_for_user",
-                "evidence": {"wallet": None, "chain": None, "tx_hashes": []},
-            },
-            workflow_name="tests.endpoint.codex_support_exec",
-        )
-
-        with mock.patch(
-            "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
-            side_effect=fake_run_streaming_subprocess,
-        ):
-            first_task = asyncio.create_task(
-                endpoint.execute_json_turn(request_one.to_json())
-            )
-            await first_entered.wait()
-            second_task = asyncio.create_task(
-                endpoint.execute_json_turn(request_two.to_json())
-            )
-            await asyncio.sleep(0.05)
-            self.assertFalse(
-                second_entered.is_set(),
-                "second Codex run should not enter while the first run is active",
-            )
-            release_first.set()
-            first_response, second_response = await asyncio.gather(
-                first_task,
-                second_task,
-            )
-
-        self.assertEqual(max_in_flight, 1)
-        self.assertTrue(second_entered.is_set())
-        self.assertEqual(
-            TicketExecutionTransportResult.from_json(first_response).flow_outcome[
-                "raw_final_reply"
-            ],
-            "support-ok",
-        )
-        self.assertEqual(
-            TicketExecutionTransportResult.from_json(second_response).flow_outcome[
-                "raw_final_reply"
-            ],
-            "support-ok",
-        )
 
     def test_parse_codex_support_execution_output_uses_only_final_answer(self) -> None:
         stdout_text = "\n".join(
