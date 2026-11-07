@@ -61,8 +61,13 @@ refresh script set the working directory themselves.
   Broad support questions favor methodology docs over code chunks; explicit
   source filenames and identifiers retain code retrieval priority.
 - Set `DOCS_INGESTION_FORCE_REFRESH=1` for a full repair. Per-stage status and last
-  success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron overwrites
-  `.cache/docs_ingestion/update_docs.log` each run to bound log growth.
+  success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron creates
+  the log directory before redirecting output. Each run overwrites the log to
+  bound growth:
+
+```cron
+0 3 * * * mkdir -p /root/bots/discord/ysupport/.cache/docs_ingestion && /root/bots/discord/ysupport/scripts/update_docs.sh > /root/bots/discord/ysupport/.cache/docs_ingestion/update_docs.log 2>&1
+```
 
 ## Runtime and tools
 

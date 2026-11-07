@@ -1,3 +1,25 @@
+# Docs cron directory bootstrap
+
+Goal: make the existing daily refresh start when its ignored log directory is
+absent. Create that directory in cron before shell output redirection; preserve
+refresh stages, locking, exit codes, schedule and log truncation.
+
+Acceptance: the installed command runs all six stages from an empty cache,
+replaces a previous log, preserves a stage failure exit, and does not start the
+job if directory creation fails. Use temporary files and a fake interpreter;
+no live provider calls or bot/MCP restart are needed.
+
+- [x] Reproduce the installed cron failure from an empty cache.
+- [x] Correct and document the cron command without changing other jobs.
+- [x] Verify cold/warm cache and failure cases; review the final diff.
+
+The installed and documented cron command now runs `mkdir -p` before redirecting
+output. Temporary fixture checks reproduced the failure before the change and
+now pass cold cache, log replacement, stage failure propagation and blocked
+creation. Other jobs, the schedule and runtime script are unchanged. Evidence:
+`.cache/verification/docs-cron-bootstrap-{before,after}.json`; repeatable runner:
+`.cache/verification/docs-cron-bootstrap-e2e.py`. Bot and MCP needed no restart.
+
 # Package and path organization
 
 Goal: group loose root modules under one ysupport package without changing bot,
