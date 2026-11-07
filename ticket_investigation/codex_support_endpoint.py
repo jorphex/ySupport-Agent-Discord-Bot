@@ -40,11 +40,18 @@ from ticket_execution.subprocess_utils import (
     validate_allowed_command_prefix,
 )
 from ticket_execution.workspace import TicketExecutionWorkspace
-from ticket_investigation.executor import TicketExecutionHooks
+from ticket_investigation.executor import (
+    TicketExecutionHooks,
+    TicketExecutionNonFallbackError,
+)
+from ticket_investigation.context import merge_explicit_evidence
 from ticket_investigation.internal_rpc import InternalRpcServer
 from ticket_investigation.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
+    deserialize_investigation_job,
+    deserialize_investigation_evidence,
+    serialize_investigation_job,
 )
 
 DEFAULT_CODEX_EXEC_COMMAND = [
@@ -163,6 +170,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
         self,
         *,
         codex_command: Sequence[str] | None = None,
+        app_server_command: Sequence[str] | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
         codex_home: str | Path | None = None,
@@ -186,6 +194,11 @@ class CodexSupportTicketExecutionJsonEndpoint:
         if not command:
             raise ValueError("Codex support execution command cannot be empty.")
         self.codex_command = command
+        self.app_server_command = list(app_server_command) if app_server_command else None
+        if self.app_server_command:
+            prefix = command[:command.index("exec")]
+            if not prefix or self.app_server_command[:len(prefix)] != prefix:
+                raise ValueError("Interactive Codex must use the approved execution prefix.")
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.codex_home = Path(codex_home).resolve() if codex_home else None
@@ -338,6 +351,15 @@ class CodexSupportTicketExecutionJsonEndpoint:
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
+        except Exception as exc:
+            if (
+                hooks is not None and hooks.steering is not None
+                and any(entry.submitted for entry in hooks.steering.inputs)
+            ):
+                raise TicketExecutionNonFallbackError(
+                    "Interactive support output failed after follow-up submission."
+                ) from exc
+            raise
         finally:
             total_ms = round((monotonic() - started) * 1000)
             logging.info(
@@ -399,6 +421,35 @@ class CodexSupportTicketExecutionJsonEndpoint:
                         run_dir=run_dir,
                         hooks=hooks,
                     )
+                    if hooks is not None and hooks.steering is not None:
+                        if any(
+                            entry.submitted and not entry.observed
+                            for entry in hooks.steering.inputs
+                        ):
+                            persist_session = False
+                            if self.session_manager is not None and conversation_key is not None:
+                                self.session_manager.reset(conversation_key)
+                        updated_job = deserialize_investigation_job(request.investigation_job)
+                        for entry in hooks.steering.consumed:
+                            request.aggregated_text += "\n" + entry.text
+                            request.attachments.extend(entry.attachments)
+                            support_request.attachments.extend(entry.prepared_attachments)
+                            if entry.evidence is not None:
+                                updated_job.evidence = deserialize_investigation_evidence(entry.evidence)
+                            else:
+                                merge_explicit_evidence(updated_job, entry.text)
+                        request.investigation_job = serialize_investigation_job(updated_job)
+                        support_request.current_user_message = request.aggregated_text
+                        support_request.evidence = dict(request.investigation_job["evidence"])
+                        if hooks.steering.consumed:
+                            final_request = SupportTurnRequest.from_ticket_execution_request(
+                                request, ysupport_mcp_enabled=self.ysupport_mcp_enabled,
+                            )
+                            support_request.support_state["known_targets"] = final_request.support_state["known_targets"]
+                            support_request.support_state["current_turn_context"].extend(
+                                hint for entry in hooks.steering.consumed for hint in entry.system_hints
+                            )
+                            (run_dir / "support_request.final.json").write_text(support_request.to_json())
                     try:
                         support_result = verify_support_turn_result(
                             SupportTurnResult.from_json(
@@ -442,7 +493,8 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             rewrite_output = await self._run_codex(
                                 bundle=rewrite_bundle,
                                 run_dir=rewrite_run_dir,
-                                hooks=hooks,
+                                hooks=(TicketExecutionHooks(send_progress_update=hooks.send_progress_update)
+                                       if hooks else None),
                             )
                             support_result = verify_support_turn_result(
                                 SupportTurnResult.from_json(
@@ -536,6 +588,20 @@ class CodexSupportTicketExecutionJsonEndpoint:
         run_dir: Path,
         hooks: TicketExecutionHooks | None,
     ) -> CodexSupportExecutionOutput:
+        if self.app_server_command and hooks is not None and hooks.steering is not None:
+            from ticket_investigation.codex_support_app_server import run_codex_support_app_server
+            support_request = SupportTurnRequest(**json.loads(bundle.support_request_path.read_text()))
+            if support_request.current_turn_source != "user" or support_request.channel_type != "ticket":
+                raise TicketExecutionNonFallbackError("Only ordinary ticket-owner turns support steering.")
+            return await run_codex_support_app_server(
+                command=self.app_server_command, prompt_text=bundle.prompt_text,
+                support_request=support_request, resume_session_id=bundle.resumed_session_id,
+                model=self.model, reasoning_effort=self.reasoning_effort,
+                cwd=self.cwd or str(run_dir),
+                env=build_effective_execution_env(env=self.env, inherit_parent_env=self.inherit_parent_env, run_dir=run_dir),
+                timeout_seconds=self.timeout_seconds, max_output_chars=self.max_output_chars,
+                run_dir=run_dir, hooks=hooks,
+            )
         return await run_codex_support_json_subprocess(
             command=bundle.command,
             stdin_text=bundle.prompt_text,

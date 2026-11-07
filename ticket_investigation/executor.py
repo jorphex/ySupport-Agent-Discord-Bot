@@ -11,11 +11,13 @@ from ticket_investigation.transport import (
 
 if TYPE_CHECKING:
     from ticket_investigation.contracts import TicketTurnRequest
+    from ticket_investigation.steering import TicketSteeringInbox
 
 
 @dataclass
 class TicketExecutionHooks:
     send_progress_update: Callable[[str], Awaitable[None]] | None = None
+    steering: TicketSteeringInbox | None = None
 
 
 class TicketExecutionNonFallbackError(ValueError):

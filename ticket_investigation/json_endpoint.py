@@ -272,6 +272,7 @@ def _build_single_ticket_execution_json_endpoint(
         command = list(_codex_command())
         return CodexSupportTicketExecutionJsonEndpoint(
             codex_command=command,
+            app_server_command=[*command[:command.index("exec")], "app-server", "--listen", "stdio://"],
             model=config.TICKET_EXECUTION_CODEX_MODEL,
             reasoning_effort=config.TICKET_EXECUTION_CODEX_REASONING_EFFORT,
             max_concurrent_turns=config.TICKET_EXECUTION_MAX_CONCURRENT_TURNS,

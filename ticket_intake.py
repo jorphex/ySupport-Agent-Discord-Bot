@@ -18,6 +18,37 @@ import yearn_targets
 
 
 @dataclass
+class TicketIntakeState:
+    """Isolated intake dictionaries for inputs that have not been consumed."""
+
+    last_wallets: dict[int, str] = field(default_factory=dict)
+    pending_confirmations: dict[int, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_channel(cls, channel_id: int) -> "TicketIntakeState":
+        return cls(
+            last_wallets={channel_id: last_wallet_by_channel[channel_id]}
+            if channel_id in last_wallet_by_channel
+            else {},
+            pending_confirmations={
+                channel_id: pending_wallet_confirmation_by_channel[channel_id]
+            }
+            if channel_id in pending_wallet_confirmation_by_channel
+            else {},
+        )
+
+    def apply(self, channel_id: int) -> None:
+        for target, staged in (
+            (last_wallet_by_channel, self.last_wallets),
+            (pending_wallet_confirmation_by_channel, self.pending_confirmations),
+        ):
+            if channel_id in staged:
+                target[channel_id] = staged[channel_id]
+            else:
+                target.pop(channel_id, None)
+
+
+@dataclass
 class TicketTurnInputPreparation:
     current_user_content: str
     system_hints: list[str] = field(default_factory=list)
@@ -100,7 +131,18 @@ async def prepare_ticket_turn_input(
     run_context: BotRunContext,
     investigation_job: TicketInvestigationJob,
     aggregated_text: str,
+    intake_state: TicketIntakeState | None = None,
 ) -> TicketTurnInputPreparation:
+    wallets = (
+        intake_state.last_wallets
+        if intake_state is not None
+        else last_wallet_by_channel
+    )
+    pending_confirmations = (
+        intake_state.pending_confirmations
+        if intake_state is not None
+        else pending_wallet_confirmation_by_channel
+    )
     intent = run_context.initial_button_intent
     is_data_intent = intent in {
         "data_deposit_check",
@@ -113,7 +155,8 @@ async def prepare_ticket_turn_input(
 
     known_tx_hashes = investigation_job.evidence.tx_hashes
     tx_hash_present_in_message = bool(
-        known_tx_hashes and any(tx_hash in aggregated_text for tx_hash in known_tx_hashes)
+        known_tx_hashes
+        and any(tx_hash in aggregated_text for tx_hash in known_tx_hashes)
     )
     vault_url_target = yearn_targets.extract_yearn_vault_url_target(aggregated_text)
 
@@ -133,16 +176,16 @@ async def prepare_ticket_turn_input(
         )
 
     if is_data_intent:
-        pending_wallet_confirmation_by_channel.pop(channel_id, None)
+        pending_confirmations.pop(channel_id, None)
 
-    pending_wallet = pending_wallet_confirmation_by_channel.get(channel_id)
+    pending_wallet = pending_confirmations.get(channel_id)
     if pending_wallet:
         if is_wallet_confirmation(aggregated_text):
-            last_wallet_by_channel[channel_id] = pending_wallet
+            wallets[channel_id] = pending_wallet
             investigation_job.remember_wallet(pending_wallet)
-            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            pending_confirmations.pop(channel_id, None)
         elif is_wallet_rejection(aggregated_text):
-            pending_wallet_confirmation_by_channel.pop(channel_id, None)
+            pending_confirmations.pop(channel_id, None)
             preparation.system_hints.append(
                 "User rejected the suggested wallet address. Ask for the correct wallet address if needed."
             )
@@ -171,7 +214,7 @@ async def prepare_ticket_turn_input(
         chain_hint=investigation_job.evidence.chain,
     )
     resolved_kind = getattr(resolved_target, "kind", "unknown")
-    last_wallet = last_wallet_by_channel.get(channel_id)
+    last_wallet = wallets.get(channel_id)
 
     if resolved_kind in {"vault", "strategy", "wrapper_or_gauge"}:
         preparation.system_hints.append(known_yearn_address_hint(resolved_target))
@@ -189,7 +232,7 @@ async def prepare_ticket_turn_input(
         return preparation
 
     if is_data_intent and wallet_first_data_intent and not tx_hash_present_in_message:
-        last_wallet_by_channel[channel_id] = parsed_address
+        wallets[channel_id] = parsed_address
         investigation_job.remember_wallet(parsed_address)
         preparation.current_user_content = canonicalize_current_user_message(
             aggregated_text,
@@ -204,8 +247,12 @@ async def prepare_ticket_turn_input(
         )
         return preparation
 
-    if resolved_kind == "eoa_or_missing_code" and last_wallet and parsed_address != last_wallet:
-        pending_wallet_confirmation_by_channel[channel_id] = parsed_address
+    if (
+        resolved_kind == "eoa_or_missing_code"
+        and last_wallet
+        and parsed_address != last_wallet
+    ):
+        pending_confirmations[channel_id] = parsed_address
         preparation.system_hints.append(
             f"User provided a new address {parsed_address} but previous wallet was {last_wallet}. "
             "Ask to confirm whether the new address is their wallet before replacing."
@@ -213,7 +260,7 @@ async def prepare_ticket_turn_input(
         return preparation
 
     if resolved_kind == "eoa_or_missing_code" and not tx_hash_present_in_message:
-        last_wallet_by_channel[channel_id] = parsed_address
+        wallets[channel_id] = parsed_address
         investigation_job.remember_wallet(parsed_address)
         preparation.current_user_content = canonicalize_current_user_message(
             aggregated_text,
