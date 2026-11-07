@@ -15,6 +15,7 @@ Telegram replies are saved before acknowledgement. Bounded background workers
 deliver independent handoffs; polling and dismissal remain responsive.
 Explicit stop also cancels that handoff's queued or active investigation and
 releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
+Notice edits and deletion are ordered per message, including canceled HTTP calls.
 
 ## Documentation ingestion
 
@@ -103,6 +104,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 | `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
 | `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
 | `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
+| `tests.telegram_http_e2e` | Real local HTTP: in-flight edits, terminal notice ordering, repeated/queued cancellation, errors and independent polling | `telegram-http-e2e.json` |
 | `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
 | `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
 

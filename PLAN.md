@@ -1,3 +1,47 @@
+# Telegram HTTP cancellation
+
+Goal: settle an in-flight Telegram edit before deletion or dismissal changes the
+same notice. Keep independent notices concurrent and polling cancellation prompt.
+
+Failure modes and acceptance (before implementation):
+- Use the production urllib/thread transport against a local HTTP server. Hold an
+  edit at the server, then delete its ticket: archiving must wait, finish last and
+  leave no ticket state or delivery task. No live messages or credentials.
+- Edits and deletion of the same Telegram message must remain ordered even when
+  recovery/failure feedback is outside the native-delivery child. Other messages
+  must continue without waiting for the held request.
+- Repeated cancellation must not detach the HTTP thread or replace cancellation
+  with a transport error. A canceled queued operation must never reach the server;
+  a failed in-flight operation must release ownership for terminal cleanup.
+- Preserve normal errors and the existing HTTP timeout. Read-only getUpdates
+  cancellation must remain prompt. Per-message coordination must not retain idle
+  locks. Existing native cancellation/staff takeover/deletion E2Es must still pass.
+
+- [x] Add real-HTTP controller E2E and reproduce the reviewed failure.
+- [x] Implement minimal per-message ordering and cancellation draining; verify.
+- [x] Review the change, run required checks and apply while idle with rollback.
+
+The HTTP transport now orders edits/deletion by Telegram chat and message ID.
+Cancellation drains an admitted request before releasing its lock, preserving
+cancellation even if HTTP fails or cancellation repeats. Weak lock ownership
+avoids retaining idle entries; independent messages and polling remain concurrent.
+The HTTP timeout, providers and dependencies are unchanged.
+
+Real HTTP E2E reproduced three failures before the fix. All five final scenarios
+pass, covering active and recovered closure, Stop Bot, repeated/queued cancellation,
+server errors, independent messages and prompt polling cancellation. Latency E2E,
+optimization E2E, all 292 existing tests, Ruff and diff checks pass. Source hashes
+match the artifacts. Review found no further gap in this change.
+
+Evidence: `.cache/verification/telegram-http-{before,e2e,latency-e2e,optimization-e2e}.json`
+and `telegram-http-existing-tests.log`. The prior transport is retained in
+`telegram-http-rollback.tar`.
+
+Applied after confirming no active native processes, recent support activity or
+accepted pending deliveries. Discord and Telegram reconnected, MCP remained
+healthy and ticket 1633 stayed stopped. No live test messages were sent.
+Deployment evidence: `.cache/verification/telegram-http-deployment.json`.
+
 # Deleted-ticket handoff race
 
 Goal: prevent queued delivery workers from overwriting a deleted ticket's archived

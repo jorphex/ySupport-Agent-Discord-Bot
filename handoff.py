@@ -10,6 +10,7 @@ import re
 import sys
 from typing import Any, Literal
 from urllib import request
+from weakref import WeakValueDictionary
 
 from openai import AsyncOpenAI
 
@@ -52,6 +53,7 @@ _REPLY_ENABLED_FOOTER = (
     "To dismiss the handoff and handle the ticket in Discord, click the button below. "
     "The first reply or button action closes the handoff."
 )
+_telegram_message_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
 
 _handoff_summary_async_client: AsyncOpenAI | None = None
 
@@ -428,7 +430,28 @@ async def _telegram_api_call(
             return None
 
     try:
-        result = await asyncio.to_thread(_send)
+        if method in {"editMessageText", "deleteMessage"}:
+            key = (str(payload["chat_id"]), str(payload["message_id"]))
+            lock = _telegram_message_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                sending = asyncio.create_task(asyncio.to_thread(_send))
+                try:
+                    result = await asyncio.shield(sending)
+                except asyncio.CancelledError:
+                    # A canceled await cannot stop urllib's thread. Retain ownership
+                    # until it settles so a later archive/delete cannot overtake it.
+                    while not sending.done():
+                        try:
+                            await asyncio.shield(sending)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    if not sending.cancelled():
+                        sending.exception()
+                    raise
+        else:
+            result = await asyncio.to_thread(_send)
     except Exception as exc:
         raise TelegramApiError(f"Telegram API call {method} failed: {exc}") from exc
     if not result or result.get("ok") is not True:
