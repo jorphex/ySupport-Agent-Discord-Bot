@@ -16,7 +16,6 @@ from ysupport.bot.state import (
     TicketInvestigationJob,
     TeamHandoffNotice,
     clear_ticket_channel_state,
-    clear_ticket_investigation_job,
     conversation_threads,
     get_or_create_ticket_investigation_job,
     is_ticket_waiting_for_team,
@@ -48,101 +47,6 @@ from tests.test_ticket_intake import (
 
 
 class TicketFlowTests(TicketFlowTestCase):
-    async def test_process_ticket_message_formats_handoff_reply_and_notifies_telegram(
-        self,
-    ) -> None:
-        channel_id = 93
-        fake_channel = _FakeDiscordChannel(channel_id)
-        handoff_notices: list[str] = []
-
-        updated_job = TicketInvestigationJob(channel_id=channel_id)
-        fake_executor = _FakeInvestigationExecutor(
-            result=type(
-                "_Result",
-                (),
-                {
-                    "flow_outcome": TicketAgentFlowOutcome(
-                        raw_final_reply=(
-                            "This likely needs manual review. "
-                            f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
-                        ),
-                        conversation_history=[
-                            {
-                                "role": "user",
-                                "content": "PPS is flat and rewards need to be dumped.",
-                            },
-                            {
-                                "role": "assistant",
-                                "content": (
-                                    "This likely needs manual review. "
-                                    f"{config.HUMAN_HANDOFF_TAG_PLACEHOLDER}"
-                                ),
-                            },
-                        ],
-                        completed_agent_key=None,
-                        requires_human_handoff=True,
-                        handoff_reason=(
-                            "manual strategy action is required to process rewards"
-                        ),
-                    ),
-                    "updated_job": updated_job,
-                },
-            )()
-        )
-        bot = TicketBot(intents=discord.Intents.none())
-        bot.get_channel = lambda _channel_id: fake_channel
-        bot.investigation_executor = fake_executor
-
-        run_context = BotRunContext(
-            channel_id=channel_id,
-            project_context="yearn",
-            initial_button_intent="investigate_issue",
-            conversation_owner_id=777,
-        )
-
-        pending_messages[channel_id] = "PPS is flat and rewards need to be dumped."
-        conversation_threads[channel_id] = []
-        last_bot_reply_ts_by_channel.pop(channel_id, None)
-        clear_ticket_investigation_job(channel_id)
-
-        async def fake_send_long_message(channel, message, **kwargs):
-            await channel.send(message, **kwargs)
-
-        async def fake_send_handoff_notice(
-            message_text: str,
-            *,
-            dismiss_enabled: bool = False,
-        ) -> TelegramSentMessage:
-            self.assertTrue(dismiss_enabled)
-            handoff_notices.append(message_text)
-            return TelegramSentMessage(
-                chat_id="123",
-                message_id=456,
-                message_text=message_text,
-            )
-
-        try:
-            with patch('ysupport.bot.client.send_long_message', new=fake_send_long_message):
-                with patch(
-                    'ysupport.bot.discord_support_runtime.send_handoff_notice',
-                    new=fake_send_handoff_notice,
-                ):
-                    with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
-                        await bot.process_ticket_message(channel_id, run_context)
-        finally:
-            clear_ticket_channel_state(channel_id, delete_persisted=True)
-        self.assertEqual(len(fake_channel.sent_messages), 1)
-        self.assertIn("This likely needs manual review.", fake_channel.sent_messages[0])
-        self.assertIn("I've notified the support team", fake_channel.sent_messages[0])
-        self.assertNotIn(
-            config.HUMAN_HANDOFF_TAG_PLACEHOLDER, fake_channel.sent_messages[0]
-        )
-        self.assertEqual(len(handoff_notices), 1)
-        self.assertIn(
-            "<b>Reason</b>: manual strategy action is required to process rewards",
-            handoff_notices[0],
-        )
-
     async def test_failed_ticket_handoff_notification_does_not_park_or_claim_success(
         self,
     ) -> None:

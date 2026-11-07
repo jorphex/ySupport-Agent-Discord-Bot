@@ -343,6 +343,7 @@ async def run(args, report):
             url = f"http://127.0.0.1:{port}/mcp"
             async with httpx.AsyncClient() as client:
                 assert (await client.post(url)).status_code == 401
+                assert (await client.post(url, headers={"Authorization": "Bearer wrong-token"})).status_code == 401
             async with streamablehttp_client(url, headers={"Authorization": "Bearer " + token}) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()

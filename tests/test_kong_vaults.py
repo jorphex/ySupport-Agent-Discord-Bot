@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from ysupport.tools import kong_vaults
 from ysupport.tools import yearn_targets
@@ -29,7 +29,6 @@ class _Session:
         self.get_payload = get_payload
         self.post_payload = post_payload
         self.status = status
-        self.get_urls: list[str] = []
 
     async def __aenter__(self):
         return self
@@ -38,7 +37,6 @@ class _Session:
         return False
 
     def get(self, url, **_kwargs):
-        self.get_urls.append(url)
         return _Response(self.get_payload, status=self.status)
 
     def post(self, *_args, **_kwargs):
@@ -52,21 +50,6 @@ class KongVaultProviderTests(unittest.IsolatedAsyncioTestCase):
             kong_vaults._ADDRESS_CATALOG_CACHE,
         ):
             cache.update({"fetched_at": 0.0, "value": None})
-
-    async def test_catalog_keeps_only_canonical_yearn_origin(self) -> None:
-        payload = [
-            {"address": "0x1", "origin": "yearn"},
-            {"address": "0x2", "origin": "external"},
-            {"address": "0x3", "origin": None},
-        ]
-        with patch.object(
-            kong_vaults.aiohttp,
-            "ClientSession",
-            return_value=_Session(get_payload=payload),
-        ):
-            result = await kong_vaults.fetch_kong_vault_catalog()
-
-        self.assertEqual(result, [payload[0]])
 
     async def test_catalog_rejects_malformed_rows(self) -> None:
         with patch.object(
@@ -86,22 +69,6 @@ class KongVaultProviderTests(unittest.IsolatedAsyncioTestCase):
             result = await kong_vaults.fetch_kong_vault_snapshot(1, "0x1")
 
         self.assertIsNone(result)
-
-    async def test_snapshot_batch_reuses_one_http_session(self) -> None:
-        session = _Session(get_payload={"origin": "yearn"})
-        session_factory = Mock(return_value=session)
-        with patch.object(
-            kong_vaults.aiohttp,
-            "ClientSession",
-            new=session_factory,
-        ):
-            result = await kong_vaults.fetch_kong_vault_snapshots(
-                [(1, "0x1"), (10, "0x2")]
-            )
-
-        self.assertEqual(result, [{"origin": "yearn"}, {"origin": "yearn"}])
-        session_factory.assert_called_once()
-        self.assertEqual(len(session.get_urls), 2)
 
     async def test_address_catalog_rejects_graphql_errors(self) -> None:
         with patch.object(

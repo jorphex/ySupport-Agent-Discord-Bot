@@ -63,6 +63,7 @@ class Kong:
                   asset={"symbol": "BOLD"}, performance={"oracle": {"netAPY": 0.0347},
                     "historical": {"weeklyNet": 0.1772}, "estimated": {"apy": 0.99}}),
             vault(14, name="Yearn Saver", symbol="ysUSDC", kind="Single Strategy", strategiesCount=1),
+            vault(15, origin=None),
         ]
         self.calls = []
         self.snapshot_status = 200

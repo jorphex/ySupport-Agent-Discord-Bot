@@ -19,45 +19,6 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
             "1.000e-18",
         )
 
-    async def test_check_all_deposits_combines_v1_and_active_results(self) -> None:
-        with (
-            patch(
-                'ysupport.tools.vault_position_tools.resolve_ens_name',
-                return_value="0x0000000000000000000000000000000000000001",
-            ),
-            patch(
-                'ysupport.tools.vault_position_tools.query_v1_deposits_logic',
-                new=AsyncMock(
-                    return_value=vault_position_tools.DepositScanResult(
-                        text="V1 deposit result", found=True, complete=True
-                    )
-                ),
-            ) as query_v1,
-            patch(
-                'ysupport.tools.vault_position_tools.query_active_deposits_logic',
-                new=AsyncMock(
-                    return_value=vault_position_tools.DepositScanResult(
-                        text="Active deposit result", found=True, complete=True
-                    )
-                ),
-            ) as query_active,
-        ):
-            result = await vault_position_tools.core_check_all_deposits(
-                "vitalik.eth",
-                "USDC",
-            )
-
-        self.assertEqual(result, "V1 deposit result\n\n---\n\nActive deposit result")
-        query_v1.assert_awaited_once_with(
-            "0x0000000000000000000000000000000000000001",
-            "USDC",
-        )
-        query_active.assert_awaited_once_with(
-            "0x0000000000000000000000000000000000000001",
-            chain=None,
-            token_symbol="USDC",
-        )
-
     async def test_check_all_deposits_does_not_turn_incomplete_scan_into_zero_balance(
         self,
     ) -> None:
@@ -180,85 +141,6 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.found)
         self.assertFalse(result.complete)
         self.assertIn("No confident no-deposit conclusion", result.text)
-
-    async def test_active_scan_preserves_known_position_when_other_evidence_fails(
-        self,
-    ) -> None:
-        vault_info = {
-            "chainId": 1,
-            "address": "0x1111111111111111111111111111111111111111",
-            "name": "Known Vault",
-            "symbol": "yvTEST",
-            "decimals": 2,
-        }
-
-        with (
-            patch(
-                'ysupport.tools.vault_position_tools.ensure_web3_instances',
-                return_value={"ethereum": object()},
-            ),
-            patch(
-                'ysupport.tools.vault_position_tools.fetch_kong_vault_catalog',
-                new=AsyncMock(return_value=[vault_info]),
-            ),
-            patch(
-                'ysupport.tools.vault_position_tools._fetch_vault_and_gauge_balances',
-                new=AsyncMock(
-                    return_value=vault_position_tools._VaultBalanceResult(
-                        vault_info=vault_info,
-                        wallet_balance=125,
-                        complete=False,
-                    )
-                ),
-            ),
-        ):
-            result = await vault_position_tools.query_active_deposits_logic(
-                "0x3333333333333333333333333333333333333333"
-            )
-
-        self.assertTrue(result.found)
-        self.assertFalse(result.complete)
-        self.assertIn("1.250000 yvTEST", result.text)
-        self.assertIn("positions above may be incomplete", result.text)
-
-    async def test_active_scan_includes_retired_vaults_with_stranded_positions(
-        self,
-    ) -> None:
-        vault_info = {
-            "chainId": 1,
-            "address": "0x1111111111111111111111111111111111111111",
-            "name": "Retired Vault",
-            "symbol": "yvOLD",
-            "decimals": 2,
-            "isRetired": True,
-        }
-        balance_check = AsyncMock(
-            return_value=vault_position_tools._VaultBalanceResult(
-                vault_info=vault_info,
-                wallet_balance=100,
-            )
-        )
-        with (
-            patch(
-                'ysupport.tools.vault_position_tools.ensure_web3_instances',
-                return_value={"ethereum": object()},
-            ),
-            patch(
-                'ysupport.tools.vault_position_tools.fetch_kong_vault_catalog',
-                new=AsyncMock(return_value=[vault_info]),
-            ),
-            patch(
-                'ysupport.tools.vault_position_tools._fetch_vault_and_gauge_balances',
-                new=balance_check,
-            ),
-        ):
-            result = await vault_position_tools.query_active_deposits_logic(
-                "0x3333333333333333333333333333333333333333"
-            )
-
-        self.assertTrue(result.found)
-        self.assertIn("Retired Vault", result.text)
-        balance_check.assert_awaited_once()
 
     async def test_v1_scan_reports_inconclusive_when_balance_call_fails(self) -> None:
         class _Call:

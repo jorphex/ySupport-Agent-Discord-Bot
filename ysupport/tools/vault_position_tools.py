@@ -557,6 +557,7 @@ async def core_get_withdrawal_instructions(
     Generates step-by-step instructions for withdrawing from a specific Yearn vault (v1, v2, or v3) using a block explorer.
     Also provides the direct link to the vault on the Yearn website for reference (for v2/v3).
     Provide the vault's address, the chain name (e.g., 'ethereum', 'optimism', 'arbitrum'), and optionally the user's address/ENS.
+    V3 requires a resolved wallet and verified zero-loss simulation before returning a write recipe.
     Use this when a user asks how to withdraw or reports issues using the Yearn website for a specific vault.
     """
     logging.info(
@@ -613,7 +614,6 @@ async def core_get_withdrawal_instructions(
             )
             vault_name = v1_vault_info.get("name", vault_checksum_addr)
 
-            # --- REVERTED V1 INSTRUCTION WORDING ---
             instructions = [
                 f"This vault (**{vault_name}** `{vault_checksum_addr}`) is a **deprecated Yearn V1 vault**.",
                 "Withdrawals must be done directly via the block explorer:",
