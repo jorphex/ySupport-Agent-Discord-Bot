@@ -341,7 +341,8 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
                 "ethereum",
             )
 
-        self.assertIn("Find the **'redeem'** function", result)
+        self.assertIn("A valid wallet is required", result)
+        self.assertNotIn("Click the **'Write'** button", result)
         fetch_snapshot.assert_awaited_once_with(1, vault_address)
 
     async def test_withdrawal_rejects_non_yearn_kong_snapshot(self) -> None:

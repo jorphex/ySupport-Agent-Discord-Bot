@@ -71,7 +71,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             codex_env = _codex_env()
 
         self.assertEqual(codex_env["HOME"], "/tmp/service-home")
-        self.assertEqual(codex_env["PATH"], "/usr/bin")
+        self.assertEqual(codex_env["PATH"], f"{Path(sys.executable).parent}:/usr/bin")
         self.assertEqual(codex_env["LANG"], "C.UTF-8")
         self.assertEqual(codex_env["CODEX_HOME"], config.TICKET_EXECUTION_CODEX_HOME)
         for secret_key in environment.keys() - {"HOME", "PATH", "LANG"}:

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from collections.abc import Sequence
 import json
+import sys
 from typing import Protocol
 from uuid import uuid4
 
@@ -368,6 +369,7 @@ def _codex_env() -> dict[str, str]:
         "TMPDIR",
     }
     env = {key: value for key, value in os.environ.items() if key in allowed_keys}
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", os.defpath)
     if config.TICKET_EXECUTION_CODEX_HOME:
         env["CODEX_HOME"] = config.TICKET_EXECUTION_CODEX_HOME
     return env

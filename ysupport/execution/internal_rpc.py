@@ -35,6 +35,16 @@ class InternalRpcServer:
         "get_withdrawal_instructions": {
             "required": ["vault_address", "chain"], "optional": ["user_address_or_ens"],
         },
+        "read_contracts": {
+            "required": ["chain", "calls_json"],
+            "optional": ["block_identifier", "tx_hash"],
+            "description": "Batch up to eight relevant contract reads at one block. Use tx_hash for historical transaction-block observations; current balances cannot diagnose an old failure. Each query uses inspect_onchain call fields, excluding chain/mode/block. Partial failures remain explicit.",
+        },
+        "get_wallet_history": {
+            "required": ["chain", "wallet_address", "token_address"],
+            "optional": ["tx_hashes_json", "from_block", "to_block", "max_results"],
+            "description": "Verify wallet-specific ERC20 transfers/burns from supplied transaction hashes (max five), a bounded block range (max 5000), or recent Kong transfer candidates. Coverage is scoped; absent recent transfers are not complete history or proof of an unpaid claim. Use for migration/retired receipts before inferring economic value or operator action.",
+        },
         "read_chain_state": {
             "required": ["chain", "method", "params_json"], "optional": [],
             "description": "Basic native balance, nonce, fee, block, code and storage reads. params_json is a JSON array of RPC parameters. Use specialised helpers for decoded transactions, contract calls, logs and wallet position scans.",
@@ -187,7 +197,7 @@ class InternalRpcServer:
                 raise ValueError("Log reads require a contract address.")
         if operation == "check_all_deposits" and not isinstance(args["user_address_or_ens"], str):
             raise ValueError("Position scans require a wallet address or ENS name.")
-        for name in ["tx_hash", "address", "to_address", "vault_address"]:
+        for name in ["tx_hash", "address", "to_address", "vault_address", "wallet_address", "token_address"]:
             if args.get(name) is not None:
                 length = 64 if name == "tx_hash" else 40
                 if not isinstance(args[name], str) or not re.fullmatch(r"0x[0-9a-fA-F]{" + str(length) + "}", args[name]):
@@ -198,6 +208,10 @@ class InternalRpcServer:
             from ysupport.tools.onchain_tools import core_inspect_onchain as helper
         elif operation == "check_all_deposits":
             from ysupport.tools.vault_position_tools import core_check_all_deposits as helper
+        elif operation == "read_contracts":
+            from ysupport.tools.onchain_tools import core_read_contracts as helper
+        elif operation == "get_wallet_history":
+            from ysupport.tools.position_evidence import core_get_wallet_history as helper
         elif operation == "read_chain_state":
             from ysupport.tools.chain_access import core_read_chain_state as helper
         else:

@@ -233,7 +233,10 @@ async def inspect_contract_profile(
         "asset_decimals": None,
         "kind": "unclassified",
     }
-    code = await asyncio.to_thread(web3_instance.eth.get_code, checksum_address)
+    code = await asyncio.to_thread(
+        web3_instance.eth.get_code, checksum_address,
+        **({"block_identifier": block_identifier} if block_identifier is not None else {}),
+    )
     profile["has_code"] = bool(code and code != b"")
     if not profile["has_code"]:
         profile["kind"] = "eoa_or_missing_code"

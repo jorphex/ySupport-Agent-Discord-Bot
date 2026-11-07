@@ -26,9 +26,15 @@ def _normalize_chain(chain: str) -> str:
     return (chain or "").strip().lower()
 
 
-def _parse_block_identifier(value: Optional[str]) -> Optional[Union[str, int]]:
+def _parse_block_identifier(value: Optional[Union[str, int]]) -> Optional[Union[str, int]]:
     if value in (None, ""):
         return None
+    if type(value) is int:
+        if value < 0:
+            raise ValueError("Block numbers must be non-negative.")
+        return value
+    if not isinstance(value, str):
+        raise ValueError("Block identifiers must be numeric or named block tags.")
     normalized = value.strip().lower()
     relative_latest_match = re.fullmatch(r"latest([+-]\d+)", normalized)
     if relative_latest_match:
@@ -37,18 +43,19 @@ def _parse_block_identifier(value: Optional[str]) -> Optional[Union[str, int]]:
         )
     if normalized in {"latest", "earliest", "pending", "safe", "finalized"}:
         return normalized
-    if normalized.startswith("0x"):
-        return int(normalized, 16)
-    return int(normalized)
+    number = int(normalized, 16) if normalized.startswith("0x") else int(normalized)
+    if number < 0:
+        raise ValueError("Block numbers must be non-negative.")
+    return number
 
 
 def _parse_block_identifier_with_latest(
-    value: Optional[str],
+    value: Optional[Union[str, int]],
     *,
     latest_block: Optional[int],
 ) -> Optional[Union[str, int]]:
-    if value in (None, ""):
-        return None
+    if not isinstance(value, str) or value == "":
+        return _parse_block_identifier(value)
     normalized = value.strip().lower()
     relative_latest_match = re.fullmatch(r"latest([+-]\d+)", normalized)
     if relative_latest_match:
@@ -112,6 +119,112 @@ def _build_function_abi(
             for idx, solidity_type in enumerate(output_types)
         ],
     }
+
+
+def _coerce_abi_argument(field: dict[str, Any], value: Any) -> Any:
+    kind = field.get("type", "")
+    array = re.fullmatch(r"(.+)\[([0-9]*)\]", kind)
+    if array:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("ABI array arguments must be arrays.")
+        if array[2] and len(value) != int(array[2]):
+            raise ValueError("ABI fixed array length does not match its type.")
+        return [_coerce_abi_argument({**field, "type": array[1]}, item) for item in value]
+    if kind == "tuple":
+        components = field.get("components", [])
+        if isinstance(value, dict):
+            names = [component.get("name") for component in components]
+            if set(value) != set(names):
+                raise ValueError("ABI tuple fields do not match its components.")
+            return tuple(_coerce_abi_argument(c, value[c["name"]]) for c in components)
+        if not isinstance(value, (list, tuple)) or len(value) != len(components):
+            raise ValueError("ABI tuple arguments do not match its components.")
+        return tuple(_coerce_abi_argument(c, v) for c, v in zip(components, value))
+    if kind == "address":
+        return _checksum_address(value, label="address argument")
+    if re.fullmatch(r"u?int\d*", kind) and isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value)
+    return value
+
+
+async def _contract_call_observation(
+    web3_instance, *, to_address, function_signature=None, args_json=None,
+    output_types_json=None, function_abi_json=None, block_identifier=None,
+):
+    checksum_to = _checksum_address(to_address, label="to_address")
+    args = _json_loads_or_default(args_json, [])
+    if not isinstance(args, list):
+        raise ValueError("args_json must be a JSON array.")
+    function_abi = _build_function_abi(
+        function_abi_json=function_abi_json, function_signature=function_signature,
+        output_types_json=output_types_json,
+    )
+    if len(args) != len(function_abi["inputs"]):
+        raise ValueError("ABI argument count does not match its inputs.")
+    args = [_coerce_abi_argument(field, value) for field, value in zip(function_abi["inputs"], args)]
+    contract = web3_instance.eth.contract(address=checksum_to, abi=[function_abi])
+    call = getattr(contract.functions, function_abi["name"])(*args)
+    if block_identifier is None:
+        result = await asyncio.to_thread(call.call)
+    else:
+        result = await asyncio.to_thread(call.call, block_identifier=block_identifier)
+    return {"contract": checksum_to, "function": function_signature or function_abi["name"],
+            "args": args, "result": result,
+            "block_identifier": block_identifier if block_identifier is not None else "latest"}
+
+
+async def core_read_contracts(
+    *, chain: str, calls_json: str, block_identifier: Optional[str] = None,
+    tx_hash: Optional[str] = None,
+) -> str:
+    """Read up to eight known contract fields at one explicit observation block."""
+    chain_name = _normalize_chain(chain)
+    web3_instance = ensure_web3_instances().get(chain_name)
+    if web3_instance is None:
+        raise ValueError("Unsupported batch-read chain.")
+    calls = json.loads(calls_json)
+    allowed = {"to_address", "function_signature", "args_json", "output_types_json", "function_abi_json"}
+    if not isinstance(calls, list) or not 1 <= len(calls) <= 8 or any(
+        not isinstance(call, dict) or set(call) - allowed or not call.get("to_address")
+        or not (call.get("function_signature") or call.get("function_abi_json")) for call in calls
+    ):
+        raise ValueError("Batch reads require one to eight bounded contract queries.")
+    if tx_hash and block_identifier is not None:
+        raise ValueError("Choose either a transaction block or an explicit block.")
+    transaction = None
+    if tx_hash:
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
+            raise ValueError("Invalid transaction hash.")
+        receipt = await asyncio.to_thread(web3_instance.eth.get_transaction_receipt, tx_hash)
+        if Web3.to_hex(receipt["transactionHash"]).lower() != tx_hash.lower():
+            raise ValueError("Transaction receipt identity could not be verified.")
+        block = receipt["blockNumber"]
+        transaction = {"hash": tx_hash, "status": receipt.get("status")}
+        scope = "transaction_block"
+    else:
+        block = _parse_block_identifier(block_identifier) if block_identifier is not None else "latest"
+        scope = "current_snapshot" if block == "latest" else "specified_block"
+    header = await asyncio.to_thread(web3_instance.eth.get_block, block)
+    number = header.get("number")
+    if number is None:
+        raise ValueError("A mined observation block is required; pending state cannot be pinned.")
+    limit = asyncio.Semaphore(4)
+
+    async def observe(call):
+        async with limit:
+            try:
+                value = await _contract_call_observation(web3_instance, **call, block_identifier=number)
+                return {"ok": True, **value}
+            except Exception as exc:
+                return {"ok": False, "request": call, "error": str(exc)}
+
+    results = await asyncio.gather(*(observe(call) for call in calls))
+    return json.dumps(_normalize_rpc_value({
+        "chain": chain_name, "scope": scope, "block_number": number,
+        "block_timestamp": header.get("timestamp"), "transaction": transaction,
+        "complete": all(row["ok"] for row in results), "results": results,
+        "causal_limit": "This is block-end state, not proof of a transaction's revert cause. Latest state does not explain a historical failure.",
+    }))
 
 
 def _normalize_rpc_value(value: Any) -> Any:
@@ -443,48 +556,13 @@ async def core_inspect_onchain(
 
     try:
         if mode_normalized == "call":
-            checksum_to = _checksum_address(to_address, label="to_address")
-            args = _json_loads_or_default(args_json, [])
-            if not isinstance(args, list):
-                return "args_json must be a JSON array."
-            function_abi = _build_function_abi(
-                function_abi_json=function_abi_json,
-                function_signature=function_signature,
-                output_types_json=output_types_json,
+            observation = await _contract_call_observation(
+                web3_instance, to_address=to_address,
+                function_signature=function_signature, args_json=args_json,
+                output_types_json=output_types_json, function_abi_json=function_abi_json,
+                block_identifier=_parse_block_identifier(block_identifier),
             )
-            args = [
-                int(value) if isinstance(value, str)
-                and re.fullmatch(r"[+-]?\d+", value.strip())
-                and re.fullmatch(r"u?int\d*", field.get("type", "")) else value
-                for value, field in zip(args, function_abi["inputs"])
-            ] if len(args) == len(function_abi["inputs"]) else args
-            contract = web3_instance.eth.contract(
-                address=checksum_to, abi=[function_abi]
-            )
-            function_name = function_abi["name"]
-            contract_call = getattr(contract.functions, function_name)(*args)
-            parsed_block_identifier = _parse_block_identifier(block_identifier)
-            if parsed_block_identifier is None:
-                result = await asyncio.to_thread(contract_call.call)
-            else:
-                result = await asyncio.to_thread(
-                    contract_call.call, block_identifier=parsed_block_identifier
-                )
-            return _format_structured_output(
-                "Onchain call result",
-                {
-                    "chain": chain_name,
-                    "contract": checksum_to,
-                    "function": function_signature or function_name,
-                    "args": args,
-                    "result": result,
-                    "block_identifier": (
-                        parsed_block_identifier
-                        if parsed_block_identifier is not None
-                        else "latest"
-                    ),
-                },
-            )
+            return _format_structured_output("Onchain call result", {"chain": chain_name, **observation})
 
         if mode_normalized == "receipt":
             if not tx_hash:

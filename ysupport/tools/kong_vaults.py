@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Any
@@ -147,3 +148,33 @@ async def fetch_kong_address_catalog() -> dict[str, list[dict[str, Any]]]:
         _ADDRESS_CATALOG_CACHE,
         {"vaults": vaults, "strategies": strategies},
     )
+
+
+async def fetch_kong_recent_transfers(chain_id: int, token_address: str) -> list[dict[str, Any]]:
+    """Kong returns the latest 100 contract transfers, not complete wallet history."""
+    query = """query YSupportRecentTransfers($chain: Int, $address: String) {
+      transfers(chainId: $chain, address: $address) {
+        chainId address sender receiver blockNumber logIndex transactionHash
+      }
+    }"""
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            f"{KONG_BASE_URL}/api/gql",
+            json={"query": query, "variables": {"chain": chain_id, "address": token_address.lower()}},
+        ) as response:
+            response.raise_for_status()
+            chunks = []
+            size = 0
+            async for chunk in response.content.iter_chunked(65536):
+                size += len(chunk)
+                if size > 1024 * 1024:
+                    raise ValueError("Recent transfer response exceeds its bounded size.")
+                chunks.append(chunk)
+    payload = json.loads(b"".join(chunks))
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise ValueError("Recent transfer index is unavailable or incomplete.")
+    rows = (payload.get("data") or {}).get("transfers")
+    if not isinstance(rows, list) or len(rows) > 100 or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("Unexpected recent transfer index response.")
+    return rows

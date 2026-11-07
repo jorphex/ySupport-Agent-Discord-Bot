@@ -479,6 +479,77 @@ async def core_check_all_deposits(
     return combined_result
 
 
+_V3_REDEMPTION_ABI = [
+    {"type": "function", "name": name,
+     "stateMutability": "nonpayable" if name == "redeem" else "view",
+     "inputs": [{"name": f"arg_{i}", "type": kind} for i, kind in enumerate(inputs)],
+     "outputs": [{"name": "", "type": "uint256"}]}
+    for name, inputs in (
+        ("balanceOf", ["address"]),
+        ("maxRedeem", ["address", "uint256"]),
+        ("maxWithdraw", ["address", "uint256"]),
+        ("previewRedeem", ["uint256"]),
+        ("redeem", ["uint256", "address", "address", "uint256"]),
+    )
+]
+
+
+async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explorer_url):
+    observation = {
+        "kind": "v3_protected_redemption", "status": "not_ready",
+        "vault": vault, "wallet": owner, "yearn_url": yearn_url,
+        "explorer_url": explorer_url, "max_loss_basis_points": 0,
+        "claim_scope": "Limits and receipt balances do not establish a remaining economic claim. Reconcile migration/redemption history when relevant.",
+    }
+    if not owner:
+        observation["reason"] = "A valid wallet is required to verify protected redemption; no transaction instructions are available."
+        return json.dumps(observation)
+    try:
+        block = await asyncio.to_thread(lambda: web3_instance.eth.block_number)
+        observation["as_of_block"] = block
+        contract = web3_instance.eth.contract(address=vault, abi=_V3_REDEMPTION_ABI)
+        balance = int(await asyncio.to_thread(contract.functions.balanceOf(owner).call, block_identifier=block))
+        observation["balance_shares_raw"] = str(balance)
+        if balance == 0:
+            observation.update(status="no_shares", reason="Confirmed user has zero balance in V3 vault; this alone does not explain past holdings.")
+            return json.dumps(observation)
+        capacity, assets_capacity = await asyncio.gather(
+            asyncio.to_thread(contract.functions.maxRedeem(owner, 0).call, block_identifier=block),
+            asyncio.to_thread(contract.functions.maxWithdraw(owner, 0).call, block_identifier=block),
+        )
+        shares = min(balance, int(capacity))
+        observation.update(max_redeem_zero_loss_raw=str(capacity), max_withdraw_zero_loss_raw=str(assets_capacity))
+        if shares <= 0 or int(assets_capacity) <= 0:
+            observation["reason"] = "No lossless redemption was verified. Do not use the three-argument redeem default, which permits 100% loss. The cause and any remaining claim are unconfirmed."
+            return json.dumps(observation)
+        preview = int(await asyncio.to_thread(contract.functions.previewRedeem(shares).call, block_identifier=block))
+        observation["preview_assets_raw"] = str(preview)
+        if preview <= 0 or preview > int(assets_capacity):
+            observation["reason"] = "The preview is inconsistent with lossless withdrawal capacity; no transaction instructions are available."
+            return json.dumps(observation)
+        payout = int(await asyncio.to_thread(
+            contract.functions.redeem(shares, owner, owner, 0).call,
+            {"from": owner}, block_identifier=block,
+        ))
+        observation["simulated_assets_raw"] = str(payout)
+        if payout < preview:
+            observation["reason"] = "Simulation did not confirm the previewed payout; no transaction instructions are available."
+            return json.dumps(observation)
+        observation.update(status="ready", shares_to_redeem_raw=str(shares), partial=shares < balance)
+        observation["instructions"] = "\n".join([
+            f"1. Open {explorer_url} and choose Contract → Write Contract as Proxy (or Write Contract).",
+            f"2. Connect {owner}.",
+            "3. Find the **'redeem'** function with four fields: redeem(uint256,address,address,uint256). Do not select the three-field default.",
+            f"4. Enter shares={shares}, receiver={owner}, owner={owner}, max_loss=0. Keep native value at 0.",
+            "5. Click the **'Write'** button only if a fresh wallet simulation confirms the expected incoming assets. Keep max_loss=0; do not raise it to bypass a failure.",
+            f"Verified payout at block {block}: {payout} raw underlying units. State can change before submission.",
+        ])
+        return json.dumps(observation)
+    except Exception as exc:
+        observation["reason"] = f"Protected redemption could not be verified ({type(exc).__name__}); no transaction instructions are available. Do not fall back to the three-argument default."
+        return json.dumps(observation)
+
+
 async def core_get_withdrawal_instructions(
     user_address_or_ens: Optional[str], vault_address: str, chain: str
 ) -> str:
@@ -616,50 +687,9 @@ async def core_get_withdrawal_instructions(
     is_v2 = api_version_str.startswith("0.")
 
     if is_v3:
-        logging.info(
-            f"Vault {vault_checksum_addr} identified as V3 (version: {api_version_str}). Generating 'redeem' instructions."
-        )
-        user_balance: Optional[int] = None
-        balance_input_value = "**(Enter your full share balance manually)**"
-
-        if user_checksum_addr:
-            try:
-                contract = web3_instance.eth.contract(
-                    address=vault_checksum_addr, abi=config.ERC20_ABI
-                )
-                balance_raw = await asyncio.to_thread(
-                    contract.functions.balanceOf(user_checksum_addr).call
-                )
-                user_balance = int(balance_raw)
-                if user_balance == 0:
-                    return (
-                        f"Confirmed user `{user_checksum_addr}` has zero balance in V3 vault `{vault_checksum_addr}`.\n"
-                        f"Vault link for reference: {yearn_ui_link}\n"
-                        f"No withdrawal needed or possible via explorer."
-                    )
-                balance_input_value = (
-                    f"`{user_balance}` (This should be your full share balance)"
-                )
-            except Exception as e:
-                logging.error(
-                    f"Failed to fetch user balance for V3 vault {vault_checksum_addr}: {e}"
-                )
-                logging.warning("Generating V3 instructions without fetched balance.")
-        else:
-            logging.warning(
-                "User address not provided; cannot fetch V3 balance. Instructions require manual input."
-            )
-
-        instructions.extend(
-            [
-                "5. Find the **'redeem'** function.",
-                "6. Enter the following values:",
-                f"   - `shares (uint256)`: {balance_input_value}",
-                f"   - `receiver (address)`: {f'`{user_checksum_addr}` (Your wallet address)' if user_checksum_addr else '**(Your wallet address)**'}",
-                f"   - `owner (address)`: {f'`{user_checksum_addr}` (Your wallet address again)' if user_checksum_addr else '**(Your wallet address again)**'}",
-                "7. Click the **'Write'** button.",
-                "8. Confirm the transaction in your wallet.",
-            ]
+        return await _protected_v3_redemption(
+            web3_instance, vault_checksum_addr, user_checksum_addr,
+            yearn_ui_link, explorer_vault_url,
         )
 
     elif is_v2:
@@ -676,40 +706,12 @@ async def core_get_withdrawal_instructions(
         )
 
     else:
-        logging.warning(
-            f"Vault {vault_checksum_addr} has unknown or missing V2/V3 version: '{api_version_str}'. Providing generic instructions."
-        )
-        balance_info = "(Cannot check balance without your address)"
-        if user_checksum_addr:
-            try:
-                contract = web3_instance.eth.contract(
-                    address=vault_checksum_addr, abi=config.ERC20_ABI
-                )
-                balance_raw = await asyncio.to_thread(
-                    contract.functions.balanceOf(user_checksum_addr).call
-                )
-                user_balance = int(balance_raw)
-                if user_balance == 0:
-                    return (
-                        f"Confirmed user `{user_checksum_addr}` has zero balance in vault `{vault_checksum_addr}` (Version Unknown).\n"
-                        f"Vault link for reference: {yearn_ui_link}\n"
-                        f"No withdrawal needed or possible via explorer."
-                    )
-                balance_info = f"`{user_balance}`"
-            except Exception:
-                logging.warning("Could not fetch balance for unknown version vault.")
-                balance_info = "(Could not fetch balance)"
-
-        instructions.extend(
-            [
-                f"5. **Unknown Vault Version (API Version: {api_version_str or 'Not Found'})**: Look for a function named **'withdraw'** or **'redeem'**.",
-                "   - Try **'withdraw()'** (with no input fields) first.",
-                f"   - If that's not present or doesn't work, try **'redeem'**. If it asks for `shares`, `receiver`, and `owner`, enter your balance {balance_info} for `shares` and your address ({f'`{user_checksum_addr}`' if user_checksum_addr else 'Your Address'}) for `receiver` and `owner`.",
-                "   - If unsure, please ask for human help again, mentioning the vault version is unclear.",
-                "6. Click the **'Write'** button for the chosen function.",
-                "7. Confirm the transaction in your wallet.",
-            ]
-        )
+        return json.dumps({
+            "status": "not_ready", "vault": vault_checksum_addr,
+            "wallet": user_checksum_addr, "yearn_url": yearn_ui_link,
+            "explorer_url": explorer_vault_url,
+            "reason": "Vault version and protected withdrawal ABI are unverified; no transaction instructions are available. Do not guess a withdraw/redeem overload.",
+        })
 
     instructions.append(
         "\nOnce the transaction confirms on the blockchain, your funds should be back in your wallet."

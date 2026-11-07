@@ -48,6 +48,7 @@ class RpcNode:
         self.calls = []
         self.fail_gauge = False
         self.delay = 0
+        self.override = None
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -58,9 +59,12 @@ class RpcNode:
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fixture.calls.append(request)
                 time.sleep(fixture.delay)
-                method, params = request["method"], request.get("params", [])
+                method, params = request.get("method", "graphql"), request.get("params", []) if "method" in request else request
                 error, result = None, None
-                if method == "web3_clientVersion":
+                override = fixture.override(method, params) if fixture.override else None
+                if override is not None:
+                    result, error = override
+                elif method == "web3_clientVersion":
                     result = "ysupport-fixture/1"
                 elif method == "eth_chainId":
                     result = "0x1"
@@ -93,9 +97,9 @@ class RpcNode:
                     result = {"hash": TX, "nonce": "0x0", "blockHash": "0x" + "66" * 32, "blockNumber": "0x7b", "transactionIndex": "0x0", "from": WALLET, "to": VAULT, "value": "0x0", "gas": "0x5208", "gasPrice": "0x1", "input": "0x", "v": "0x1", "r": "0x1", "s": "0x1", "type": "0x2", "chainId": "0x1"}
                 else:
                     error = {"code": -32601, "message": "Unexpected RPC method"}
-                if method in {"eth_getTransactionReceipt", "eth_getTransactionByHash"} and params[0].lower() != TX:
+                if override is None and method in {"eth_getTransactionReceipt", "eth_getTransactionByHash"} and params[0].lower() != TX:
                     result, error = None, {"code": -32000, "message": "Unknown fixture transaction"}
-                payload = json.dumps({"jsonrpc": "2.0", "id": request["id"], **({"error": error} if error else {"result": result})}).encode()
+                payload = json.dumps(result if method == "graphql" else {"jsonrpc": "2.0", "id": request["id"], **({"error": error} if error else {"result": result})}).encode()
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -179,7 +183,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             generic_withdrawal = {"operation": "get_withdrawal_instructions", "arguments": {"chain": " Ethereum ", "vault_address": VAULT}}
             before = len(node.calls)
             reply = (await turn([generic_withdrawal]))[0]
-            assert reply["ok"] and "redeem" in reply["result"] and len(node.calls) == before, reply
+            assert reply["ok"] and json.loads(reply["result"])["status"] == "not_ready" and "instructions" not in json.loads(reply["result"]) and len(node.calls) == before, reply
             reply = (await turn([inspect(mode=" Receipt ", chain=" Ethereum ", tx_hash=TX)]))[0]
             assert reply["ok"] and "status: 1" in reply["result"], reply
             report["scenarios"]["optional_wallet_and_canonical_helper_names_preserved"] = True
