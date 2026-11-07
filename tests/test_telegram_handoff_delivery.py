@@ -1,6 +1,5 @@
 import tests as _test_environment  # noqa: F401
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,14 +19,12 @@ from state import (
     get_or_create_ticket_investigation_job,
     last_bot_reply_ts_by_channel,
     pending_attachments_by_channel,
-    pending_tasks,
     stopped_channels,
     team_handoff_notice_by_channel,
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
 from handoff import (
-    build_archived_handoff_notice,
     build_closed_handoff_notice,
     build_handoff_notice,
     build_pending_delivery_handoff_notice,
@@ -35,7 +32,6 @@ from handoff import (
 from ysupport import (
     TicketBot,
 )
-from views import take_over_ticket_for_staff
 from tests.ticket_flow_test_support import TicketFlowTestCase
 from tests.test_ticket_intake import (
     _FakeDiscordChannel,
@@ -43,51 +39,6 @@ from tests.test_ticket_intake import (
 
 
 class TicketFlowTests(TicketFlowTestCase):
-    async def test_staff_takeover_during_team_reply_keeps_delivery_authorized(self) -> None:
-        channel_id = 304
-        channel = _FakeDiscordChannel(channel_id)
-        channel.category = SimpleNamespace(id=1)
-        notice = TeamHandoffNotice(
-            telegram_chat_id="123",
-            telegram_message_id=456,
-            reason="Team review needed.",
-            status="pending_delivery",
-            pending_reply_text="Tell the user the withdrawal is queued.",
-        )
-        team_handoff_notice_by_channel[channel_id] = notice
-        bot = TicketBot(intents=discord.Intents.none())
-        bot.get_channel = lambda _: channel
-
-        async def take_over_during_synthesis(**kwargs):
-            await take_over_ticket_for_staff(channel_id)
-            return InternalInstructionTurnResult(
-                reply="The withdrawal is queued.",
-                input_history=[],
-                conversation_history=[
-                    {"role": "assistant", "content": "The withdrawal is queued."}
-                ],
-            )
-
-        try:
-            with (
-                patch("telegram_handoff_controller.edit_handoff_notice", return_value=True),
-                patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
-                    new=take_over_during_synthesis,
-                ),
-            ):
-                delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
-                    channel_id=channel_id,
-                    notice=notice,
-                    team_reply_text=notice.pending_reply_text,
-                )
-            self.assertTrue(delivered)
-            self.assertEqual(channel.sent_messages, ["The withdrawal is queued."])
-            self.assertIn(channel_id, stopped_channels)
-            self.assertEqual(state.stop_reasons_by_channel[channel_id], "staff_takeover")
-            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
-        finally:
-            clear_ticket_channel_state(channel_id, delete_persisted=True)
 
     async def test_telegram_handoff_reply_rejects_vague_team_message(self) -> None:
         channel_id = 195
@@ -635,61 +586,6 @@ class TicketFlowTests(TicketFlowTestCase):
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
-    async def test_deleted_ticket_archives_open_telegram_handoff_notice(self) -> None:
-        channel_id = 188
-        original_notice = build_handoff_notice(
-            reason="manual follow-up needed",
-            summary="need human",
-            channel_id=channel_id,
-            guild_id=734804446353031319,
-        )
-        team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
-            telegram_chat_id="123",
-            telegram_message_id=456,
-            reason="manual follow-up needed",
-            message_text=original_notice,
-        )
-
-        bot = TicketBot(intents=discord.Intents.none())
-        fake_channel = _FakeDiscordChannel(channel_id)
-        edits: list[tuple[str, int, str]] = []
-
-        async def active_turn() -> None:
-            await asyncio.Event().wait()
-
-        task = asyncio.create_task(active_turn())
-        pending_tasks[channel_id] = task
-
-        async def fake_edit_handoff_notice(
-            *, chat_id: str, message_id: int, message_text: str
-        ) -> bool:
-            edits.append((chat_id, message_id, message_text))
-            return True
-
-        try:
-            with (
-                patch(
-                    "ticket_channel_lifecycle.discord.TextChannel", _FakeDiscordChannel
-                ),
-                patch(
-                    "ticket_channel_lifecycle.edit_handoff_notice",
-                    side_effect=fake_edit_handoff_notice,
-                ),
-                patch("state.reset_ticket_codex_session"),
-            ):
-                await bot.on_guild_channel_delete(fake_channel)
-            self.assertEqual(
-                edits,
-                [("123", 456, build_archived_handoff_notice(original_notice))],
-            )
-            self.assertNotIn(channel_id, team_handoff_notice_by_channel)
-            self.assertTrue(task.cancelled())
-            self.assertNotIn(channel_id, pending_tasks)
-        finally:
-            pending_tasks.pop(channel_id, None)
-            if not task.done():
-                task.cancel()
-            clear_team_handoff_notice(channel_id)
 
     async def test_delivered_pending_close_resumes_without_resending_discord_update(
         self,

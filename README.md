@@ -58,11 +58,17 @@ Notice edits and deletion are ordered per message, including canceled HTTP calls
   timings include ticket IDs and completed/error/canceled outcomes. Native token
   totals can include earlier turns in resumed sessions.
 - Native prompts include the current request, response schema and compact tool
-  map. Ordinary intake collects messages for two seconds. Owner follow-ups retain
-  active work, suppress an outdated draft and run next without another collection
-  delay. Original and new images remain available. Staff takeover and Stop Bot
-  preserve their cancellation rules. `y:` also includes up to four recent user
-  images from its bounded ticket history, with staff attachments labeled separately.
+  map. Ordinary intake collects messages for two seconds. Ticket-owner follow-ups
+  use native app-server steering to enter the active Codex turn with text and
+  images. Boundary and intake checks still apply. Steering intake writes stay
+  isolated until native observation or admission to a fresh retry. Only observed
+  native user inputs leave the queue; late or uncertain input suppresses the old draft and runs next
+  without another collection delay. Unfinished input is saved in ticket state and
+  restored on the next interaction with a fresh session after restart. No replies
+  replay automatically. Staff takeover and Stop Bot preserve their cancellation
+  rules; staff, Telegram and other noninteractive turns retain one-shot exec.
+  `y:` also includes up to four recent user images from its bounded ticket history,
+  with staff attachments labeled separately.
 - The local specialist engine and JSON worker are retired; `local` fails explicitly.
   An external JSON backend requires `subprocess` and an explicit
   `TICKET_EXECUTION_SUBPROCESS_COMMAND`. `ticket_execution.replay_cli` supports
@@ -104,6 +110,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 | `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
 | `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
 | `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
+| `tests.steering_e2e` | Native stdio processes: owner text/images, intake, handoff context, completion/ACK races, recovery and cancellation | `steering-e2e.json` |
 | `tests.telegram_http_e2e` | Real local HTTP: in-flight edits, terminal notice ordering, repeated/queued cancellation, errors and independent polling | `telegram-http-e2e.json` |
 | `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
 | `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
@@ -178,7 +185,8 @@ docker compose -f compose.mcp.yaml ps
 Host setup:
 
 1. Create a host venv; run `pip install -r requirements.txt`. Direct dependencies
-   are pinned to reviewed versions. Verify `codex exec` works for the service user.
+   are pinned to reviewed versions. Verify `codex exec` and app-server steering
+   work for the service user (`tests/steering_native_e2e.py`).
 2. Keep `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path. The bot writes
    `config.toml` and instructions there; do not use your normal `~/.codex`.
 3. Point `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` at a service-owned `0600` auth

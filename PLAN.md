@@ -1,3 +1,184 @@
+# Remove E2E-covered unit tests and publish steering
+
+Goal: remove tests whose meaningful assertions are covered by current E2Es, keep
+uncovered failure/authority contracts, and publish focused commits without changing
+verified runtime behavior.
+
+- [x] Map redundant unit assertions to executable E2E cases; retain unique gaps.
+- [x] Remove duplicates and unused imports; verify remaining tests and E2Es.
+- [x] Commit native transport, controller/recovery integration, then test/docs cleanup.
+- [x] Push main and verify the remote revision and clean tracked worktree.
+
+Keep tests for acknowledgement-send races, pre-executor intake, late delivery,
+transaction-safety rewrites, descendant cleanup, provider errors, token rejection,
+persistence failures, and replay isolation: the E2Es do not cover all their cases.
+No runtime edits or service restart are needed for this cleanup.
+
+Removed six duplicate tests and 252 lines. Controller/native E2Es cover wallet
+confirmation, queued follow-up handling, takeover during accepted team delivery
+and deleted-ticket archiving; authenticated MCP E2Es cover missing and valid
+bearer tokens. Keep the remaining distinct failure, authority and provider tests.
+
+All 286 remaining tests, 25 steering scenarios, latency, real Telegram HTTP,
+authenticated vault lookup and Flex E2Es pass. Runtime hashes still match the
+verified deployment; this cleanup requires no restart. Removal-to-E2E mappings,
+source hashes and publication verification are recorded in
+`.cache/verification/test-overlap-cleanup.json`.
+
+# Steering intake and recovery races
+
+Goal: fix the two reproduced steering review findings without changing admission,
+models, tools, deadlines, source roles or stop/staff/Telegram ownership.
+
+Failure modes and acceptance (recorded before implementation):
+- Intake preparation must stage wallet and confirmation state. Completion during
+  image preparation, rejected/unobserved input, transport failure and cancellation
+  must leave unconsumed confirmation available to the queued retry. Observed
+  input must commit its matching intake/evidence snapshot in channel order.
+  A failed execution explicitly admits prepared queued inputs to its fresh retry,
+  preserving confirmation meaning when original and follow-up text are combined.
+- Completed owner input, including observed follow-ups and image URLs, must remain
+  in the durable recovery payload until reply/history/handoff commit. A new
+  message during progress deletion followed by shutdown must recover all unsent
+  input. Completed input must not be copied into both history and pending state.
+- Stop/delete/staff commands must not retain or resurrect another task's recovery
+  payload. Ordinary queue fallback, accepted Telegram delivery and ticket capacity
+  must retain their current behavior.
+
+Design: isolate the existing intake dictionaries for steering, commit observed
+snapshots through an owned callback, and retain a separate owned recovery payload
+for the short interval between native completion and controller commit. Keep
+routing's existing active-executor and pre-executor payload semantics unchanged.
+
+- [x] Add controller/stdio E2Es and reproduce both findings before runtime changes.
+- [x] Stage intake writes; verify observation and fresh-retry admission cases.
+- [x] Retain uncommitted recovery input until commit; verify shutdown and cleanup.
+- [x] Review and fix concrete gaps; run required checks and activate while idle.
+
+Steering preparation now uses isolated copies of the existing intake dictionaries.
+The owning controller commits the matching evidence/intake snapshot for contiguous
+observed input. If execution fails, it admits prepared queued input to the fresh
+retry so combined text retains its confirmation meaning. Unconsumed preparation
+cannot silently clear a confirmation while the original turn is still running.
+
+Completed input transfers to an owned recovery payload until reply, deferred
+history or handoff commit. New messages during progress cleanup retain the full
+unsent text and image URLs. Ownership checks and terminal cleanup prevent stale
+payloads from surviving Stop/delete or replacing another task's input.
+
+Pre-fix E2Es reproduced preparation, partial consumption, rejection, unobserved
+ACK, observed execution failure and shutdown data loss. Review also reproduced an
+unobserved process failure and fixed its fresh-retry admission. Final verification:
+25 controller/stdio scenarios, all 292 existing tests, latency (6), optimization
+(6), real Telegram HTTP (5), Ruff and diff checks pass. Recovery is also checked
+in an independent interpreter, including confirmed wallet state and both images.
+No live test messages, provider RPC or new model calls were required.
+
+Evidence: `.cache/verification/steering-races-{before,intake,e2e}.json`,
+`steering-races-unobserved-failure-before.json`, sibling verification logs/reports
+and `tests/steering_e2e.py`. Applied after an idle preflight. Discord reconnected, Telegram polling resumed,
+MCP stayed healthy, concurrency remains 8 and ticket 1633 remains stopped.
+Deployment and final evidence are in `steering-races-deployment.json` and
+`steering-races-verification.json` in the same directory.
+
+# Native ticket steering
+
+Goal: let ordinary Discord ticket-owner follow-ups enter the active Codex turn,
+with native text/image input, instead of waiting for the entire investigation.
+Keep the model, authentication, tools, private RPC, eight-slot deployment limit,
+per-ticket ordering, staff commands and Telegram delivery behavior unchanged.
+
+Design and constraints:
+- Use Codex app-server stdio for interactive owner turns; retain one-shot exec for
+  noninteractive callers and safety rewrites. Derive the server command from the
+  existing approved executable. No new dependency or backend configuration flag.
+- Keep raw follow-ups queued until their correlated native user-message event is
+  observed. A steer ACK alone is insufficient. Late/rejected/uncertain input uses
+  the existing checked queue path; never blindly resend a timed-out steer.
+- Check the outer support boundary before steering. Prepare screenshots once in
+  separate batch directories. Preserve input source, order, evidence and IDs in
+  the native request, history and exported replay artifacts.
+- Persist unfinished active/queued owner input in existing ticket state. Recover
+  on the next ticket interaction with a fresh native session; do not auto-send
+  potentially duplicate replies after restart. Stop/delete discard this state.
+
+Failure modes and acceptance (before implementation):
+- Text bursts and image-only updates enter the same active native turn; one reply
+  reflects all consumed input. Inputs arriving before readiness wait safely.
+- Completion races, explicit rejection, missing ACK, process failure and unsafe
+  output cannot lose input, publish a stale draft or retry an ambiguous steer.
+- Stop/staff takeover/delete kill only their owned native process and release its
+  slot. Other tickets and accepted Telegram updates retain existing contracts.
+- Boundary-routed updates remain queued for normal handling. Updated history,
+  evidence and handoff summaries include consumed input; replay data distinguishes
+  submitted, acknowledged and observed inputs without recording credentials.
+- Existing fallback transports remain functional. All relevant controller E2Es,
+  existing checks and a bounded installed-Codex protocol probe must pass.
+
+- [x] Add subprocess/controller E2E scenarios and record the initial failure.
+- [x] Implement input ownership and native app-server transport; verify each layer.
+- [x] Verify boundaries, recovery, cancellation and delivery with repeatable artifacts.
+- [x] Review the full diff, fix concrete findings and document verification limits.
+
+Owner turns now use one native app-server process and active-turn IDs. Source
+roles, boundary/intake checks, native screenshots, the existing private RPC socket,
+slot limits and deadlines remain enforced. Acknowledgements and observed user
+items are recorded separately. Unobserved submissions detach their uncertain
+session before queue fallback; accepted input updates evidence, history, handoff
+summaries and a final replay request. Safety rewrites cannot accept fresh steering.
+
+Review addressed wallet-confirmation preparation, stale known-target snapshots,
+configured process versus turn working directories, unsafe commentary exposure,
+weak failover after steering, ambiguous session reuse and cancellation cleanup.
+Progress uses the existing generic tool labels. Process pipes are drained and
+closed; diagnostic-write failures preserve Stop/cancellation authority.
+
+Verification: 13 controller/subprocess E2E scenarios, all 292 existing tests,
+latency (6 scenarios), real Telegram HTTP (5), optimization (6), private RPC (16),
+Ruff and diff checks pass. The installed Codex 0.164.0 / production gpt-5.6-sol
+probe consumed a native text/image steer, identified the image and retained the
+correction after resume. The probe used service-owned auth and isolated state;
+no live Discord/Telegram messages or provider RPC calls were made. It verifies
+protocol/context behavior, not a production latency guarantee.
+
+Evidence: `.cache/verification/steering-e2e.json` and sibling `steering-*` reports;
+`tests.steering_e2e` repeats controller checks. `tests/steering_native_e2e.py` contains
+the installed-Codex probe. Pre-fix artifacts retain reproduced progress-exposure
+and canceled-artifact-write failures. Applied after an idle preflight, with rollback retained. Discord reconnected,
+Telegram polling resumed, MCP stayed healthy and ticket 1633 remained stopped.
+Deployment and final verification are recorded in `steering-deployment.json`
+and `steering-verification.json` in the same evidence directory.
+
+# Reference harness steering review
+
+Goal: compare steering, follow-up queues, interruption and durable state in the
+eight requested harness repositories, then identify patterns suitable for ySupport.
+
+Acceptance and constraints:
+- Pin source revisions and trace actual input admission, model/tool checkpoints,
+  cancellation, completion races and recovery. Separate documented behavior from
+  implementation findings and deployment-version limits.
+- Inspect Pi/Pi Durable, DeepSeek Harness, OpenCode, Codex, Hermes, OpenMuse,
+  CopilotKit and OpenBot. Record useful patterns and direct source references.
+- Map findings to the current ySupport process/session/RPC boundaries. This pass
+  is research and notes only; no runtime changes, dependencies or service restart.
+
+- [x] Pin repositories and identify relevant source paths.
+- [x] Trace steering and adjacent lifecycle patterns in all eight repositories.
+- [x] Check ySupport integration constraints and record a grounded recommendation.
+
+Reviewed all eight pinned repositories and verified 85 downloaded files against
+their Git blob IDs. The installed Codex 0.164.0 release schemas also support native
+steering, text/images, client message IDs and active-turn preconditions. Recommend
+native steering for ordinary owner follow-ups, with checked queue fallback and
+existing source, safety, budget and ownership contracts preserved. The current
+one-shot exec transport must change; no model/harness replacement is required.
+
+Detailed source references, useful patterns, limitations and future E2E acceptance
+cases are saved in `.cache/verification/harness-steering/review.json`; durable
+recommendations are in `NOTES.md`. Findings are from static source and official
+documentation, not live timing measurements. No runtime code or services changed.
+
 # Telegram HTTP cancellation
 
 Goal: settle an in-flight Telegram edit before deletion or dismissal changes the

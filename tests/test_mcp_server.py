@@ -92,11 +92,6 @@ class MCPAuthenticationIntegrationTests(unittest.TestCase):
             ["ysupport"],
         )
 
-    def test_missing_bearer_token_is_rejected(self) -> None:
-        with self._client() as client:
-            response = client.post("/mcp")
-
-        self.assertEqual(response.status_code, 401)
 
     def test_wrong_bearer_token_is_rejected(self) -> None:
         with self._client() as client:
@@ -108,14 +103,3 @@ class MCPAuthenticationIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 401)
-
-    def test_correct_bearer_token_initializes_mcp(self) -> None:
-        with self._client() as client:
-            response = client.post(
-                "/mcp",
-                headers={
-                    "Authorization": "Bearer expected-token",
-                },
-            )
-
-        self.assertEqual(response.status_code, 200)
