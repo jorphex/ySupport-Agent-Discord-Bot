@@ -22,6 +22,7 @@ from handoff import (
 from state import (
     active_ticket_executor_tasks,
     active_ticket_payloads,
+    uncommitted_ticket_payloads,
     BotRunContext,
     bug_report_debounce_channels,
     channel_intent_after_button,
@@ -248,10 +249,17 @@ def _restore_active_ticket_payload(channel_id: int) -> None:
         )
 
 
+def _retire_uncommitted_ticket_payload(channel_id: int) -> None:
+    payload = uncommitted_ticket_payloads.get(channel_id)
+    if payload is not None and payload[0] is asyncio.current_task():
+        uncommitted_ticket_payloads.pop(channel_id, None)
+
+
 def _discard_pending_ticket_payload(channel_id: int) -> None:
     pending_messages.pop(channel_id, None)
     pending_attachments_by_channel.pop(channel_id, None)
     active_ticket_payloads.pop(channel_id, None)
+    uncommitted_ticket_payloads.pop(channel_id, None)
 
 
 def _record_waiting_for_team_followup(

@@ -160,6 +160,11 @@ active_ticket_payloads: Dict[
     int,
     tuple[asyncio.Task, str, List[Dict[str, Any]]],
 ] = {}
+# Completed input awaiting reply, deferred-history or handoff commit.
+uncommitted_ticket_payloads: Dict[
+    int,
+    tuple[asyncio.Task, str, List[Dict[str, Any]]],
+] = {}
 channels_awaiting_initial_button_press: set[int] = set()
 channel_intent_after_button: Dict[int, str] = {}
 bug_report_debounce_channels: set[int] = set()
@@ -290,6 +295,11 @@ def hydrate_ticket_state(channel_id: int) -> None:
         channel_intent_after_button[channel_id] = intent
     if payload.get("bug_report_debounce"):
         bug_report_debounce_channels.add(channel_id)
+    unfinished = payload.get("pending_ticket_input")
+    if isinstance(unfinished, dict) and unfinished.get("text") and not payload.get("stopped"):
+        pending_messages[channel_id] = str(unfinished["text"])
+        pending_attachments_by_channel[channel_id] = list(unfinished.get("attachments", []))
+        reset_ticket_codex_session(channel_id)
     handoff_payload = payload.get("team_handoff_notice")
     if isinstance(handoff_payload, dict):
         handoff_message_id = handoff_payload.get("telegram_message_id")
@@ -332,12 +342,24 @@ def hydrate_persisted_team_handoff_states() -> int:
     return hydrated
 
 
+def _unfinished_ticket_input(channel_id: int) -> dict[str, Any] | None:
+    active = active_ticket_payloads.get(channel_id) or uncommitted_ticket_payloads.get(channel_id)
+    text = active[1] if active is not None else ""
+    attachments = list(active[2]) if active is not None else []
+    queued = pending_messages.get(channel_id)
+    if queued:
+        text = f"{text}\n{queued}" if text else queued
+        attachments.extend(pending_attachments_by_channel.get(channel_id, []))
+    return {"text": text, "attachments": attachments} if text else None
+
+
 def persist_ticket_state(channel_id: int) -> bool:
     if not _ensure_state_dirs():
         return False
     payload = {
         "channel_id": channel_id,
         "history": list(conversation_threads.get(channel_id, [])),
+        "pending_ticket_input": _unfinished_ticket_input(channel_id),
         "investigation_job": _serialize_investigation_job(
             ticket_investigation_jobs.get(channel_id)
         ),
@@ -381,6 +403,7 @@ def clear_ticket_channel_state(
     pending_attachments_by_channel.pop(channel_id, None)
     active_ticket_executor_tasks.pop(channel_id, None)
     active_ticket_payloads.pop(channel_id, None)
+    uncommitted_ticket_payloads.pop(channel_id, None)
     last_wallet_by_channel.pop(channel_id, None)
     pending_wallet_confirmation_by_channel.pop(channel_id, None)
     last_bot_reply_ts_by_channel.pop(channel_id, None)
