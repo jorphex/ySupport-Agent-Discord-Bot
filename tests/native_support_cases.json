@@ -2158,7 +2158,7 @@
           "chain": "katana",
           "vault": "0x2222222222222222222222222222222222222222"
         },
-        "result": "Confirmed vbUSDT yVault on Katana. Wallet: 0x1111111111111111111111111111111111111111. Vault: 0x2222222222222222222222222222222222222222. Official current contract form: https://katanascan.com/address/0x2222222222222222222222222222222222222222#writeContract. Verified redeem(uint256 shares,address receiver,address owner): shares=5893694 raw units; receiver=0x1111111111111111111111111111111111111111; owner=0x1111111111111111111111111111111111111111. Read-only simulation for this amount succeeded. The result is vbUSDT. The old explorer route is unusable; this current route exposes the form. Do not confirm if a fresh wallet simulation fails."
+        "result": "Confirmed vbUSDT yVault on Katana. Wallet: 0x1111111111111111111111111111111111111111. Vault: 0x2222222222222222222222222222222222222222. Official current contract form: https://katanascan.com/address/0x2222222222222222222222222222222222222222#writeContract. Verified redeem(uint256 shares,address receiver,address owner,uint256 max_loss): shares=5893694 raw units; receiver=0x1111111111111111111111111111111111111111; owner=0x1111111111111111111111111111111111111111. Read-only simulation for this amount succeeded. The result is vbUSDT. The old explorer route is unusable; this current route exposes the form. Do not confirm if a fresh wallet simulation fails. Explicit max_loss=0 (zero allowed loss). Payout was verified by a read-only simulation at block 100. Never use the three-field redeem default."
       }
     ],
     "checks": {
@@ -2166,7 +2166,8 @@
         "katanascan.com",
         "redeem",
         "5893694",
-        "0x1111111111111111111111111111111111111111"
+        "0x1111111111111111111111111111111111111111",
+        "max_loss"
       ],
       "none": [
         "please provide your wallet",
@@ -2207,7 +2208,7 @@
           "chain": "katana",
           "vault": "0x2222222222222222222222222222222222222222"
         },
-        "result": "Confirmed vbUSDT yVault on Katana. Wallet: 0x1111111111111111111111111111111111111111. Vault: 0x2222222222222222222222222222222222222222. Official current contract form: https://katanascan.com/address/0x2222222222222222222222222222222222222222#writeContract. Verified redeem(uint256 shares,address receiver,address owner): shares=5893694 raw units; receiver=0x1111111111111111111111111111111111111111; owner=0x1111111111111111111111111111111111111111. Read-only simulation for this amount succeeded. The result is vbUSDT. The old explorer route is unusable; this current route exposes the form. Do not confirm if a fresh wallet simulation fails."
+        "result": "Confirmed vbUSDT yVault on Katana. Wallet: 0x1111111111111111111111111111111111111111. Vault: 0x2222222222222222222222222222222222222222. Official current contract form: https://katanascan.com/address/0x2222222222222222222222222222222222222222#writeContract. Verified redeem(uint256 shares,address receiver,address owner,uint256 max_loss): shares=5893694 raw units; receiver=0x1111111111111111111111111111111111111111; owner=0x1111111111111111111111111111111111111111. Read-only simulation for this amount succeeded. The result is vbUSDT. The old explorer route is unusable; this current route exposes the form. Do not confirm if a fresh wallet simulation fails. Explicit max_loss=0 (zero allowed loss). Payout was verified by a read-only simulation at block 100. Never use the three-field redeem default."
       }
     ],
     "checks": {
@@ -2215,7 +2216,8 @@
         "katanascan.com",
         "redeem",
         "5893694",
-        "0x1111111111111111111111111111111111111111"
+        "0x1111111111111111111111111111111111111111",
+        "max_loss"
       ],
       "none": [
         "please provide your wallet",
@@ -2229,5 +2231,417 @@
       "handoff": false
     },
     "coverage_note": "Terse ticket replay: a known target needs one relevant private lookup and a concise actionable reply, without broad scans or repeating supplied questions."
+  },
+  {
+    "id": "ticket_1629_strategy_automation_is_technical_support",
+    "turns": [
+      {
+        "message": "Hello\nI have a yield strategy that I am doing manually and I would like to propose an automation"
+      },
+      {
+        "message": "Is there a fee participation for the strategist? I have found that 10% of the fees goes to the strategist."
+      }
+    ],
+    "providers": {
+      "search_documentation": "Yearn V3 strategy-writing guide: https://docs.yearn.fi/developers/v3/strategy_writing_guide . Implement and test a strategy using https://github.com/yearn/tokenized-strategy-foundry-mix . A strategy description alone is not deployed code. Strategist performance-fee configuration depends on the vault/accountant and approval; no universal guaranteed 10% applies.",
+      "search_repo_context": "Yearn V3 strategy-writing guide: https://docs.yearn.fi/developers/v3/strategy_writing_guide . Implement and test a strategy using https://github.com/yearn/tokenized-strategy-foundry-mix . A strategy description alone is not deployed code. Strategist performance-fee configuration depends on the vault/accountant and approval; no universal guaranteed 10% applies."
+    },
+    "checks": {
+      "any": [
+        [
+          "strategy",
+          "strategist"
+        ]
+      ],
+      "none": [
+        "5 sentences",
+        "marketing",
+        "no follow up inquiries"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Original ticket 1629 opening and fee follow-up through the real classifier/controller. No expected answer is supplied to the model."
+  },
+  {
+    "id": "ticket_1621_estimated_apy_is_not_explained_by_missing_realized",
+    "turns": [
+      {
+        "message": "Why does this vault show 0% APY when the pool is around 12%? https://yearn.fi/vaults/1/0x0141e81fb74c11cfd2308212d9c9a6a052db3a98"
+      },
+      {
+        "message": "That includes estimated APY? It says projected APY based on underlying markets."
+      }
+    ],
+    "providers": {
+      "search_vaults": {
+        "rows": [
+          {
+            "chain_id": 1,
+            "vault_address": "0x0141e81fb74c11cfd2308212d9c9a6a052db3a98",
+            "yearn_url": "https://yearn.fi/vaults/1/0x0141e81fb74c11cfd2308212d9c9a6a052db3a98",
+            "name": "ZCHF/crvUSD",
+            "symbol": "yvZCHF",
+            "estimated_apy": 0.0807,
+            "realized_apy": null,
+            "tvl_usd": 0,
+            "is_retired": true,
+            "strategies": []
+          }
+        ],
+        "pagination": {
+          "total": 1
+        },
+        "ui_apy_observation": {
+          "verified": false,
+          "displayed_metric": null,
+          "zero_explanation": null
+        }
+      },
+      "search_documentation": "Yearn estimates describe forward strategy/market inputs; historical net APY measures realised PPS performance. Missing history and a flat report do not establish a projected UI rate of zero. These excerpts do not observe this vault UI."
+    },
+    "checks": {
+      "all": [
+        "estimated"
+      ],
+      "any": [
+        [
+          "8.07",
+          "0.0807"
+        ],
+        [
+          "mismatch",
+          "unverified",
+          "not verified",
+          "cannot",
+          "can\u2019t",
+          "can't",
+          "label"
+        ]
+      ],
+      "none": [
+        "because it has not recorded measurable",
+        "historical APY forces",
+        "more deposits will fix"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Ticket 1621: frozen API fields include a real estimate, missing realized performance and no observed UI label. UI causation is deliberately unavailable."
+  },
+  {
+    "id": "ticket_1630_retired_receipt_uses_wallet_history",
+    "turns": [
+      {
+        "message": "I hold 19,862.56 kpdUSDC in wallet 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53 on Ethereum, deposited through Turtle Samurai campaign. Vault 0x7b5a0182e400b241b317e781a4e9dedfc1429822. maxRedeem and maxWithdraw return zero. Is this still redeemable for USDC or vbUSDC? Destination-chain transaction hashes: 0x02166e9019c3f11f166854d9ed8e44a486b908e5bed620847de8f0a9f1e8966f, 0xabecb467a18da028528f7ad79b9609d378b2952b4481ed797805a53ceeb31b7e, 0x00c2a4769369d2833f3f7cd2d01c307c2c16cc197895c6f03174a5548771e4de.",
+        "expect_handoff": false
+      }
+    ],
+    "providers": {
+      "search_documentation": "Katana pre-deposits were deployed into Yearn vaults on Katana. Use the same wallet on app.katana.network . The replacement USDC vault is yvvbUSDC. The Ethereum receipt can remain after migration; its source balance alone does not prove another unpaid claim.",
+      "search_vaults": {
+        "rows": [
+          {
+            "chain_id": 1,
+            "vault_address": "0x7b5a0182e400b241b317e781a4e9dedfc1429822",
+            "name": "Katana Pre-Deposit USDC",
+            "symbol": "kpdUSDC",
+            "yearn_url": "https://yearn.fi/vaults/1/0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+          },
+          {
+            "chain_id": 747474,
+            "vault_address": "0x80c34bd3a3569e126e7055831036aa7b212cb159",
+            "name": "vbUSDC yVault",
+            "symbol": "yvvbUSDC",
+            "decimals": 6,
+            "yearn_url": "https://yearn.fi/vaults/747474/0x80c34bd3a3569e126e7055831036aa7b212cb159"
+          }
+        ],
+        "pagination": {
+          "total": 2
+        }
+      }
+    },
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53",
+          "chain": "ethereum",
+          "vault": "0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+        },
+        "result": "{\"kind\": \"v3_protected_redemption\", \"status\": \"not_ready\", \"balance_shares_raw\": \"19862558018\", \"max_redeem_zero_loss_raw\": \"0\", \"reason\": \"No lossless redemption is verified. Source balances do not establish a current economic claim.\"}",
+        "required": false
+      },
+      {
+        "operation": "wallet_history",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53",
+          "chain": "katana",
+          "token": "0x80c34bd3a3569e126e7055831036aa7b212cb159",
+          "transactions": "0x00c2a4769369d2833f3f7cd2d01c307c2c16cc197895c6f03174a5548771e4de,0x02166e9019c3f11f166854d9ed8e44a486b908e5bed620847de8f0a9f1e8966f,0xabecb467a18da028528f7ad79b9609d378b2952b4481ed797805a53ceeb31b7e"
+        },
+        "result": "{\"chain\": \"katana\", \"wallet\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"token\": \"0x80c34bd3a3569e126e7055831036aa7b212cb159\", \"token_decimals\": 6, \"transfers\": [{\"transaction_hash\": \"0x02166e9019c3f11f166854d9ed8e44a486b908e5bed620847de8f0a9f1e8966f\", \"block_number\": 4574473, \"direction\": \"in\", \"amount_raw\": \"19862558018\", \"from\": \"0x5480f3152748809495bd56c14eab4a622aa3aa19b\", \"to\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"is_burn\": false}, {\"transaction_hash\": \"0xabecb467a18da028528f7ad79b9609d378b2952b4481ed797805a53ceeb31b7e\", \"block_number\": 12396728, \"direction\": \"out\", \"amount_raw\": \"18929596607\", \"from\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"to\": \"0x0000000000000000000000000000000000000000\", \"is_burn\": true}, {\"transaction_hash\": \"0x00c2a4769369d2833f3f7cd2d01c307c2c16cc197895c6f03174a5548771e4de\", \"block_number\": 19384383, \"direction\": \"out\", \"amount_raw\": \"1000000000\", \"from\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"to\": \"0x0000000000000000000000000000000000000000\", \"is_burn\": true}], \"coverage\": {\"scope\": \"provided_transactions\", \"complete\": true, \"history_complete\": false}, \"errors\": [], \"withdrawals\": [{\"transaction_hash\": \"0xabecb467a18da028528f7ad79b9609d378b2952b4481ed797805a53ceeb31b7e\", \"block_number\": 12396728, \"vault\": \"0x80c34bd3a3569e126e7055831036aa7b212cb159\", \"owner\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"receiver\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"shares_raw\": \"18929596607\", \"assets_raw\": \"18962673090\", \"receipt_status\": 1}, {\"transaction_hash\": \"0x00c2a4769369d2833f3f7cd2d01c307c2c16cc197895c6f03174a5548771e4de\", \"block_number\": 19384383, \"vault\": \"0x80c34bd3a3569e126e7055831036aa7b212cb159\", \"owner\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"receiver\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"shares_raw\": \"1000000000\", \"assets_raw\": \"1009824585\", \"receipt_status\": 1}], \"asset_transfers_in\": [{\"transaction_hash\": \"0xabecb467a18da028528f7ad79b9609d378b2952b4481ed797805a53ceeb31b7e\", \"block_number\": 12396728, \"token\": \"0x203a662b0bd271a6ed5a60edfbd04bfce608fd36\", \"from\": \"0x80c34bd3a3569e126e7055831036aa7b212cb159\", \"to\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"direction\": \"in\", \"amount_raw\": \"18962673090\", \"receipt_status\": 1}, {\"transaction_hash\": \"0x00c2a4769369d2833f3f7cd2d01c307c2c16cc197895c6f03174a5548771e4de\", \"block_number\": 19384383, \"token\": \"0x203a662b0bd271a6ed5a60edfbd04bfce608fd36\", \"from\": \"0x80c34bd3a3569e126e7055831036aa7b212cb159\", \"to\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"direction\": \"in\", \"amount_raw\": \"1009824585\", \"receipt_status\": 1}]}"
+      },
+      {
+        "operation": "positions",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53"
+        },
+        "result": "Current Katana yvvbUSDC and vbUSDC balances are zero. These current balances do not describe historical transfers.",
+        "required": false
+      }
+    ],
+    "checks": {
+      "any": [
+        [
+          "redeemed",
+          "redemptions",
+          "burned"
+        ],
+        [
+          "receipt",
+          "migration"
+        ]
+      ],
+      "none": [
+        "restore liquidity",
+        "operator must restore",
+        "waiting for liquidity",
+        "your funds are stuck"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Supplied public transaction hashes return independently verified raw distribution, withdrawal and payout observations. This checks receipt interpretation; the separate incomplete-history case checks the original opening without supplied hashes."
+  },
+  {
+    "id": "ticket_1630_incomplete_history_does_not_invent_operator_action",
+    "turns": [
+      {
+        "message": "I hold 19,862.56 kpdUSDC in wallet 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53 on Ethereum, deposited through Turtle Samurai campaign. Vault 0x7b5a0182e400b241b317e781a4e9dedfc1429822. maxRedeem and maxWithdraw return zero. Is this still redeemable for USDC or vbUSDC?",
+        "expect_handoff": false
+      }
+    ],
+    "providers": {
+      "search_documentation": "Katana pre-deposits were deployed into Yearn vaults on Katana. Use the same wallet on app.katana.network . The replacement USDC vault is yvvbUSDC. The Ethereum receipt can remain after migration; its source balance alone does not prove another unpaid claim.",
+      "search_vaults": {
+        "rows": [
+          {
+            "chain_id": 1,
+            "vault_address": "0x7b5a0182e400b241b317e781a4e9dedfc1429822",
+            "name": "Katana Pre-Deposit USDC",
+            "symbol": "kpdUSDC",
+            "yearn_url": "https://yearn.fi/vaults/1/0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+          },
+          {
+            "chain_id": 747474,
+            "vault_address": "0x80c34bd3a3569e126e7055831036aa7b212cb159",
+            "name": "vbUSDC yVault",
+            "symbol": "yvvbUSDC",
+            "decimals": 6,
+            "yearn_url": "https://yearn.fi/vaults/747474/0x80c34bd3a3569e126e7055831036aa7b212cb159"
+          }
+        ],
+        "pagination": {
+          "total": 2
+        }
+      }
+    },
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53",
+          "chain": "ethereum",
+          "vault": "0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+        },
+        "result": "{\"kind\": \"v3_protected_redemption\", \"status\": \"not_ready\", \"balance_shares_raw\": \"19862558018\", \"max_redeem_zero_loss_raw\": \"0\", \"reason\": \"No lossless redemption is verified. Source balances do not establish a current economic claim.\"}",
+        "required": false
+      },
+      {
+        "operation": "wallet_history",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53",
+          "chain": "katana",
+          "token": "0x80c34bd3a3569e126e7055831036aa7b212cb159"
+        },
+        "result": "{\"chain\": \"katana\", \"wallet\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"token\": \"0x80c34bd3a3569e126e7055831036aa7b212cb159\", \"transfers\": [], \"coverage\": {\"scope\": \"recent_kong_transfers\", \"index_limit\": 100, \"complete\": false, \"history_complete\": false}, \"errors\": [], \"interpretation\": \"Only recent contract transfers are indexed here; missing rows do not establish complete history, loss, an unpaid claim or a liquidity problem. Ask for a transfer hash or a bounded block window.\"}"
+      },
+      {
+        "operation": "positions",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53"
+        },
+        "result": "Current Katana yvvbUSDC and vbUSDC balances are zero. These current balances do not describe historical transfers.",
+        "required": false
+      }
+    ],
+    "checks": {
+      "any": [
+        [
+          "unconfirmed",
+          "unproven",
+          "cannot confirm",
+          "can't confirm",
+          "not enough",
+          "incomplete",
+          "not establish",
+          "hash",
+          "history"
+        ]
+      ],
+      "none": [
+        "restore liquidity",
+        "operator must",
+        "waiting for liquidity",
+        "funds are safe",
+        "funds are stuck",
+        "a human must reconcile"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Receipt movements use raw amounts/block numbers from independently verified Katana receipts in the eight-ticket evaluation. They are returned only after an exact wallet/token/chain helper request. The source receipt alone supplies no claim conclusion."
+  },
+  {
+    "id": "ticket_1625_failure_diagnosis_uses_transaction_block",
+    "turns": [
+      {
+        "message": "Why did withdrawal of 13,061 USDT fail with insufficient assets in vault? Wallet 0x825483c3e50568dc4722627e6d390c2061e2eb52, Katana vault 0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b, transaction 0x42d001a1c805c292c19fe3d90807ac036684178c78b1fd0043c7a572f6b90117"
+      }
+    ],
+    "providers": {},
+    "lookups": [
+      {
+        "operation": "transaction",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x42d001a1c805c292c19fe3d90807ac036684178c78b1fd0043c7a572f6b90117"
+        },
+        "result": "Transaction receipt: status=0, block_number=44518161, from=0x825483c3e50568dc4722627e6d390c2061e2eb52, to=0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b. The call attempted redeem of 12724118900 raw shares. A receipt failure alone does not identify its cause.",
+        "required": false
+      },
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x825483c3e50568dc4722627e6d390c2061e2eb52",
+          "chain": "katana",
+          "vault": "0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b"
+        },
+        "result": "Current state: only 1515 raw vault shares, maxWithdraw=1559 raw assets. These are current measurements, not the state at transaction block 44518161.",
+        "required": false
+      },
+      {
+        "operation": "contract_batch",
+        "query": {
+          "chain": "katana",
+          "tx_hash": "0x42d001a1c805c292c19fe3d90807ac036684178c78b1fd0043c7a572f6b90117",
+          "vault": "0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b",
+          "wallet": "0x825483c3e50568dc4722627e6d390c2061e2eb52"
+        },
+        "result": "{\"chain\": \"katana\", \"scope\": \"transaction_block\", \"block_number\": 44518161, \"transaction\": {\"hash\": \"0x42d001a1c805c292c19fe3d90807ac036684178c78b1fd0043c7a572f6b90117\", \"status\": 0}, \"complete\": true, \"results\": [{\"ok\": true, \"contract\": \"0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b\", \"function\": \"balanceOf(address)\", \"args\": [\"0x825483c3e50568dc4722627e6d390c2061e2eb52\"], \"result\": 12724118900, \"output_types\": [\"uint256\"]}, {\"ok\": true, \"contract\": \"0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b\", \"function\": \"maxWithdraw(address,uint256)\", \"args\": [\"0x825483c3e50568dc4722627e6d390c2061e2eb52\", 0], \"result\": 304249, \"output_types\": [\"uint256\"]}, {\"ok\": true, \"contract\": \"0x9a6bd7b6fd5c4f87eb66356441502fc7dcdd185b\", \"function\": \"previewRedeem(uint256)\", \"args\": [12724118900], \"result\": 13060824360, \"output_types\": [\"uint256\"]}], \"causal_limit\": \"Block-end snapshot; no debug trace is available.\"}"
+      }
+    ],
+    "checks": {
+      "any": [
+        [
+          "liquidity",
+          "withdrawable",
+          "available assets",
+          "assets available",
+          "withdrawal capacity"
+        ],
+        [
+          "0.304249",
+          "304249"
+        ],
+        [
+          "at that block",
+          "transaction block",
+          "at the time",
+          "historical",
+          "block-end"
+        ]
+      ],
+      "none": [
+        "because you only have 1515",
+        "because your current balance is"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Frozen historical and current state deliberately differ. The correct diagnosis must use the receipt-block batch, not current dust."
+  },
+  {
+    "id": "ticket_1630_unknown_campaign_requests_public_evidence",
+    "turns": [
+      {
+        "message": "I hold 19,862.56 kpdUSDC in wallet 0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53 on Ethereum, deposited through Turtle Samurai campaign. Vault 0x7b5a0182e400b241b317e781a4e9dedfc1429822. maxRedeem and maxWithdraw return zero. Is this still redeemable for USDC or vbUSDC? Is there a campaign claim deadline? I cannot find its migration history.",
+        "expect_handoff": false
+      }
+    ],
+    "providers": {
+      "search_documentation": "No matching public campaign migration instructions or claim deadline were found. General documentation does not verify campaign eligibility, pending funds or operator action.",
+      "search_vaults": {
+        "rows": [
+          {
+            "chain_id": 1,
+            "vault_address": "0x7b5a0182e400b241b317e781a4e9dedfc1429822",
+            "name": "Katana Pre-Deposit USDC",
+            "symbol": "kpdUSDC",
+            "yearn_url": "https://yearn.fi/vaults/1/0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+          }
+        ],
+        "pagination": {
+          "total": 2
+        }
+      }
+    },
+    "lookups": [
+      {
+        "operation": "withdrawal",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53",
+          "chain": "ethereum",
+          "vault": "0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+        },
+        "result": "{\"kind\": \"v3_protected_redemption\", \"status\": \"not_ready\", \"balance_shares_raw\": \"19862558018\", \"max_redeem_zero_loss_raw\": \"0\", \"reason\": \"No lossless redemption is verified. Source balances do not establish a current economic claim.\"}",
+        "required": false
+      },
+      {
+        "operation": "wallet_history",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53",
+          "chain": "ethereum",
+          "token": "0x7b5a0182e400b241b317e781a4e9dedfc1429822"
+        },
+        "result": "{\"chain\": \"ethereum\", \"wallet\": \"0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53\", \"token\": \"0x7b5a0182e400b241b317e781a4e9dedfc1429822\", \"transfers\": [], \"coverage\": {\"scope\": \"recent_kong_transfers\", \"index_limit\": 100, \"complete\": false, \"history_complete\": false}, \"errors\": [], \"interpretation\": \"Only recent contract transfers are indexed here; missing rows do not establish complete history, loss, an unpaid claim or a liquidity problem. Ask for a transfer hash or a bounded block window.\"}",
+        "required": false
+      },
+      {
+        "operation": "positions",
+        "query": {
+          "wallet": "0x4d07ebc9db4d0cb3845dc464619730e7f1d0cf53"
+        },
+        "result": "Current Katana yvvbUSDC and vbUSDC balances are zero. These current balances do not describe historical transfers.",
+        "required": false
+      }
+    ],
+    "checks": {
+      "any": [
+        [
+          "transaction",
+          "explorer",
+          "hash",
+          "history"
+        ]
+      ],
+      "none": [
+        "restore liquidity",
+        "operator must",
+        "waiting for liquidity",
+        "funds are safe",
+        "funds are stuck",
+        "a human must reconcile"
+      ],
+      "handoff": false
+    },
+    "coverage_note": "Unknown campaign process plus empty scoped transfer discovery must remain ordinary uncertainty, requesting public evidence instead of inventing a private eligibility/recovery need."
   }
 ]

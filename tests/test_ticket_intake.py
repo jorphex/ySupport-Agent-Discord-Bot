@@ -612,7 +612,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         last_bot_reply_ts_by_channel.pop(channel_id, None)
         clear_ticket_investigation_job(channel_id)
 
-        async def fake_boundary(_text: str):
+        async def fake_boundary(_text: str, **_context):
             return {
                 "classification": "business_boundary",
                 "tripwire_triggered": True,
@@ -663,7 +663,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
         clear_team_handoff_notice(channel_id)
 
-        async def fake_boundary(_text: str):
+        async def fake_boundary(_text: str, **_context):
             return {
                 "classification": "security_process_boundary",
                 "tripwire_triggered": True,

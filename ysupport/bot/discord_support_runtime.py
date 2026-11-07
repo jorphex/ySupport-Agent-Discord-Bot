@@ -287,8 +287,13 @@ def _message_text_for_turn(message: discord.Message) -> str:
     return ""
 
 
-async def _outer_support_boundary_result(text: str) -> dict[str, Any]:
-    return await evaluate_support_boundary(text)
+async def _outer_support_boundary_result(
+    text: str, *, project_context: str | None = None,
+    initial_button_intent: str | None = None,
+) -> dict[str, Any]:
+    return await evaluate_support_boundary(
+        text, project_context=project_context, initial_button_intent=initial_button_intent,
+    )
 
 
 async def _outer_support_boundary_reply(text: str) -> str | None:

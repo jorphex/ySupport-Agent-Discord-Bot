@@ -864,6 +864,21 @@ async def tools():
    return "\n".join(item.text for item in result.content if hasattr(item,"text"))
 if mode.startswith(("apy","docs_apy","coverage")):
  answer=asyncio.run(tools());used=["ysupport_mcp"]
+elif mode.startswith("batch_"):
+ wallet,vault=re.findall(r"0x[0-9a-fA-F]{40}(?![0-9a-fA-F])",text)[:2]
+ tx=re.search(r"0x[0-9a-fA-F]{64}",text).group()
+ call={"to_address":vault,"function_signature":"maxWithdraw(address,uint256)","args_json":json.dumps([wallet,"0"]),"output_types_json":'["uint256"]'}
+ if mode=="batch_one_arg":call.update(function_signature="maxWithdraw(address)",args_json=json.dumps([wallet]))
+ if mode=="batch_wrong_input":call["function_signature"]="maxWithdraw(uint256,uint256)"
+ if mode=="batch_wrong_output":call["output_types_json"]='["bool"]'
+ if mode in ("batch_json_abi","batch_wrong_json_abi"):
+  call["function_abi_json"]=json.dumps({"type":"function","name":"maxWithdraw","stateMutability":"view","inputs":[{"name":"owner","type":"uint256" if mode=="batch_wrong_json_abi" else "address"},{"name":"maxLoss","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]})
+ query={"operation":"read_contracts","arguments":{"chain":"katana","tx_hash":tx,"calls_json":json.dumps([call])}}
+ p=subprocess.run(request["support_state"]["internal_rpc"]["command"],input=json.dumps(query),text=True,capture_output=True,timeout=10)
+ try:rows=json.loads(json.loads(p.stdout)["result"])["results"]
+ except (ValueError,KeyError,TypeError):rows=[]
+ capacity=next((r["result"] for r in rows if r.get("ok")),None)
+ answer="Historical transaction block withdrawal capacity: "+str(capacity);used=["shell"]
 elif handoff:
  answer=asyncio.run(tools())+" A maintainer decision is needed."
  used=["ysupport_mcp"]
@@ -916,6 +931,11 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     probe("apy_wrong", "combined_data_button_routes_vault_query_to_search_tool", "Missing answer fact")
     probe("docs_apy", "apy_mechanics_question_routes_to_docs_not_vault_search")
     probe("docs_apy_wrong", "apy_mechanics_question_routes_to_docs_not_vault_search", "Missing answer concept")
+    historical = "ticket_1625_failure_diagnosis_uses_transaction_block"
+    for mode in ("batch_signature", "batch_one_arg", "batch_json_abi"):
+        probe(mode, historical)
+    for mode in ("batch_wrong_input", "batch_wrong_output", "batch_wrong_json_abi"):
+        probe(mode, historical, "Missing provider lookup")
     coverage_expected = {
         "coverage_empty": {"returned_rows": 0, "total": 0, "visible_vaults": 0,
                            "with_realized_apy": 0, "without_realized_apy": 0, "coverage_ratio": None},

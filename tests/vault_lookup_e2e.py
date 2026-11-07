@@ -199,6 +199,8 @@ async def run(report):
                         return value
 
                     first = await call(query="USDC", chain="ethereum", limit=3)
+                    assert first["ui_apy_observation"]["verified"] is False
+                    assert first["ui_apy_observation"]["displayed_metric"] is None
                     assert fixture.calls == ["/api/rest/list/vaults"]
                     rows = list(first["rows"])
                     page = first

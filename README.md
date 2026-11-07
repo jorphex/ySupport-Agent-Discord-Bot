@@ -100,6 +100,19 @@ refresh script set the working directory themselves.
   Transaction, contract, position and withdrawal helpers support bounded reads,
   plus allowed balance, nonce, fee, block and storage queries. Operations, provider
   calls, log ranges and time are limited. MCP has no RPC tools or credentials.
+  `read_contracts` batches up to eight targeted reads at one block; `tx_hash` pins
+  them to a receipt block. Block-end state does not prove the revert cause.
+  `get_wallet_history` verifies supplied receipts or a wallet-filtered window of
+  at most 5,000 blocks. Kong's latest 100 contract transfers provide discovery,
+  not complete wallet history. Katana Alchemy has no indexed transfer API;
+  yHelper's harvest/report index is not a wallet-transfer source. Missing history
+  remains unknown. Share burns alone do not prove a positive underlying payout.
+- V3 explorer guidance requires wallet-specific zero-loss limits and a successful
+  read-only simulation at one block. Ready recipes use four-argument `redeem`
+  with `max_loss=0`; partial capacity yields a partial amount. Failed verification
+  or an unknown vault version returns no write recipe. Simulations can become
+  stale before submission; the wallet must simulate again. V1/V2 handling stays
+  unchanged. Native child PATH includes the bot venv so `python` uses its interpreter.
 - `ysupport/integrations/ticket_transcript_fetch.py` provides manual, read-only review;
   live turns do not import it. Docs namespace discovery is cached for five minutes; this cache does
   not store answers or wallet observations.
@@ -119,7 +132,9 @@ refresh script set the working directory themselves.
   set `include_details=true`. Sorts use `highest_apy` / `lowest_apy`; previous APR
   names remain aliases. Missing snapshot measurements stay null; incomplete
   snapshots are `partial`. Catalog age identifies the generation used by the call.
-  yBOLD reports its APY input sources separately.
+  yBOLD reports its APY input sources separately. `ui_apy_observation` marks the
+  frontend metric and zero-rate cause as unverified; API fields alone cannot
+  explain a displayed zero.
 
 ## Verification
 
@@ -132,6 +147,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 | --- | --- | --- |
 | `tests.layout_e2e` | Package imports, resource paths, CLI entry points and host launch script | `layout-e2e.json` |
 | `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
+| `tests.evidence_e2e` | Native stdio/private socket/HTTP RPC: zero-loss redemption, payouts, scoped history, pinned batches, partial errors and ABI normalization | `evidence-e2e.json` |
 | `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
 | `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
 | `tests.steering_e2e` | Native stdio processes: owner text/images, intake, handoff context, completion/ACK races, recovery and cancellation | `steering-e2e.json` |
@@ -160,7 +176,9 @@ before the working directory changes.
 
 The 44 former specialist LLM scenario IDs map to 42 distinct native cases, retaining
 IDs and combined assertions for equivalent inputs. Two additional cases cover
-confirmed bridge delivery and unavailable destination receipts. Use `--case <id>`
+confirmed bridge delivery and unavailable destination receipts. Eight more cover
+terse withdrawal support and the strategy, APY, migration and temporal replay gaps.
+Use `--case <id>`
 to select a scenario or alias.
 
 Native cases use real controllers, the outer classifier, native execution and

@@ -389,7 +389,7 @@ class TicketFlowTests(TicketFlowTestCase):
         boundary_calls = 0
         captured_requests: list[TicketTurnRequest] = []
 
-        async def fake_boundary(_text: str):
+        async def fake_boundary(_text: str, **_context):
             nonlocal boundary_calls
             boundary_calls += 1
             if boundary_calls == 1:

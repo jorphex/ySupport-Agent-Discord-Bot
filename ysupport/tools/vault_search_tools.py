@@ -261,6 +261,10 @@ async def core_search_vaults(
                    **catalog_source},
         "filters": {"query": query, "chain_id": chain_id, "sort_by": sort_by, "recommended_only": recommended_only},
         "units": {"apy": "decimal_fraction", "tvl_usd": "USD", "fees": "basis_points", "raw_amounts": "base_units"},
+        "ui_apy_observation": {
+            "verified": False, "displayed_metric": None, "zero_explanation": None,
+            "scope": "API estimates and realised rates do not observe the current UI label or explain its displayed zero.",
+        },
         "sort_source": "cached_catalog; detail snapshots may be newer; missing metrics sort last among active peers",
         "pagination": {"total": len(matches), "offset": offset, "limit": limit, "returned": len(rows), "next_offset": next_offset},
         "rows": rows,

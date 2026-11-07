@@ -971,7 +971,10 @@ class TicketBot(discord.Client):
                 proposed_history: List[TResponseInputItem] | None = None
                 handoff_state_committed = False
 
-                boundary_output = await _outer_support_boundary_result(aggregated_text)
+                boundary_output = await _outer_support_boundary_result(
+                    aggregated_text, project_context=run_context.project_context,
+                    initial_button_intent=run_context.initial_button_intent,
+                )
                 boundary_reply = _boundary_reply_from_output(boundary_output)
                 if boundary_reply is not None:
                     final_reply = boundary_reply
@@ -985,7 +988,10 @@ class TicketBot(discord.Client):
                     steering_intake = TicketIntakeState.from_channel(channel_id)
 
                     async def allow_steering_input(entry):
-                        boundary = await _outer_support_boundary_result(entry.text)
+                        boundary = await _outer_support_boundary_result(
+                            entry.text, project_context=run_context.project_context,
+                            initial_button_intent=run_context.initial_button_intent,
+                        )
                         if _boundary_reply_from_output(boundary) is not None:
                             return False
                         merge_explicit_evidence(steering_job, entry.text)

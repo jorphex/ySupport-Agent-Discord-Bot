@@ -53,7 +53,7 @@ class TicketFlowTests(TicketFlowTestCase):
             async def execute_turn(self, request, hooks=None):
                 raise AssertionError("Boundary reply should stop before executor runs.")
 
-        async def fake_boundary(_text: str):
+        async def fake_boundary(_text: str, **_context):
             return {
                 "classification": "business_boundary",
                 "tripwire_triggered": True,

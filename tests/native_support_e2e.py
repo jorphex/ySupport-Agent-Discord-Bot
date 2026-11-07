@@ -79,6 +79,8 @@ def failures(case, calls, turns):
         if any(call["tool"] == name for call in calls):
             errors.append(f"Unwanted call: {name}")
     for lookup in case.get("lookups", []):
+        if not lookup.get("required", True):
+            continue
         if not any(call["tool"] == lookup["operation"] and call["fixture_matched"]
                    and call.get("transport") == ("http" if lookup["operation"] == "report" else "internal_rpc")
                    and {k: v.lower() for k, v in call.get("query", {}).items()}
@@ -191,9 +193,12 @@ async def run(args, *, command_override=None, cases_override=None):
         from ysupport.bot import state
         from ysupport.tools import support_dashboard_tools
         import uvicorn
+        from ysupport.tools import position_evidence
         from ysupport.tools import vault_search_tools
         from ysupport.tools import vault_position_tools
         from ysupport.tools import yearn_targets
+        from eth_utils.abi import abi_to_signature, collapse_if_tuple
+        from web3 import Web3
         from ysupport.bot import client as ysupport
         from starlette.responses import JSONResponse
         from ysupport.bot.support_boundary import evaluate_support_boundary
@@ -212,7 +217,7 @@ async def run(args, *, command_override=None, cases_override=None):
                 'ysupport/bot/client.py', 'ysupport/bot/ticket_intake.py', 'ysupport/bot/state.py', 'ysupport/bot/support_boundary.py', 'ysupport/integrations/mcp_server.py', 'ysupport/bot/bot_behavior.py', 'ysupport/execution/codex_support_contract.py',
                 'ysupport/tools/support_dashboard_tools.py', 'ysupport/tools/vault_search_tools.py', 'ysupport/tools/kong_vaults.py',
                 'ysupport/execution/ysupport_codex_instructions.md', 'ysupport/execution/codex_support_endpoint.py',
-                'ysupport/execution/internal_rpc.py', 'ysupport/tools/chain_access.py', 'ysupport/tools/onchain_tools.py', 'ysupport/tools/vault_position_tools.py',
+                'ysupport/execution/internal_rpc.py', 'ysupport/execution/json_endpoint.py', 'ysupport/tools/position_evidence.py', 'ysupport/tools/chain_access.py', 'ysupport/tools/onchain_tools.py', 'ysupport/tools/vault_position_tools.py',
                 "tests/native_support_e2e.py", "tests/native_support_cases.json",
             )},
             "model": "external-fixture" if command_override else config.TICKET_EXECUTION_CODEX_MODEL,
@@ -316,7 +321,7 @@ async def run(args, *, command_override=None, cases_override=None):
 
         def rpc_observation(operation, query):
             matched = observation(operation, query, transport="internal_rpc")
-            return str(matched["result"]) if matched else "No matching observation in the controlled provider fixture."
+            return (json.dumps(matched["result"]) if isinstance(matched["result"], (dict, list)) else str(matched["result"])) if matched else "No matching observation in the controlled provider fixture."
 
         async def inspect_onchain(**args):
             return rpc_observation("transaction", {"chain": args["chain"], "tx_hash": args.get("tx_hash", "")})
@@ -327,11 +332,61 @@ async def run(args, *, command_override=None, cases_override=None):
         async def withdrawal(**args):
             return rpc_observation("withdrawal", {"wallet": args.get("user_address_or_ens") or "", "chain": args["chain"], "vault": args["vault_address"]})
 
+        async def wallet_history(**args):
+            query = {"wallet": args["wallet_address"], "chain": args["chain"], "token": args["token_address"]}
+            if args.get("tx_hashes_json"):
+                query["transactions"] = ",".join(sorted(value.lower() for value in json.loads(args["tx_hashes_json"])))
+            return rpc_observation("wallet_history", query)
+
+        async def contract_batch(**args):
+            batch = json.loads(args["calls_json"])
+            vaults = {entry.get("to_address", "").lower() for entry in batch}
+            addresses = [value for entry in batch for value in json.loads(entry.get("args_json", "[]")) if isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", value)]
+            if len(vaults) != 1 or not addresses:
+                return "No matching observation in the controlled provider fixture."
+            matched = observation("contract_batch", {"chain": args["chain"], "tx_hash": args.get("tx_hash", ""), "vault": next(iter(vaults)), "wallet": addresses[0]}, transport="internal_rpc")
+            record = calls[-1]
+            record.update(fixture_matched=False, requests=batch)
+            if matched is None:
+                return "No matching observation in the controlled provider fixture."
+            value = json.loads(matched["result"]) if isinstance(matched["result"], str) else deepcopy(matched["result"])
+            selected = []
+            for entry in batch:
+                try:
+                    abi = onchain_tools._build_function_abi(
+                        function_signature=entry.get("function_signature"),
+                        function_abi_json=entry.get("function_abi_json"),
+                        output_types_json=entry.get("output_types_json"),
+                    )
+                    inputs = json.loads(entry.get("args_json") or "[]")
+                    if not isinstance(inputs, list) or len(inputs) != len(abi["inputs"]):
+                        raise ValueError("ABI argument count does not match its inputs.")
+                    inputs = [onchain_tools._coerce_abi_argument(field, arg) for field, arg in zip(abi["inputs"], inputs)]
+                    contract = Web3().eth.contract(address=Web3.to_checksum_address(entry["to_address"]), abi=[abi])
+                    getattr(contract.functions, abi["name"])(*inputs)._encode_transaction_data()
+                    signature = abi_to_signature(abi)
+                    outputs = [collapse_if_tuple(field) for field in abi["outputs"]]
+                    # Only this verified V3 overload defaults to zero loss.
+                    lookup_signature = "maxWithdraw(address,uint256)" if signature == "maxWithdraw(address)" else signature
+                    lookup_inputs = [*inputs, 0] if signature == "maxWithdraw(address)" else inputs
+                    match = next((row for row in value["results"]
+                                  if row["function"] == lookup_signature and row["output_types"] == outputs
+                                  and [str(v).lower() for v in row["args"]] == [str(v).lower() for v in lookup_inputs]), None)
+                    if match is None:
+                        raise ValueError("No matching contract field observation.")
+                    selected.append({**{k: v for k, v in match.items() if k != "output_types"}, "function": signature, "args": inputs})
+                except Exception as exc:
+                    selected.append({"ok": False, "error": str(exc)})
+            record["fixture_matched"] = any(row["ok"] for row in selected)
+            value["results"] = selected
+            value["complete"] = all(row["ok"] for row in selected)
+            return json.dumps(value)
+
         async def chain_state(**args):
             return rpc_observation("read_chain_state", args)
 
-        async def boundary(message):
-            result = await evaluate_support_boundary(message)
+        async def boundary(message, **context):
+            result = await evaluate_support_boundary(message, **context)
             if result.get("error"):
                 raise RuntimeError("Boundary classifier failed")
             boundaries.append(result)
@@ -358,6 +413,8 @@ async def run(args, *, command_override=None, cases_override=None):
         patches.enter_context(patch.object(vault_position_tools, "core_check_all_deposits", new=positions))
         patches.enter_context(patch.object(vault_position_tools, "core_get_withdrawal_instructions", new=withdrawal))
         patches.enter_context(patch.object(chain_access, "core_read_chain_state", new=chain_state))
+        patches.enter_context(patch.object(position_evidence, "core_get_wallet_history", new=wallet_history))
+        patches.enter_context(patch.object(onchain_tools, "core_read_contracts", new=contract_batch))
         patches.enter_context(patch.multiple(config, CATEGORY_CONTEXT_MAP={1: "yearn"}, COOLDOWN_SECONDS=0,
                                             BUG_REPORT_COOLDOWN_SECONDS=0, TELEGRAM_BOT_TOKEN="fixture",
                                             TELEGRAM_YSUPPORT_CHAT="evaluation", TICKET_EXECUTION_CODEX_SESSION_DIR=str(root / "sessions"),

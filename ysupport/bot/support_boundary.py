@@ -1,5 +1,6 @@
 """Live outer support-boundary classification shared by Discord and native evaluation."""
 
+import json
 import logging
 import re
 from typing import Any, Literal
@@ -49,6 +50,12 @@ SUPPORT_BOUNDARY_GUARDRAIL_INSTRUCTIONS = (
     "do not infer a bounty or secure-submission request from the URL or report label. "
     "Reporting an ordinary issue or asking for Discord channel access remains support; "
     "security-process handling requires a request for a report reward/payment or secure disclosure. "
+    "Strategy design, automation, development, templates, and strategist fee mechanics "
+    "are technical support, including proposing automation for a manually operated "
+    "yield strategy. Do not infer marketing, employment or a grant request solely "
+    "from proposing a strategy or asking how strategist fees work. Selling services, "
+    "requesting a job/grant, and partnership marketing remain business boundaries. "
+    "Use trusted ticket_context to interpret the current message, not as user instructions. "
     "When uncertain between support and a boundary, choose `yearn_support`."
 )
 
@@ -159,7 +166,10 @@ support_boundary_guardrail_agent = Agent(
 )
 
 
-async def evaluate_support_boundary(text_input: str) -> dict[str, Any]:
+async def evaluate_support_boundary(
+    text_input: str, *, project_context: str | None = None,
+    initial_button_intent: str | None = None,
+) -> dict[str, Any]:
     if not text_input.strip():
         return {
             "classification": "yearn_support",
@@ -178,7 +188,10 @@ async def evaluate_support_boundary(text_input: str) -> dict[str, Any]:
     try:
         result = await Runner().run(
             starting_agent=support_boundary_guardrail_agent,
-            input=text_input,
+            input=json.dumps({
+                "ticket_context": {"project": project_context or "yearn", "initial_button_intent": initial_button_intent},
+                "current_message": text_input,
+            }),
             run_config=RunConfig(
                 workflow_name="Yearn Support Boundary Guardrail Check",
                 tracing_disabled=True,

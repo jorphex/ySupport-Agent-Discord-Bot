@@ -131,7 +131,7 @@ async def scenario(root, mode):
     def records(suffix, channel=7901):
         return [json.loads(p.read_text()) for p in root.glob(f"{channel}.*.{suffix}")]
 
-    async def boundary(text):
+    async def boundary(text, **_context):
         return (
             {
                 "tripwire_triggered": True,
