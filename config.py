@@ -429,7 +429,7 @@ BLOCK_EXPLORER_URLS = {
     "base": "https://basescan.org",
     "arbitrum": "https://arbiscan.io",
     "sonic": "https://sonicscan.org",
-    "katana": "https://explorer.katanarpc.com",
+    "katana": "https://katanascan.com",
 }
 
 # --- ABIs ---

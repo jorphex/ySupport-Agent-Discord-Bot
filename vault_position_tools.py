@@ -228,7 +228,8 @@ async def query_active_deposits_logic(
             chain_vaults = [
                 v
                 for v in chain_vaults
-                if token_lower in v.get("asset", {}).get("symbol", "").lower()
+                if token_lower in str((v.get("asset") or {}).get("symbol") or "").lower()
+                or token_lower in str(v.get("symbol") or "").lower()
             ]
 
         if not chain_vaults:
@@ -434,11 +435,12 @@ async def query_v1_deposits_logic(
 
 
 async def core_check_all_deposits(
-    user_address_or_ens: str, token_symbol: Optional[str] = None
+    user_address_or_ens: str, token_symbol: Optional[str] = None,
+    chain: Optional[str] = None,
 ) -> str:
     """
-    Checks for user deposits in BOTH active (v2/v3) and deprecated (v1) Yearn vaults across all supported chains.
-    Provide the user's wallet address or ENS name. Optionally filter by token symbol (e.g., 'USDC').
+    Checks active vault and gauge balances, plus deprecated V1 balances on Ethereum.
+    Optional chain and token/receipt-symbol filters limit the scan.
     Returns a combined summary of any deposits found in either type of vault.
     """
     logging.info(f"[CoreTool:check_deposits] User: '{user_address_or_ens}'")
@@ -446,34 +448,25 @@ async def core_check_all_deposits(
     if not resolved_address:
         return f"Could not resolve '{user_address_or_ens}' to a valid Ethereum address."
 
-    # Run checks concurrently
-    v1_task = asyncio.create_task(
-        query_v1_deposits_logic(resolved_address, token_symbol)
-    )
-    active_task = asyncio.create_task(
-        query_active_deposits_logic(
-            resolved_address, chain=None, token_symbol=token_symbol
-        )
-    )
+    chain = chain.strip().lower() if chain else None
+    if chain and chain not in config.RPC_URLS:
+        return f"Unsupported chain: {chain}."
+    checks = [query_active_deposits_logic(resolved_address, chain=chain, token_symbol=token_symbol)]
+    empty_notes = ["(No deposits found in active V2/V3 vaults)"]
+    if chain in {None, "ethereum"}:
+        checks.insert(0, query_v1_deposits_logic(resolved_address, token_symbol))
+        empty_notes.insert(0, "(No deposits found in deprecated V1 vaults)")
+    results = await asyncio.gather(*checks)
 
-    v1_results, active_results = await asyncio.gather(v1_task, active_task)
-
-    if (
-        v1_results.complete
-        and active_results.complete
-        and not v1_results.found
-        and not active_results.found
-    ):
+    if all(result.complete and not result.found for result in results):
         return (
-            f"No deposits found in any active or deprecated Yearn vaults for address {resolved_address}"
+            f"No deposits found in any {'active or deprecated' if chain in {None, 'ethereum'} else 'active'} Yearn vaults for address {resolved_address}"
+            + (f" on {chain.capitalize()}" if chain else "")
             + (f" matching token '{token_symbol}'." if token_symbol else ".")
         )
 
     final_output = []
-    for result, empty_note in (
-        (v1_results, "(No deposits found in deprecated V1 vaults)"),
-        (active_results, "(No deposits found in active V2/V3 vaults)"),
-    ):
+    for result, empty_note in zip(results, empty_notes):
         if result.found or not result.complete:
             final_output.append(result.text)
         else:

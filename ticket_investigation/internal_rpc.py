@@ -29,8 +29,8 @@ class InternalRpcServer:
             "optional": ["tx_hash", "to_address", "function_signature", "args_json", "output_types_json", "function_abi_json", "address", "topics_json", "from_block", "to_block", "event_abis_json", "block_identifier", "max_results"],
         },
         "check_all_deposits": {
-            "required": ["user_address_or_ens"], "optional": ["token_symbol"],
-            "description": "Scan wallet and gauge share balances, including older Yearn vaults. This does not determine exploit-recovery entitlements, payout formulas or distribution rights; use authoritative process documentation for those. Use a token filter when known; broad scans consume more RPC calls.",
+            "required": ["user_address_or_ens"], "optional": ["token_symbol", "chain"],
+            "description": "Scan wallet and gauge share balances, including older Yearn vaults. Use known chain and token/receipt-symbol filters; broad scans consume more RPC calls. For a known vault, prefer targeted reads or get_withdrawal_instructions. Balances do not establish recovery/distribution rights; use authoritative process documentation for those.",
         },
         "get_withdrawal_instructions": {
             "required": ["vault_address", "chain"], "optional": ["user_address_or_ens"],

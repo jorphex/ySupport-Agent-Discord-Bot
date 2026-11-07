@@ -452,6 +452,12 @@ async def core_inspect_onchain(
                 function_signature=function_signature,
                 output_types_json=output_types_json,
             )
+            args = [
+                int(value) if isinstance(value, str)
+                and re.fullmatch(r"[+-]?\d+", value.strip())
+                and re.fullmatch(r"u?int\d*", field.get("type", "")) else value
+                for value, field in zip(args, function_abi["inputs"])
+            ] if len(args) == len(function_abi["inputs"]) else args
             contract = web3_instance.eth.contract(
                 address=checksum_to, abi=[function_abi]
             )

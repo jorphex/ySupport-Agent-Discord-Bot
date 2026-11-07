@@ -183,6 +183,45 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             reply = (await turn([inspect(mode=" Receipt ", chain=" Ethereum ", tx_hash=TX)]))[0]
             assert reply["ok"] and "status: 1" in reply["result"], reply
             report["scenarios"]["optional_wallet_and_canonical_helper_names_preserved"] = True
+
+            exact_integer = 1234567890123456789
+            reply = (await turn([inspect(mode="call", to_address=VAULT,
+                function_signature="previewRedeem(uint256)", args_json=json.dumps([str(exact_integer)]),
+                output_types_json='["uint256"]')]))[0]
+            assert reply["ok"] and "10000000" in reply["result"], reply
+            encoded = next(c["params"][0]["data"] for c in reversed(node.calls) if c["method"] == "eth_call")
+            assert int(encoded[-64:], 16) == exact_integer
+            report["scenarios"]["decimal_integer_argument_preserves_exact_units"] = True
+
+            # An unrelated incomplete catalog row must not abort receipt lookup.
+            nullable = {"address": "0x" + "99" * 20, "chainId": 1,
+                        "asset": None, "symbol": None}
+            with patch.object(vault_position_tools, "fetch_kong_vault_catalog", new=AsyncMock(return_value=[nullable, vault])):
+                filtered = {"operation": "check_all_deposits", "arguments": {
+                    "user_address_or_ens": WALLET, "token_symbol": "yvUSDC"}}
+                reply = (await turn([filtered]))[0]
+                assert reply["ok"] and "15.000000" in reply["result"], reply
+                filtered["arguments"]["token_symbol"] = "USDC"
+                reply = (await turn([filtered]))[0]
+                assert reply["ok"] and "15.000000" in reply["result"], reply
+            report["scenarios"]["nullable_catalog_and_receipt_symbol_lookup"] = True
+
+            katana = {**vault, "chainId": 747474}
+            with patch.object(config, "RPC_URLS", {"ethereum": url, "katana": url}), \
+                 patch.object(chain_access, "WEB3_INSTANCES", {}), \
+                 patch.object(chain_access, "_WEB3_BOOTSTRAPPED", False), \
+                 patch.object(vault_position_tools, "fetch_kong_vault_catalog", new=AsyncMock(return_value=[nullable, katana])), \
+                 patch.object(vault_position_tools, "fetch_kong_vault_snapshot", new=AsyncMock(return_value=katana)):
+                before = len(node.calls)
+                scoped = {"operation": "check_all_deposits", "arguments": {
+                    "user_address_or_ens": WALLET, "token_symbol": "yvUSDC", "chain": "katana"}}
+                reply = (await turn([scoped]))[0]
+                assert reply["ok"] and "15.000000" in reply["result"], reply
+                assert all(c.get("params", [{}])[0].get("to", "").lower() != OLD_VAULT
+                           for c in node.calls[before:] if c["method"] == "eth_call")
+                reply = (await turn([{**withdrawal, "arguments": {**withdrawal["arguments"], "chain": "katana"}}]))[0]
+                assert reply["ok"] and "https://katanascan.com/address/" in reply["result"], reply
+            report["scenarios"]["known_chain_avoids_unrelated_vaults_and_uses_official_explorer"] = True
             def state_read(method, params):
                 return {"operation": "read_chain_state", "arguments": {"chain": "ethereum", "method": method, "params_json": json.dumps(params)}}
             balances = await turn([state_read("eth_getBalance", [WALLET, "latest"]), state_read("eth_getTransactionCount", [WALLET, "latest"]), state_read("eth_getTransactionCount", [WALLET, "pending"])])
