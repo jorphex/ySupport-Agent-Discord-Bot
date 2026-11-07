@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch, PropertyMock
 
 import discord
 
-import config
-import state
-from state import (
+from ysupport import config
+from ysupport.bot import state
+from ysupport.bot.state import (
     channels_awaiting_initial_button_press,
     TeamHandoffNotice,
     clear_ticket_channel_state,
@@ -18,21 +18,21 @@ from state import (
     team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     build_dismissed_handoff_notice,
     build_handoff_notice,
 )
-from views import InitialInquiryView, StopBotView
-from discord_support_runtime import (
+from ysupport.bot.views import InitialInquiryView, StopBotView
+from ysupport.bot.discord_support_runtime import (
     _notify_handoff,
     _refresh_discord_attachment_urls,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
     _build_discord_intents,
     _run_ticket_bot_with_fatal_startup_backoff,
 )
-from ticket_channel_lifecycle import (
+from ysupport.bot.ticket_channel_lifecycle import (
     initialize_ticket_channel,
 )
 
@@ -64,14 +64,14 @@ class TicketFlowTests(TicketFlowTestCase):
         pending_tasks[channel_id] = old_task
         try:
             with (
-                patch("ticket_channel_lifecycle.discord.TextChannel", _TextChannel),
+                patch('ysupport.bot.ticket_channel_lifecycle.discord.TextChannel', _TextChannel),
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {92001: "yearn"}),
                 patch(
-                    "ticket_channel_lifecycle.asyncio.sleep",
+                    'ysupport.bot.ticket_channel_lifecycle.asyncio.sleep',
                     new=AsyncMock(),
                 ) as sleep,
                 patch(
-                    "ticket_channel_lifecycle._detect_ticket_owner_user_id",
+                    'ysupport.bot.ticket_channel_lifecycle._detect_ticket_owner_user_id',
                     new=AsyncMock(return_value=93001),
                 ) as detect_owner,
             ):
@@ -115,7 +115,7 @@ class TicketFlowTests(TicketFlowTestCase):
                 return_value=SimpleNamespace(id=95001),
             ),
             patch(
-                "ysupport.hydrate_persisted_team_handoff_states",
+                'ysupport.bot.client.hydrate_persisted_team_handoff_states',
                 return_value=2,
             ) as hydrate,
             patch.object(bot.telegram_handoffs, "start", return_value=True) as start,
@@ -349,8 +349,8 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with (
-                patch("views.stop_ticket_channel", return_value=False),
-                patch("views.logging.error") as log_error,
+                patch('ysupport.bot.views.stop_ticket_channel', return_value=False),
+                patch('ysupport.bot.views.logging.error') as log_error,
             ):
                 await StopBotView().children[0].callback(interaction)
 
@@ -421,7 +421,7 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with patch(
-                "views.retire_handoff_notice",
+                'ysupport.bot.views.retire_handoff_notice',
                 return_value=True,
             ) as retire_notice:
                 await StopBotView().children[0].callback(interaction)
@@ -487,10 +487,10 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "views.retire_handoff_notice",
+                    'ysupport.bot.views.retire_handoff_notice',
                     return_value=False,
                 ) as retire_notice,
-                patch("views.logging.warning") as warning,
+                patch('ysupport.bot.views.logging.warning') as warning,
             ):
                 await StopBotView().children[0].callback(interaction)
 
@@ -526,12 +526,12 @@ class TicketFlowTests(TicketFlowTestCase):
             return None
 
         with (
-            patch("ysupport._reload_runtime_env_and_config") as mock_reload,
+            patch('ysupport.bot.client._reload_runtime_env_and_config') as mock_reload,
             patch(
-                "ysupport._run_ticket_bot_once",
+                'ysupport.bot.client._run_ticket_bot_once',
                 side_effect=fake_run_once,
             ) as mock_run_once,
-            patch("ysupport.time.sleep") as mock_sleep,
+            patch('ysupport.bot.client.time.sleep') as mock_sleep,
         ):
             with patch.object(config, "DISCORD_FATAL_STARTUP_BACKOFF_SECONDS", 123.0):
                 _run_ticket_bot_with_fatal_startup_backoff()
@@ -565,11 +565,11 @@ class TicketFlowTests(TicketFlowTestCase):
 
         with (
             patch(
-                "discord_support_runtime.summarize_handoff_summary",
+                'ysupport.bot.discord_support_runtime.summarize_handoff_summary',
                 new=fake_summarize_handoff_summary,
             ),
             patch(
-                "discord_support_runtime.send_handoff_notice",
+                'ysupport.bot.discord_support_runtime.send_handoff_notice',
                 new=fake_send_handoff_notice,
             ),
         ):
@@ -611,11 +611,11 @@ class TicketFlowTests(TicketFlowTestCase):
 
         with (
             patch(
-                "discord_support_runtime.summarize_handoff_summary",
+                'ysupport.bot.discord_support_runtime.summarize_handoff_summary',
                 new=fake_summarize_handoff_summary,
             ),
             patch(
-                "discord_support_runtime.send_handoff_notice",
+                'ysupport.bot.discord_support_runtime.send_handoff_notice',
                 new=fake_send_handoff_notice,
             ),
         ):

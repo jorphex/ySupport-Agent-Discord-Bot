@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import config
-from ticket_execution.replay_cli import (
+from ysupport import config
+from ysupport.execution.replay_cli import (
     execute_request_json,
 )
 
@@ -23,7 +23,7 @@ class TicketExecutionReplayCliTests(unittest.IsolatedAsyncioTestCase):
                 return '{"ok":true}'
 
         with patch(
-            "ticket_execution.replay_cli.build_ticket_execution_json_endpoint",
+            'ysupport.execution.replay_cli.build_ticket_execution_json_endpoint',
             return_value=_FakeEndpoint(),
         ):
             response_json = await execute_request_json(

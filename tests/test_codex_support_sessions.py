@@ -9,14 +9,14 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from codex_support_sessions import CodexSupportSessionManager
-from ticket_investigation.codex_support_endpoint import (
+from ysupport.execution.codex_support_sessions import CodexSupportSessionManager
+from ysupport.execution.codex_support_endpoint import (
     DEFAULT_CODEX_EXEC_COMMAND,
     CodexSupportTicketExecutionJsonEndpoint,
     _build_codex_support_command,
     _expired_unreferenced_rollout_ids,
 )
-from ticket_investigation.transport import TicketExecutionTransportRequest
+from ysupport.execution.transport import TicketExecutionTransportRequest
 
 
 class CodexSupportSessionManagerTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class CodexSupportSessionManagerTests(unittest.TestCase):
             )
 
             with patch(
-                "codex_support_sessions.os.replace",
+                'ysupport.execution.codex_support_sessions.os.replace',
                 side_effect=OSError("replace failed"),
             ):
                 with self.assertRaisesRegex(OSError, "replace failed"):

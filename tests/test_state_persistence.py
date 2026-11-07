@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 
 
-import state
-from state import (
+from ysupport.bot import state
+from ysupport.bot.state import (
     apply_initial_button_intent,
     PublicConversation,
     TeamHandoffNotice,
@@ -162,7 +162,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
             with (
                 patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
                 patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
-                patch("state.reset_ticket_codex_session"),
+                patch('ysupport.bot.state.reset_ticket_codex_session'),
             ):
                 conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
                 ticket_investigation_jobs[channel_id] = TicketInvestigationJob(channel_id=channel_id)
@@ -231,7 +231,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
             with (
                 patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
                 patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
-                patch("state.reset_ticket_codex_session"),
+                patch('ysupport.bot.state.reset_ticket_codex_session'),
             ):
                 conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
                 ticket_investigation_jobs[channel_id] = TicketInvestigationJob(channel_id=channel_id)
@@ -253,7 +253,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
             with (
                 patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
                 patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
-                patch("state.reset_ticket_codex_session"),
+                patch('ysupport.bot.state.reset_ticket_codex_session'),
             ):
                 conversation_threads[channel_id] = [{"role": "user", "content": "hi"}]
 
@@ -287,8 +287,8 @@ class TicketStatePersistenceTests(unittest.TestCase):
                 with (
                     patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
                     patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
-                    patch("state._write_json", return_value=False),
-                    patch("state.reset_ticket_codex_session"),
+                    patch('ysupport.bot.state._write_json', return_value=False),
+                    patch('ysupport.bot.state.reset_ticket_codex_session'),
                 ):
                     self.assertFalse(stop_ticket_channel(channel_id))
         finally:
@@ -309,7 +309,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
                     "reset",
                     side_effect=OSError("read-only"),
                 ),
-                patch("state.logging.error") as log_error,
+                patch('ysupport.bot.state.logging.error') as log_error,
             ):
                 state.reset_ticket_codex_session(105)
 
@@ -319,8 +319,8 @@ class TicketStatePersistenceTests(unittest.TestCase):
         self,
     ) -> None:
         with (
-            patch("state._safe_unlink", return_value=False),
-            patch("state.reset_ticket_codex_session"),
+            patch('ysupport.bot.state._safe_unlink', return_value=False),
+            patch('ysupport.bot.state.reset_ticket_codex_session'),
         ):
             self.assertFalse(
                 clear_ticket_channel_state(
@@ -337,7 +337,7 @@ class TicketStatePersistenceTests(unittest.TestCase):
             with (
                 patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
                 patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
-                patch("state.reset_ticket_codex_session"),
+                patch('ysupport.bot.state.reset_ticket_codex_session'),
             ):
                 job = TicketInvestigationJob(channel_id=channel_id)
                 job.record_requested_intent("data_deposits_withdrawals_start")
@@ -474,7 +474,7 @@ class PublicStatePersistenceTests(unittest.TestCase):
             with (
                 patch.object(state, "_TICKET_STATE_DIR", ticket_dir),
                 patch.object(state, "_PUBLIC_STATE_DIR", public_dir),
-                patch("state.reset_public_codex_session") as mock_reset,
+                patch('ysupport.bot.state.reset_public_codex_session') as mock_reset,
             ):
                 public_conversations[expired_author_id] = PublicConversation(
                     history=[{"role": "user", "content": "expired"}],

@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import discord
 
-import config
-import state
-from discord_support_runtime import InternalInstructionTurnResult
-from state import (
+from ysupport import config
+from ysupport.bot import state
+from ysupport.bot.discord_support_runtime import InternalInstructionTurnResult
+from ysupport.bot.state import (
     TeamHandoffNotice,
     channel_intent_after_button,
     clear_team_handoff_notice,
@@ -24,12 +24,12 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     build_closed_handoff_notice,
     build_handoff_notice,
     build_pending_delivery_handoff_notice,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
 from tests.ticket_flow_test_support import TicketFlowTestCase
@@ -80,7 +80,7 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"):
                 with patch(
-                    "telegram_handoff_controller.send_telegram_message",
+                    'ysupport.bot.telegram_handoff_controller.send_telegram_message',
                     new=fake_send_telegram_message,
                 ):
                     await bot.telegram_handoffs._handle_telegram_handoff_update(update)
@@ -160,15 +160,15 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with patch(
-                "telegram_handoff_controller.edit_handoff_notice",
+                'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                 new=fake_edit_handoff_notice,
             ):
                 with patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fake_internal_turn,
                 ):
                     with patch(
-                        "telegram_handoff_controller.send_long_message",
+                        'ysupport.bot.telegram_handoff_controller.send_long_message',
                         new=fake_send_long_message,
                     ):
                         await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
@@ -233,19 +233,19 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     return_value=True,
                 ),
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fake_internal_turn,
                 ),
                 patch(
-                    "telegram_handoff_controller.send_long_message",
+                    'ysupport.bot.telegram_handoff_controller.send_long_message',
                     side_effect=RuntimeError("Discord send failed"),
                 ),
                 patch(
-                    "telegram_handoff_controller.reset_ticket_codex_session"
+                    'ysupport.bot.telegram_handoff_controller.reset_ticket_codex_session'
                 ) as reset_session,
             ):
                 delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
@@ -287,13 +287,13 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice", return_value=True
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice', return_value=True
                 ),
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fail_synthesis,
                 ),
-                patch("telegram_handoff_controller.send_long_message") as send_message,
+                patch('ysupport.bot.telegram_handoff_controller.send_long_message') as send_message,
             ):
                 delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
                     channel_id=channel_id,
@@ -348,18 +348,18 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     return_value=True,
                 ) as edit_notice,
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fake_internal_turn,
                 ),
                 patch(
-                    "telegram_handoff_controller.send_long_message",
+                    'ysupport.bot.telegram_handoff_controller.send_long_message',
                     new=fake_send_long_message,
                 ),
-                patch("state.persist_ticket_state", return_value=False),
+                patch('ysupport.bot.state.persist_ticket_state', return_value=False),
             ):
                 with self.assertRaisesRegex(
                     RuntimeError,
@@ -404,16 +404,16 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice", return_value=True
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice', return_value=True
                 ),
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=stop_during_synthesis,
                 ),
                 patch(
-                    "telegram_handoff_controller.reset_ticket_codex_session",
+                    'ysupport.bot.telegram_handoff_controller.reset_ticket_codex_session',
                 ) as reset_session,
-                patch("telegram_handoff_controller.send_long_message") as send_message,
+                patch('ysupport.bot.telegram_handoff_controller.send_long_message') as send_message,
             ):
                 delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
                     channel_id=channel_id,
@@ -465,19 +465,19 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     return_value=True,
                 ),
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fake_internal_turn,
                 ),
                 patch(
-                    "telegram_handoff_controller.send_long_message",
+                    'ysupport.bot.telegram_handoff_controller.send_long_message',
                     new=stop_during_send,
                 ),
                 patch(
-                    "telegram_handoff_controller.reset_ticket_codex_session",
+                    'ysupport.bot.telegram_handoff_controller.reset_ticket_codex_session',
                 ) as reset_session,
             ):
                 delivered = await bot.telegram_handoffs._deliver_telegram_handoff_reply(
@@ -541,19 +541,19 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     return_value=True,
                 ),
                 patch(
-                    "telegram_handoff_controller._refresh_discord_attachment_urls",
+                    'ysupport.bot.telegram_handoff_controller._refresh_discord_attachment_urls',
                     side_effect=lambda _channel, attachments: attachments,
                 ),
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fake_internal_turn,
                 ),
                 patch(
-                    "telegram_handoff_controller.send_long_message",
+                    'ysupport.bot.telegram_handoff_controller.send_long_message',
                     new=followup_during_send,
                 ),
             ):
@@ -627,15 +627,15 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with patch(
-                "telegram_handoff_controller.edit_handoff_notice",
+                'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                 new=fake_edit_handoff_notice,
             ):
                 with patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn",
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                     new=fake_internal_turn,
                 ):
                     with patch(
-                        "telegram_handoff_controller.send_long_message",
+                        'ysupport.bot.telegram_handoff_controller.send_long_message',
                         new=fake_send_long_message,
                     ):
                         await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()

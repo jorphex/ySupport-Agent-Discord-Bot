@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import discord
 
-import config
-from state import (
+from ysupport import config
+from ysupport.bot.state import (
     active_ticket_executor_tasks,
     active_ticket_payloads,
     BotRunContext,
@@ -28,14 +28,14 @@ from state import (
     team_handoff_notice_by_channel,
     ticket_owner_user_id_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     TelegramSentMessage,
 )
-from ticket_investigation.contracts import (
+from ysupport.execution.contracts import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
 from tests.ticket_flow_test_support import (
@@ -122,12 +122,12 @@ class TicketFlowTests(TicketFlowTestCase):
             )
 
         try:
-            with patch("ysupport.send_long_message", new=fake_send_long_message):
+            with patch('ysupport.bot.client.send_long_message', new=fake_send_long_message):
                 with patch(
-                    "discord_support_runtime.send_handoff_notice",
+                    'ysupport.bot.discord_support_runtime.send_handoff_notice',
                     new=fake_send_handoff_notice,
                 ):
-                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                         await bot.process_ticket_message(channel_id, run_context)
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
@@ -184,9 +184,9 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with (
-                patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch("discord_support_runtime.send_handoff_notice", return_value=None),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
+                patch('ysupport.bot.discord_support_runtime.send_handoff_notice', return_value=None),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             ):
                 await bot.process_ticket_message(channel_id, run_context)
 
@@ -245,7 +245,7 @@ class TicketFlowTests(TicketFlowTestCase):
         last_bot_reply_ts_by_channel.pop(channel_id, None)
 
         try:
-            with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+            with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                 with patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}):
                     await bot.on_message(message)
             self.assertTrue(is_ticket_waiting_for_team(channel_id))
@@ -348,8 +348,8 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
                 patch.object(config, "COOLDOWN_SECONDS", 0.01),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-                patch("ysupport.send_long_message", new=fake_send_long_message),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
             ):
                 await bot.on_message(first)
                 await bot.on_message(followup)
@@ -441,9 +441,9 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
                 patch.object(config, "COOLDOWN_SECONDS", 0),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-                patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch("ysupport._outer_support_boundary_result", new=fake_boundary),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
+                patch('ysupport.bot.client._outer_support_boundary_result', new=fake_boundary),
             ):
                 await bot.on_message(ticket_message(3001, "Initial vault issue."))
                 await asyncio.wait_for(first_boundary_started.wait(), timeout=1)
@@ -539,7 +539,7 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
                 patch.object(config, "COOLDOWN_SECONDS", 60),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             ):
                 first_handler = asyncio.create_task(
                     bot.on_message(ticket_message(4001, "It is on Base.", "base.png"))
@@ -635,12 +635,12 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "COOLDOWN_SECONDS", 0),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
                 patch(
-                    "ysupport.send_long_message",
+                    'ysupport.bot.client.send_long_message',
                     side_effect=RuntimeError("Discord send failed"),
                 ),
-                patch("ysupport.reset_ticket_codex_session") as reset_session,
+                patch('ysupport.bot.client.reset_ticket_codex_session') as reset_session,
             ):
                 await bot.process_ticket_message(
                     channel_id,
@@ -717,8 +717,8 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
                 patch.object(config, "COOLDOWN_SECONDS", 0),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-                patch("ysupport.send_long_message", new=fake_send_long_message),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
             ):
                 await bot.on_message(ticket_message(5001, "First question"))
                 first_task = pending_tasks[channel_id]
@@ -780,20 +780,20 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "COOLDOWN_SECONDS", 0),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
                 patch(
-                    "ysupport.send_long_message",
+                    'ysupport.bot.client.send_long_message',
                     side_effect=RuntimeError("Discord send failed"),
                 ),
                 patch(
-                    "discord_support_runtime.send_handoff_notice",
+                    'ysupport.bot.discord_support_runtime.send_handoff_notice',
                     return_value=TelegramSentMessage(
                         chat_id="123",
                         message_id=456,
                         message_text="notice",
                     ),
                 ),
-                patch("ysupport.reset_ticket_codex_session") as reset_session,
+                patch('ysupport.bot.client.reset_ticket_codex_session') as reset_session,
             ):
                 await bot.process_ticket_message(
                     channel_id,

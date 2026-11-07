@@ -1,0 +1,450 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+import io
+import json
+import logging
+import os
+from pathlib import Path
+import signal
+import time
+from typing import Awaitable, Callable, Sequence
+
+from ysupport.execution.subprocess_utils import (
+    create_isolated_subprocess,
+    write_execution_artifacts,
+)
+
+_MAX_JSONL_EVENT_BYTES = 8 * 1024 * 1024
+_MAX_STDOUT_CAPTURE_CHARS = 4 * 1024 * 1024
+_MAX_STDERR_CAPTURE_CHARS = 256 * 1024
+_USAGE_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+)
+
+
+@dataclass
+class CodexSupportExecutionOutput:
+    final_response_text: str
+
+
+async def run_codex_support_json_subprocess(
+    *,
+    command: Sequence[str],
+    stdin_text: str,
+    cwd: str | None,
+    env: dict[str, str],
+    timeout_seconds: float,
+    max_output_chars: int,
+    max_error_chars: int,
+    timeout_message: str,
+    empty_stdout_message: str,
+    oversized_stdout_message: str,
+    metadata: dict[str, object],
+    artifact_run_dir: Path | None,
+    progress_callback: Callable[[str], Awaitable[None]] | None,
+) -> CodexSupportExecutionOutput:
+    started_at = time.monotonic()
+    process, process_group_id = await create_isolated_subprocess(
+        command=command,
+        cwd=cwd,
+        env=env,
+    )
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    stdout_capture_chars = 0
+    stderr_capture_chars = 0
+    stdout_truncated = False
+    stderr_truncated = False
+    saw_stdout = False
+    final_response_text: str | None = None
+    usage: dict[str, int] | None = None
+    first_item_at: float | None = None
+
+    async def feed_stdin() -> None:
+        if process.stdin is None:
+            return
+        process.stdin.write(stdin_text.encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+        try:
+            await process.stdin.wait_closed()
+        except Exception:
+            return
+
+    async def read_stdout() -> None:
+        nonlocal final_response_text, first_item_at, saw_stdout
+        nonlocal stdout_capture_chars, stdout_truncated, usage
+        if process.stdout is None:
+            return
+
+        async def handle_line(line: bytes) -> None:
+            nonlocal final_response_text, first_item_at, saw_stdout
+            nonlocal stdout_capture_chars, stdout_truncated, usage
+            text = line.decode("utf-8", errors="replace").rstrip("\r")
+            if not text:
+                return
+            saw_stdout = True
+            capture_text = ("\n" if stdout_capture_chars else "") + text
+            previous_capture_chars = stdout_capture_chars
+            stdout_capture_chars = _append_bounded_text(
+                stdout_capture,
+                capture_text,
+                captured_chars=stdout_capture_chars,
+                max_chars=_MAX_STDOUT_CAPTURE_CHARS,
+            )
+            stdout_truncated = stdout_truncated or (
+                stdout_capture_chars - previous_capture_chars < len(capture_text)
+            )
+            event = parse_json_event(text)
+            if event is None:
+                return
+            if first_item_at is None and event.get("type") in {
+                "item.started",
+                "item.completed",
+            }:
+                first_item_at = time.monotonic()
+            event_usage = _usage_from_codex_event(event)
+            if event_usage is not None:
+                usage = event_usage
+            progress_text = progress_update_from_codex_event(event)
+            if progress_text and progress_callback is not None:
+                await progress_callback(progress_text)
+            response_text = final_response_from_codex_event(event)
+            if response_text:
+                final_response_text = response_text
+
+        pending = bytearray()
+        while True:
+            chunk = await process.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            pending.extend(chunk)
+            if len(pending) > _MAX_JSONL_EVENT_BYTES and pending.find(b"\n") < 0:
+                raise RuntimeError(
+                    "Codex support execution returned an oversized JSONL event."
+                )
+            while True:
+                separator_index = pending.find(b"\n")
+                if separator_index < 0:
+                    break
+                if separator_index > _MAX_JSONL_EVENT_BYTES:
+                    raise RuntimeError(
+                        "Codex support execution returned an oversized JSONL event."
+                    )
+                line = bytes(pending[:separator_index])
+                del pending[: separator_index + 1]
+                await handle_line(line)
+        if pending:
+            if len(pending) > _MAX_JSONL_EVENT_BYTES:
+                raise RuntimeError(
+                    "Codex support execution returned an oversized JSONL event."
+                )
+            await handle_line(bytes(pending))
+
+    async def read_stderr() -> None:
+        nonlocal stderr_capture_chars, stderr_truncated
+        if process.stderr is None:
+            return
+        while True:
+            chunk = await process.stderr.read(4096)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            previous_capture_chars = stderr_capture_chars
+            stderr_capture_chars = _append_bounded_text(
+                stderr_capture,
+                text,
+                captured_chars=stderr_capture_chars,
+                max_chars=_MAX_STDERR_CAPTURE_CHARS,
+            )
+            stderr_truncated = stderr_truncated or (
+                stderr_capture_chars - previous_capture_chars < len(text)
+            )
+
+    execution_tasks = [
+        asyncio.create_task(feed_stdin()),
+        asyncio.create_task(read_stdout()),
+        asyncio.create_task(read_stderr()),
+        asyncio.create_task(process.wait()),
+    ]
+    execution_future = asyncio.gather(*execution_tasks)
+    try:
+        await asyncio.wait_for(execution_future, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        await _terminate_streamed_subprocess(process, process_group_id)
+        total_ms = _elapsed_ms(started_at, time.monotonic())
+        first_item_ms = _first_item_ms(started_at, first_item_at)
+        metrics = _execution_metrics(
+            usage=usage,
+            first_item_ms=first_item_ms,
+            total_ms=total_ms,
+        )
+        _log_execution_metrics(
+            outcome="timeout",
+            metrics=metrics,
+        )
+        write_execution_artifacts(
+            artifact_run_dir,
+            stdout_text=stdout_capture.getvalue().strip(),
+            stderr_text=stderr_capture.getvalue().strip(),
+            metadata={
+                **metadata,
+                "timed_out": True,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                **metrics,
+            },
+        )
+        raise RuntimeError(timeout_message) from exc
+    except asyncio.CancelledError:
+        await _terminate_streamed_subprocess(process, process_group_id)
+        raise
+    except Exception:
+        await _terminate_streamed_subprocess(process, process_group_id)
+        raise
+    finally:
+        for task in execution_tasks:
+            if not task.done():
+                task.cancel()
+        if not execution_future.done():
+            execution_future.cancel()
+        try:
+            await execution_future
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    stdout_text = stdout_capture.getvalue().strip()
+    stderr_text = stderr_capture.getvalue().strip()
+    first_item_ms = _first_item_ms(started_at, first_item_at)
+    total_ms = _elapsed_ms(started_at, time.monotonic())
+    metrics = _execution_metrics(
+        usage=usage,
+        first_item_ms=first_item_ms,
+        total_ms=total_ms,
+    )
+    write_execution_artifacts(
+        artifact_run_dir,
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+        metadata={
+            **metadata,
+            "returncode": process.returncode,
+            "timed_out": False,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            **metrics,
+        },
+    )
+    _log_execution_metrics(
+        outcome="process_completed",
+        metrics=metrics,
+    )
+    if process.returncode != 0:
+        error_text = (
+            stderr_text or "Codex support execution exited without stderr output."
+        )
+        raise RuntimeError(error_text[:max_error_chars])
+    if not saw_stdout:
+        raise RuntimeError(empty_stdout_message)
+    if final_response_text is None:
+        raise RuntimeError(
+            "Codex support execution returned JSON events without a final agent message."
+        )
+    if len(final_response_text) > max_output_chars:
+        raise RuntimeError(oversized_stdout_message)
+    return CodexSupportExecutionOutput(final_response_text=final_response_text)
+
+
+def parse_codex_support_execution_output(
+    stdout_text: str,
+) -> CodexSupportExecutionOutput:
+    final_response_text: str | None = None
+    for line in stdout_text.splitlines():
+        event = parse_json_event(line)
+        if event is None:
+            continue
+        response_text = final_response_from_codex_event(event)
+        if response_text:
+            final_response_text = response_text
+    if final_response_text is None:
+        raise RuntimeError(
+            "Codex support execution returned JSON events without a final agent message."
+        )
+    return CodexSupportExecutionOutput(final_response_text=final_response_text)
+
+
+def _usage_from_codex_event(event: dict[str, object]) -> dict[str, int] | None:
+    if event.get("type") != "turn.completed":
+        return None
+    raw_usage = event.get("usage")
+    if not isinstance(raw_usage, dict):
+        return None
+    usage = {
+        field: value
+        for field in _USAGE_FIELDS
+        if (value := _nonnegative_int(raw_usage.get(field))) is not None
+    }
+    return usage or None
+
+
+def _nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _elapsed_ms(started_at: float, ended_at: float) -> int:
+    return max(0, round((ended_at - started_at) * 1000))
+
+
+def _first_item_ms(started_at: float, first_item_at: float | None) -> int | None:
+    return (
+        _elapsed_ms(started_at, first_item_at)
+        if first_item_at is not None
+        else None
+    )
+
+
+def _execution_metrics(
+    *,
+    usage: dict[str, int] | None,
+    first_item_ms: int | None,
+    total_ms: int,
+) -> dict[str, int | None]:
+    return {
+        **{field: (usage or {}).get(field) for field in _USAGE_FIELDS},
+        "first_item_ms": first_item_ms,
+        "total_ms": total_ms,
+    }
+
+
+def _log_execution_metrics(
+    *,
+    outcome: str,
+    metrics: dict[str, int | None],
+) -> None:
+    logging.info(
+        "Codex support metrics outcome=%s input_tokens=%s cached_input_tokens=%s "
+        "cache_write_input_tokens=%s output_tokens=%s "
+        "reasoning_output_tokens=%s first_item_ms=%s total_ms=%s",
+        outcome,
+        metrics["input_tokens"],
+        metrics["cached_input_tokens"],
+        metrics["cache_write_input_tokens"],
+        metrics["output_tokens"],
+        metrics["reasoning_output_tokens"],
+        metrics["first_item_ms"],
+        metrics["total_ms"],
+    )
+
+
+def parse_json_event(text: str) -> dict[str, object] | None:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def final_response_from_codex_event(event: dict[str, object]) -> str | None:
+    if event.get("type") != "item.completed":
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("type") != "agent_message":
+        return None
+    text = item.get("text")
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def progress_update_from_codex_event(event: dict[str, object]) -> str | None:
+    if event.get("type") != "item.started":
+        return None
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return None
+    item_type = str(item.get("type") or "").strip().lower()
+    if not item_type or item_type in {"agent_message", "todo_list", "file_change"}:
+        return None
+    if item_type == "command_execution":
+        return _progress_from_command_execution(str(item.get("command") or ""))
+    if "web" in item_type or "search" in item_type:
+        return "Checking external references"
+    if (
+        "mcp" in item_type
+        or item.get("tool_name")
+        or item.get("server")
+        or item.get("name")
+    ):
+        return _progress_from_tool_item(item)
+    return None
+
+
+def _progress_from_command_execution(command: str) -> str | None:
+    normalized = command.lower()
+    if (
+        "notes.md" in normalized
+        or "support_request.json" in normalized
+        or "support_response_schema.json" in normalized
+    ):
+        return None
+    if "http" in normalized or "curl " in normalized or "wget " in normalized:
+        return "Reading linked references"
+    return "Running a local check"
+
+
+def _progress_from_tool_item(item: dict[str, object]) -> str:
+    raw_name = " ".join(
+        str(item.get(key) or "") for key in ("tool_name", "name", "server", "title")
+    ).lower()
+    if "view_image" in raw_name or "image" in raw_name or "attachment" in raw_name:
+        return "Checking screenshots"
+    if "report" in raw_name:
+        return "Checking recent vault reports"
+    if "freshness" in raw_name or "dashboard_status" in raw_name:
+        return "Checking dashboard data freshness"
+    if "dashboard_changes" in raw_name:
+        return "Checking recent yield changes"
+    if "search_vaults" in raw_name or "discover" in raw_name or "vault" in raw_name:
+        return "Checking vault state"
+    if "repo" in raw_name or "artifact" in raw_name:
+        return "Checking repo context"
+    if "document" in raw_name or "doc" in raw_name:
+        return "Checking Yearn docs"
+    return "Checking Yearn support data"
+
+
+def _append_bounded_text(
+    capture: io.StringIO,
+    text: str,
+    *,
+    captured_chars: int,
+    max_chars: int,
+) -> int:
+    remaining = max_chars - captured_chars
+    if remaining <= 0:
+        return captured_chars
+    captured = text[:remaining]
+    capture.write(captured)
+    return captured_chars + len(captured)
+
+
+async def _terminate_streamed_subprocess(
+    process: asyncio.subprocess.Process,
+    process_group_id: int | None,
+) -> None:
+    try:
+        if os.name == "nt":
+            if process.returncode is None:
+                process.kill()
+        elif process_group_id is not None:
+            os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        await process.wait()

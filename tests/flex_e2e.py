@@ -311,12 +311,12 @@ async def run(args, report):
             "TICKET_EXECUTION_STATE_ROOT": str(root / "state"),
         }))
         with patch("dotenv.load_dotenv", return_value=False):
-            import config
+            from ysupport import config
         import httpx
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
-        import mcp_server
-        import support_dashboard_tools
+        from ysupport.integrations import mcp_server
+        from ysupport.tools import support_dashboard_tools
         import uvicorn
 
         logging.getLogger().setLevel(logging.ERROR)
@@ -457,13 +457,13 @@ async def run(args, report):
                     report["scenarios"]["wrong_identity_malformed_payload_and_provider_errors_fail_closed"] = True
 
             if args.native:
-                import docs_repo_tools
-                import onchain_tools
-                import vault_position_tools
-                import chain_access
-                import vault_search_tools
-                from ticket_investigation.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
-                from ticket_investigation.transport import build_smoke_transport_request
+                from ysupport.retrieval import docs_repo_tools
+                from ysupport.tools import onchain_tools
+                from ysupport.tools import vault_position_tools
+                from ysupport.tools import chain_access
+                from ysupport.tools import vault_search_tools
+                from ysupport.execution.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
+                from ysupport.execution.transport import build_smoke_transport_request
 
                 for module, name in [
                     (docs_repo_tools, "core_search_docs_context"),
@@ -541,8 +541,8 @@ async def main(args):
         raise
     finally:
         report["source_hashes"] = {name: hashlib.sha256((SOURCE_ROOT / name).read_bytes()).hexdigest() for name in (
-            "mcp_server.py", "support_dashboard_tools.py", "tests/flex_e2e.py",
-            "ysupport_codex_instructions.md", "ticket_investigation/codex_support_endpoint.py",
+            'ysupport/integrations/mcp_server.py', 'ysupport/tools/support_dashboard_tools.py', "tests/flex_e2e.py",
+            'ysupport/execution/ysupport_codex_instructions.md', 'ysupport/execution/codex_support_endpoint.py',
         )}
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text(json.dumps(report, indent=2) + "\n")

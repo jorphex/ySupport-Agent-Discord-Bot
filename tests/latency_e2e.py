@@ -19,16 +19,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tests.optimization_e2e import eventually
-import config
-import state
-from codex_support_home import prune_codex_support_caches
+from ysupport import config
+from ysupport.bot import state
+from ysupport.execution.codex_support_home import prune_codex_support_caches
 from tests.test_ticket_intake import _FakeDiscordChannel
-from ticket_investigation.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
-from ticket_investigation.transport import build_smoke_transport_request
-from ticket_investigation.executor import TransportTicketInvestigationExecutor
-from ticket_investigation.json_endpoint import JsonEndpointTicketExecutionTransport
-from views import stop_ticket_for_manual_support
-from ysupport import TicketBot
+from ysupport.execution.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
+from ysupport.execution.transport import build_smoke_transport_request
+from ysupport.execution.executor import TransportTicketInvestigationExecutor
+from ysupport.execution.json_endpoint import JsonEndpointTicketExecutionTransport
+from ysupport.bot.views import stop_ticket_for_manual_support
+from ysupport.bot.client import TicketBot
 
 
 MODEL = '''import json,os,sys,time,uuid
@@ -122,7 +122,7 @@ async def verify_concurrency(root):
             assert release.wait(3)
             return prune_codex_support_caches(home, cutoff=cutoff)
 
-        with patch("ticket_investigation.codex_support_endpoint.prune_codex_support_caches", new=prune):
+        with patch('ysupport.execution.codex_support_endpoint.prune_codex_support_caches', new=prune):
             maintenance = asyncio.create_task(endpoint.prune_expired_sessions())
             tasks.append(maintenance)
             await eventually(entered.is_set)
@@ -243,7 +243,7 @@ async def verify_bursts(root):
             if request.run_context.channel_id == 7204:
                 raise RuntimeError("controlled failed investigation with queued follow-up")
         answer = "Outdated draft" if request.aggregated_text == "withdraw" else "Use the verified withdrawal route."
-        from ticket_investigation.contracts import TicketAgentFlowOutcome
+        from ysupport.execution.contracts import TicketAgentFlowOutcome
         return SimpleNamespace(
             updated_job=request.investigation_job,
             flow_outcome=TicketAgentFlowOutcome(
@@ -267,8 +267,8 @@ async def verify_bursts(root):
     try:
         with patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}), \
              patch.object(config, "COOLDOWN_SECONDS", .01), \
-             patch("ysupport.discord.TextChannel", _FakeDiscordChannel), \
-             patch("ysupport._outer_support_boundary_result", new=AsyncMock(return_value={"tripwire_triggered": False})):
+             patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel), \
+             patch('ysupport.bot.client._outer_support_boundary_result', new=AsyncMock(return_value={"tripwire_triggered": False})):
             for channel in channels:
                 state.remember_ticket_owner_user_id(channel, owner.id)
             await bot.on_message(message(7201, "withdraw", 1, image=True))
@@ -294,7 +294,7 @@ async def verify_bursts(root):
                 await eventually(started.is_set)
                 await bot.on_message(message(channel, "latest detail", channel + 10))
                 if channel == 7202:
-                    from views import take_over_ticket_for_staff
+                    from ysupport.bot.views import take_over_ticket_for_staff
                     await take_over_ticket_for_staff(channel)
                 else:
                     await stop_ticket_for_manual_support(channel)
@@ -303,7 +303,7 @@ async def verify_bursts(root):
             for channel in (7204, 7205):
                 started.clear()
                 release.clear()
-                with patch("ysupport._send_ticket_handoff_notice", new=AsyncMock()) as handoff:
+                with patch('ysupport.bot.client._send_ticket_handoff_notice', new=AsyncMock()) as handoff:
                     await bot.on_message(message(channel, "withdraw", channel))
                     await eventually(started.is_set)
                     await bot.on_message(message(channel, "latest detail", channel + 10))
@@ -350,7 +350,7 @@ async def verify_staff_images(root):
 
     async def execute(request, hooks=None):
         captured.append(request)
-        from ticket_investigation.contracts import TicketAgentFlowOutcome
+        from ysupport.execution.contracts import TicketAgentFlowOutcome
         return SimpleNamespace(updated_job=request.investigation_job,
             flow_outcome=TicketAgentFlowOutcome(raw_final_reply="Read the user's error.",
                 conversation_history=[], completed_agent_key=None, requires_human_handoff=False))
@@ -405,7 +405,7 @@ async def verify_telegram_concurrency(root):
         with patch.object(config, "TELEGRAM_BOT_TOKEN", "fixture"), \
              patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"), \
              patch.dict(os.environ, {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}), \
-             patch("handoff._telegram_api_call", new=api):
+             patch('ysupport.integrations.handoff._telegram_api_call', new=api):
             for channel, key in zip(channels, ("a", "b")):
                 state.remember_team_handoff_notice(channel, state.TeamHandoffNotice(
                     telegram_chat_id="123", telegram_message_id=channel, reason="fixture",
@@ -445,7 +445,7 @@ async def verify_telegram_concurrency(root):
                 telegram_chat_id="123", telegram_message_id=7406, reason="next fixture",
                 status="pending_delivery", pending_reply_text="f"))
             await eventually(lambda: (root / "f.started").exists())
-            from views import take_over_ticket_for_staff
+            from ysupport.bot.views import take_over_ticket_for_staff
             await take_over_ticket_for_staff(7406)
             assert 7406 in state.handoff_delivery_tasks, "Staff takeover canceled the accepted Telegram reply"
             for key in ("d", "f"):
@@ -462,8 +462,8 @@ async def verify_telegram_concurrency(root):
             await eventually(lambda: (root / "g.started").exists() and (root / "h.started").exists())
             g = json.loads((root / "g.started").read_text())
             h = json.loads((root / "h.started").read_text())
-            from ticket_channel_lifecycle import clear_deleted_ticket_channel
-            with patch("ticket_channel_lifecycle.discord.TextChannel", _FakeDiscordChannel):
+            from ysupport.bot.ticket_channel_lifecycle import clear_deleted_ticket_channel
+            with patch('ysupport.bot.ticket_channel_lifecycle.discord.TextChannel', _FakeDiscordChannel):
                 await clear_deleted_ticket_channel(channels[7407])
             assert not Path(f"/proc/{g['pid']}").exists() and Path(f"/proc/{h['pid']}").exists()
             await bot.telegram_handoffs.close()
@@ -502,8 +502,8 @@ async def verify_telegram_concurrency(root):
 
 
 async def verify_deleted_handoff_races(root):
-    from handoff import build_archived_handoff_notice
-    from ticket_channel_lifecycle import clear_deleted_ticket_channel
+    from ysupport.integrations.handoff import build_archived_handoff_notice
+    from ysupport.bot.ticket_channel_lifecycle import clear_deleted_ticket_channel
 
     root.mkdir()
     channel = _FakeDiscordChannel(7501)
@@ -538,8 +538,8 @@ async def verify_deleted_handoff_races(root):
         with patch.object(config, "TELEGRAM_BOT_TOKEN", "fixture"), \
              patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"), \
              patch.dict(os.environ, {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}), \
-             patch("handoff._telegram_api_call", new=api), \
-             patch("ticket_channel_lifecycle.discord.TextChannel", _FakeDiscordChannel):
+             patch('ysupport.integrations.handoff._telegram_api_call', new=api), \
+             patch('ysupport.bot.ticket_channel_lifecycle.discord.TextChannel', _FakeDiscordChannel):
             state.remember_team_handoff_notice(channel.id, state.TeamHandoffNotice(
                 telegram_chat_id="123", telegram_message_id=channel.id, reason="queued fixture",
                 message_text="Queued ticket", status="pending_delivery", pending_reply_text="Resolved"))
@@ -589,8 +589,8 @@ async def verify_deleted_handoff_races(root):
             with patch.object(config, "TELEGRAM_BOT_TOKEN", "fixture"), \
                  patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"), \
                  patch.dict(os.environ, {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}), \
-                 patch("handoff._telegram_api_call", new=api), \
-                 patch("ticket_channel_lifecycle.discord.TextChannel", _FakeDiscordChannel):
+                 patch('ysupport.integrations.handoff._telegram_api_call', new=api), \
+                 patch('ysupport.bot.ticket_channel_lifecycle.discord.TextChannel', _FakeDiscordChannel):
                 for target, current_status, reply in ((peer, "pending_delivery", "peer"), (channel, status, "Resolved")):
                     state.remember_team_handoff_notice(target.id, state.TeamHandoffNotice(
                         telegram_chat_id="123", telegram_message_id=target.id, reason="snapshot fixture",
@@ -633,10 +633,10 @@ async def main(artifact):
                 report["scenarios"][name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         report["ok"] = all(item["ok"] for item in report["scenarios"].values())
     report["source_sha256"] = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in (
-        "tests/latency_e2e.py", "ysupport.py", "discord_support_runtime.py",
-        "ticket_investigation/codex_support_endpoint.py", "config.py",
-        "telegram_handoff_controller.py", "ysupport_codex_instructions.md",
-        "state.py", "views.py", "ticket_channel_lifecycle.py")}
+        "tests/latency_e2e.py", 'ysupport/bot/client.py', 'ysupport/bot/discord_support_runtime.py',
+        'ysupport/execution/codex_support_endpoint.py', 'ysupport/config.py',
+        'ysupport/bot/telegram_handoff_controller.py', 'ysupport/execution/ysupport_codex_instructions.md',
+        'ysupport/bot/state.py', 'ysupport/bot/views.py', 'ysupport/bot/ticket_channel_lifecycle.py')}
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(json.dumps(report, indent=2) + "\n")
     artifact.chmod(0o600)

@@ -6,8 +6,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 with patch.dict("sys.modules", {"frontmatter": Mock(), "tiktoken": Mock()}):
-    from yearn_rag import process_docs
-    from yearn_rag.process_docs import YipMetadataError, extract_yip_metadata
+    from ysupport.ingestion import process_docs
+    from ysupport.ingestion.process_docs import YipMetadataError, extract_yip_metadata
 
 
 class ProcessDocsTests(unittest.TestCase):

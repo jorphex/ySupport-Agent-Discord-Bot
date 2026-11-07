@@ -7,7 +7,7 @@ from unittest import mock
 
 import aiohttp
 
-import support_dashboard_tools
+from ysupport.tools import support_dashboard_tools
 
 
 class _Response:
@@ -72,10 +72,10 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             mock.patch(
-                "support_dashboard_tools.aiohttp.TCPConnector"
+                'ysupport.tools.support_dashboard_tools.aiohttp.TCPConnector'
             ) as connector_mock,
             mock.patch(
-                "support_dashboard_tools.aiohttp.ClientSession",
+                'ysupport.tools.support_dashboard_tools.aiohttp.ClientSession',
                 return_value=session,
             ),
         ):
@@ -94,7 +94,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 "https://dashboard.example",
             ),
             mock.patch(
-                "support_dashboard_tools.aiohttp.ClientSession",
+                'ysupport.tools.support_dashboard_tools.aiohttp.ClientSession',
                 return_value=session,
             ),
         ):
@@ -116,7 +116,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 "https://dashboard.example",
             ),
             mock.patch(
-                "support_dashboard_tools.aiohttp.ClientSession",
+                'ysupport.tools.support_dashboard_tools.aiohttp.ClientSession',
                 return_value=session,
             ),
         ):
@@ -136,7 +136,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 "https://dashboard.example",
             ),
             mock.patch(
-                "support_dashboard_tools.aiohttp.ClientSession",
+                'ysupport.tools.support_dashboard_tools.aiohttp.ClientSession',
                 return_value=session,
             ),
         ):
@@ -154,7 +154,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 "https://dashboard.example",
             ),
             mock.patch(
-                "support_dashboard_tools.aiohttp.ClientSession",
+                'ysupport.tools.support_dashboard_tools.aiohttp.ClientSession',
                 return_value=session,
             ),
         ):
@@ -172,7 +172,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
                 "https://dashboard.example",
             ),
             mock.patch(
-                "support_dashboard_tools.aiohttp.ClientSession",
+                'ysupport.tools.support_dashboard_tools.aiohttp.ClientSession',
                 return_value=session,
             ),
         ):
@@ -222,7 +222,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_reports(
@@ -264,7 +264,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             ]
         }
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_reports(
@@ -283,7 +283,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(),
         ) as fetch_mock:
             with self.assertRaisesRegex(ValueError, "vault address is required"):
@@ -315,7 +315,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_discover(
@@ -397,7 +397,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_status()
@@ -441,7 +441,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_changes(
@@ -482,7 +482,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
             "components": {"layout": "unstable"},
         }
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value=payload),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_styfi(
@@ -502,7 +502,7 @@ class SupportDashboardToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_styfi_tolerates_non_object_ingestion(self) -> None:
         with mock.patch(
-            "support_dashboard_tools._fetch_dashboard_json",
+            'ysupport.tools.support_dashboard_tools._fetch_dashboard_json',
             new=mock.AsyncMock(return_value={"ingestion": []}),
         ) as fetch_mock:
             result = await support_dashboard_tools.core_support_dashboard_styfi()

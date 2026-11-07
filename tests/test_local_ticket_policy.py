@@ -2,10 +2,10 @@ import tests as _test_environment  # noqa: F401
 
 import unittest
 
-from state import (
+from ysupport.bot.state import (
     TicketInvestigationJob,
 )
-from router import is_wallet_confirmation
+from ysupport.bot.router import is_wallet_confirmation
 
 
 class WalletConfirmationPolicyTests(unittest.TestCase):

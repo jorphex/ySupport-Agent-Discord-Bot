@@ -6,20 +6,20 @@ from unittest.mock import patch
 
 import discord
 
-import config
-import handoff
-from state import (
+from ysupport import config
+from ysupport.integrations import handoff
+from ysupport.bot.state import (
     TeamHandoffNotice,
     clear_ticket_channel_state,
     team_handoff_notice_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     build_failed_delivery_handoff_notice,
     build_handoff_notice,
     TelegramApiError,
 )
-from telegram_handoff_controller import TelegramHandoffController
-from ysupport import (
+from ysupport.bot.telegram_handoff_controller import TelegramHandoffController
+from ysupport.bot.client import (
     TicketBot,
 )
 
@@ -97,11 +97,11 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with patch(
-                "telegram_handoff_controller.fetch_telegram_updates",
+                'ysupport.bot.telegram_handoff_controller.fetch_telegram_updates',
                 new=fake_fetch_telegram_updates,
             ):
                 with patch(
-                    "telegram_handoff_controller.persist_telegram_update_offset",
+                    'ysupport.bot.telegram_handoff_controller.persist_telegram_update_offset',
                     new=fake_persist_telegram_update_offset,
                 ):
                     with patch.object(
@@ -124,11 +124,11 @@ class TicketFlowTests(TicketFlowTestCase):
                 raise asyncio.CancelledError
 
             with patch(
-                "telegram_handoff_controller.fetch_telegram_updates",
+                'ysupport.bot.telegram_handoff_controller.fetch_telegram_updates',
                 new=fake_fetch_telegram_updates,
             ):
                 with patch(
-                    "telegram_handoff_controller.persist_telegram_update_offset",
+                    'ysupport.bot.telegram_handoff_controller.persist_telegram_update_offset',
                     new=fake_persist_telegram_update_offset,
                 ):
                     with patch.object(
@@ -137,7 +137,7 @@ class TicketFlowTests(TicketFlowTestCase):
                         new=fake_handle_failure,
                     ):
                         with patch(
-                            "telegram_handoff_controller.asyncio.sleep", new=fake_sleep
+                            'ysupport.bot.telegram_handoff_controller.asyncio.sleep', new=fake_sleep
                         ):
                             with self.assertRaises(asyncio.CancelledError):
                                 await (
@@ -192,7 +192,7 @@ class TicketFlowTests(TicketFlowTestCase):
                     new=fail_delivery,
                 ),
                 patch(
-                    "telegram_handoff_controller.edit_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     new=edit_failed_status,
                 ),
             ):
@@ -250,7 +250,7 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
-                patch("state.persist_ticket_state", return_value=False),
+                patch('ysupport.bot.state.persist_ticket_state', return_value=False),
                 patch.object(
                     bot.telegram_handoffs,
                     "_deliver_telegram_handoff_reply",
@@ -286,7 +286,7 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.persist_ticket_state",
+                    'ysupport.bot.telegram_handoff_controller.persist_ticket_state',
                     side_effect=[False, True],
                 ),
                 patch.object(
@@ -319,7 +319,7 @@ class TicketFlowTests(TicketFlowTestCase):
         with (
             patch.object(config, "TELEGRAM_BOT_TOKEN", "test-token"),
             patch(
-                "handoff.request.urlopen",
+                'ysupport.integrations.handoff.request.urlopen',
                 side_effect=TimeoutError("read timed out"),
             ),
         ):
@@ -337,9 +337,9 @@ class TicketFlowTests(TicketFlowTestCase):
                 {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"},
             ),
             patch.object(config, "TELEGRAM_BOT_TOKEN", "test-token"),
-            patch("handoff._telegram_api_call", side_effect=failure),
-            patch("handoff.logging.error") as mock_error,
-            patch("handoff.logging.warning") as mock_warning,
+            patch('ysupport.integrations.handoff._telegram_api_call', side_effect=failure),
+            patch('ysupport.integrations.handoff.logging.error') as mock_error,
+            patch('ysupport.integrations.handoff.logging.warning') as mock_warning,
         ):
             sent = await handoff.send_telegram_message(
                 chat_id="123",
@@ -382,12 +382,12 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "telegram_handoff_controller.fetch_telegram_updates",
+                    'ysupport.bot.telegram_handoff_controller.fetch_telegram_updates',
                     new=fake_fetch_telegram_updates,
                 ),
-                patch("telegram_handoff_controller.asyncio.sleep", new=fake_sleep),
-                patch("telegram_handoff_controller.logging.warning") as mock_warning,
-                patch("telegram_handoff_controller.logging.error") as mock_error,
+                patch('ysupport.bot.telegram_handoff_controller.asyncio.sleep', new=fake_sleep),
+                patch('ysupport.bot.telegram_handoff_controller.logging.warning') as mock_warning,
+                patch('ysupport.bot.telegram_handoff_controller.logging.error') as mock_error,
             ):
                 with self.assertRaises(asyncio.CancelledError):
                     await bot.telegram_handoffs._telegram_handoff_reply_loop()

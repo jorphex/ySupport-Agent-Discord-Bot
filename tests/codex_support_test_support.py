@@ -1,5 +1,5 @@
-from codex_support_contract import SupportTurnRequest
-from ticket_investigation.transport import TicketExecutionTransportRequest
+from ysupport.execution.codex_support_contract import SupportTurnRequest
+from ysupport.execution.transport import TicketExecutionTransportRequest
 
 
 class FakeExecutor:

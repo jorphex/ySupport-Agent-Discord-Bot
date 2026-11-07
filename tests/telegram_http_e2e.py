@@ -19,13 +19,13 @@ from urllib import request
 from unittest.mock import patch
 
 from tests.optimization_e2e import eventually
-import config
-import handoff
-import state
+from ysupport import config
+from ysupport.integrations import handoff
+from ysupport.bot import state
 from tests.test_ticket_intake import _FakeDiscordChannel
-from ticket_channel_lifecycle import clear_deleted_ticket_channel
-from views import stop_ticket_for_manual_support
-from ysupport import TicketBot
+from ysupport.bot.ticket_channel_lifecycle import clear_deleted_ticket_channel
+from ysupport.bot.views import stop_ticket_for_manual_support
+from ysupport.bot.client import TicketBot
 
 
 class TelegramHttpFixture:
@@ -72,8 +72,8 @@ class TelegramHttpFixture:
         self.patches.enter_context(patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"))
         self.patches.enter_context(patch.object(config, "TICKET_EXECUTION_MAX_CONCURRENT_TURNS", 1))
         self.patches.enter_context(patch.dict(os.environ, {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}))
-        self.patches.enter_context(patch("handoff.request.urlopen", new=self.urlopen))
-        self.patches.enter_context(patch("ticket_channel_lifecycle.discord.TextChannel", _FakeDiscordChannel))
+        self.patches.enter_context(patch('ysupport.integrations.handoff.request.urlopen', new=self.urlopen))
+        self.patches.enter_context(patch('ysupport.bot.ticket_channel_lifecycle.discord.TextChannel', _FakeDiscordChannel))
         return self
 
     def urlopen(self, req, *, timeout):
@@ -195,7 +195,7 @@ async def main(artifact):
         report["scenarios"]["polling"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     report["ok"] = all(item["ok"] for item in report["scenarios"].values())
     report["source_sha256"] = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in (
-        "handoff.py", "telegram_handoff_controller.py", "ticket_channel_lifecycle.py", "state.py", "tests/telegram_http_e2e.py")}
+        'ysupport/integrations/handoff.py', 'ysupport/bot/telegram_handoff_controller.py', 'ysupport/bot/ticket_channel_lifecycle.py', 'ysupport/bot/state.py', "tests/telegram_http_e2e.py")}
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(json.dumps(report, indent=2) + "\n")
     artifact.chmod(0o600)

@@ -2,10 +2,10 @@ import tests as _test_environment  # noqa: F401
 
 import unittest
 
-from ticket_execution.replay_capture import (
+from ysupport.execution.replay_capture import (
     build_first_turn_transport_request,
 )
-from ticket_transcript_fetch import TranscriptMessage
+from ysupport.integrations.ticket_transcript_fetch import TranscriptMessage
 
 
 class TicketExecutionReplayCaptureTests(unittest.TestCase):

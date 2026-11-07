@@ -7,17 +7,17 @@ import tempfile
 import unittest
 from unittest import mock
 
-from codex_support_contract import (
+from ysupport.execution.codex_support_contract import (
     SupportTurnResult,
 )
-from ticket_investigation.codex_support_endpoint import (
+from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.codex_support_subprocess import (
+from ysupport.execution.codex_support_subprocess import (
     CodexSupportExecutionOutput,
     parse_codex_support_execution_output,
 )
-from ticket_investigation.transport import (
+from ysupport.execution.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -55,7 +55,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with mock.patch(
-            "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+            'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
             side_effect=fake_run_streaming_subprocess,
         ):
             with self.assertRaisesRegex(RuntimeError, "refresh_token_reused"):
@@ -118,7 +118,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
 
             with mock.patch(
-                "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                 side_effect=fake_run_streaming_subprocess,
             ):
                 response_json = await endpoint.execute_json_turn(request.to_json())
@@ -199,7 +199,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
 
             with mock.patch(
-                "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                 side_effect=fake_run_streaming_subprocess,
             ):
                 response_json = await endpoint.execute_json_turn(request.to_json())

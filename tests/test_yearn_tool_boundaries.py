@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 
-import onchain_tools
+from ysupport.tools import onchain_tools
 
 
 class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
@@ -63,7 +63,7 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
             clear=True,
         ):
             with patch(
-                "onchain_tools._decode_logs_with_abis",
+                'ysupport.tools.onchain_tools._decode_logs_with_abis',
                 return_value=[
                     {
                         "event": "Transfer",
@@ -79,7 +79,7 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
                 ],
             ):
                 with patch(
-                    "onchain_tools._inspect_contract_profile",
+                    'ysupport.tools.onchain_tools._inspect_contract_profile',
                     new=fake_inspect_contract_profile,
                 ):
                     summary = await onchain_tools.core_inspect_onchain(
@@ -172,7 +172,7 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
             clear=True,
         ):
             with patch(
-                "onchain_tools._decode_logs_with_abis",
+                'ysupport.tools.onchain_tools._decode_logs_with_abis',
                 return_value=[
                     {
                         "event": "Transfer",
@@ -199,7 +199,7 @@ class OnchainInspectionTests(unittest.IsolatedAsyncioTestCase):
                 ],
             ):
                 with patch(
-                    "onchain_tools._inspect_contract_profile",
+                    'ysupport.tools.onchain_tools._inspect_contract_profile',
                     new=fake_inspect_contract_profile,
                 ):
                     investigation = await onchain_tools.core_inspect_onchain(

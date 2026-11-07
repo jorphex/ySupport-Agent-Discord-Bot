@@ -11,24 +11,24 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-import config
-from codex_support_home import (
+from ysupport import config
+from ysupport.execution.codex_support_home import (
     prepare_codex_auth_link,
     prepare_codex_support_home,
 )
-from codex_support_contract import (
+from ysupport.execution.codex_support_contract import (
     SupportTurnRequest,
 )
-from ticket_investigation.codex_support_attachments import (
+from ysupport.execution.codex_support_attachments import (
     _download_attachment_image,
     _read_attachment_image_body,
     prepare_support_request_attachments,
 )
-from ticket_investigation.codex_support_endpoint import (
+from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.json_endpoint import _codex_env
-from ticket_investigation.codex_support_subprocess import (
+from ysupport.execution.json_endpoint import _codex_env
+from ysupport.execution.codex_support_subprocess import (
     _usage_from_codex_event,
     run_codex_support_json_subprocess,
 )
@@ -120,7 +120,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ]
             with mock.patch(
-                "ticket_execution.subprocess_utils.asyncio.create_subprocess_exec",
+                'ysupport.execution.subprocess_utils.asyncio.create_subprocess_exec',
                 side_effect=delayed_creation,
             ):
                 task = asyncio.create_task(
@@ -261,7 +261,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch(
-                "ticket_investigation.codex_support_subprocess._MAX_STDOUT_CAPTURE_CHARS",
+                'ysupport.execution.codex_support_subprocess._MAX_STDOUT_CAPTURE_CHARS',
                 1024,
             ):
                 output = await run_codex_support_json_subprocess(
@@ -368,7 +368,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         response = SimpleNamespace(content_length=None, content=_FakeContent())
         with mock.patch(
-            "ticket_investigation.codex_support_attachments._MAX_ATTACHMENT_IMAGE_BYTES",
+            'ysupport.execution.codex_support_attachments._MAX_ATTACHMENT_IMAGE_BYTES',
             4,
         ):
             with self.assertRaisesRegex(ValueError, "20 MiB"):
@@ -429,7 +429,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch(
-                "ticket_investigation.codex_support_attachments._download_attachment_image",
+                'ysupport.execution.codex_support_attachments._download_attachment_image',
                 side_effect=RuntimeError("expired URL"),
             ):
                 with self.assertRaisesRegex(

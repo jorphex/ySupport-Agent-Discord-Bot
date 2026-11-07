@@ -11,11 +11,11 @@ from unittest.mock import patch
 import zlib
 from pathlib import Path
 
-from codex_support_contract import SupportTurnRequest
-from ticket_investigation.codex_support_app_server import run_codex_support_app_server
-from ticket_investigation.executor import TicketExecutionHooks
-from ticket_investigation.steering import TicketSteeringInbox
-from ticket_investigation.transport import build_smoke_transport_request
+from ysupport.execution.codex_support_contract import SupportTurnRequest
+from ysupport.execution.codex_support_app_server import run_codex_support_app_server
+from ysupport.execution.executor import TicketExecutionHooks
+from ysupport.execution.steering import TicketSteeringInbox
+from ysupport.execution.transport import build_smoke_transport_request
 
 
 async def verify(root, *, command, env, model, reasoning_effort):
@@ -76,7 +76,7 @@ async def verify(root, *, command, env, model, reasoning_effort):
         "Current support request: " + support.to_json()
     )
     with patch(
-        "ticket_investigation.codex_support_attachments._download_attachment_image",
+        'ysupport.execution.codex_support_attachments._download_attachment_image',
         new=download,
     ):
         output = await run_codex_support_app_server(

@@ -18,7 +18,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from starlette.testclient import TestClient
 
-from mcp_server import _build_mcp_server, _StaticBearerTokenVerifier, mcp
+from ysupport.integrations.mcp_server import _build_mcp_server, _StaticBearerTokenVerifier, mcp
 
 
 class StaticBearerTokenVerifierTests(unittest.IsolatedAsyncioTestCase):

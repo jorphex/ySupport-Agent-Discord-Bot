@@ -181,23 +181,23 @@ async def run(args, *, command_override=None, cases_override=None):
             "ALCHEMY_KEY": "", "GITHUB_TOKEN": "",
         }))
         with patch("dotenv.load_dotenv", return_value=False):
-            import config
-        import chain_access
+            from ysupport import config
+        from ysupport.tools import chain_access
         import discord
-        import docs_repo_tools
-        import handoff
-        import mcp_server
-        import onchain_tools
-        import state
-        import support_dashboard_tools
+        from ysupport.retrieval import docs_repo_tools
+        from ysupport.integrations import handoff
+        from ysupport.integrations import mcp_server
+        from ysupport.tools import onchain_tools
+        from ysupport.bot import state
+        from ysupport.tools import support_dashboard_tools
         import uvicorn
-        import vault_search_tools
-        import vault_position_tools
-        import yearn_targets
-        import ysupport
+        from ysupport.tools import vault_search_tools
+        from ysupport.tools import vault_position_tools
+        from ysupport.tools import yearn_targets
+        from ysupport.bot import client as ysupport
         from starlette.responses import JSONResponse
-        from support_boundary import evaluate_support_boundary
-        from ticket_investigation.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
+        from ysupport.bot.support_boundary import evaluate_support_boundary
+        from ysupport.execution.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
         logging.getLogger().setLevel(logging.WARNING)
 
         cases = cases_override if cases_override is not None else json.loads(CASE_PATH.read_text())
@@ -209,10 +209,10 @@ async def run(args, *, command_override=None, cases_override=None):
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
             "case_sha256": hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest(),
             "source_sha256": {name: hashlib.sha256((SOURCE_ROOT / name).read_bytes()).hexdigest() for name in (
-                "ysupport.py", "ticket_intake.py", "state.py", "support_boundary.py", "mcp_server.py", "bot_behavior.py", "codex_support_contract.py",
-                "support_dashboard_tools.py", "vault_search_tools.py", "kong_vaults.py",
-                "ysupport_codex_instructions.md", "ticket_investigation/codex_support_endpoint.py",
-                "ticket_investigation/internal_rpc.py", "chain_access.py", "onchain_tools.py", "vault_position_tools.py",
+                'ysupport/bot/client.py', 'ysupport/bot/ticket_intake.py', 'ysupport/bot/state.py', 'ysupport/bot/support_boundary.py', 'ysupport/integrations/mcp_server.py', 'ysupport/bot/bot_behavior.py', 'ysupport/execution/codex_support_contract.py',
+                'ysupport/tools/support_dashboard_tools.py', 'ysupport/tools/vault_search_tools.py', 'ysupport/tools/kong_vaults.py',
+                'ysupport/execution/ysupport_codex_instructions.md', 'ysupport/execution/codex_support_endpoint.py',
+                'ysupport/execution/internal_rpc.py', 'ysupport/tools/chain_access.py', 'ysupport/tools/onchain_tools.py', 'ysupport/tools/vault_position_tools.py',
                 "tests/native_support_e2e.py", "tests/native_support_cases.json",
             )},
             "model": "external-fixture" if command_override else config.TICKET_EXECUTION_CODEX_MODEL,

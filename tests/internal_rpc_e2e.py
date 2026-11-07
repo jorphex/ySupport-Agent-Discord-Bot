@@ -25,13 +25,13 @@ import tests  # noqa: F401
 
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
-import chain_access  # noqa: E402
-import config  # noqa: E402
-import onchain_tools  # noqa: E402
-import vault_position_tools  # noqa: E402
-from ticket_investigation.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint  # noqa: E402
-from ticket_investigation.internal_rpc import InternalRpcServer  # noqa: E402
-from ticket_investigation.transport import build_smoke_transport_request  # noqa: E402
+from ysupport.tools import chain_access  # noqa: E402
+from ysupport import config  # noqa: E402
+from ysupport.tools import onchain_tools  # noqa: E402
+from ysupport.tools import vault_position_tools  # noqa: E402
+from ysupport.execution.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint  # noqa: E402
+from ysupport.execution.internal_rpc import InternalRpcServer  # noqa: E402
+from ysupport.execution.transport import build_smoke_transport_request  # noqa: E402
 from web3 import Web3  # noqa: E402
 
 
@@ -383,7 +383,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
 
         report["rpc_methods_observed"] = sorted({c["method"] for c in node.calls})
         assert not any("send" in method.lower() for method in report["rpc_methods_observed"])
-    report["source_hashes"] = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ["chain_access.py", "ticket_investigation/internal_rpc.py", "ticket_investigation/codex_support_endpoint.py", "codex_support_contract.py", "bot_behavior.py", "ticket_intake.py", "onchain_tools.py", "vault_position_tools.py", "ysupport_codex_instructions.md", "tests/internal_rpc_e2e.py"]}
+    report["source_hashes"] = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ['ysupport/tools/chain_access.py', 'ysupport/execution/internal_rpc.py', 'ysupport/execution/codex_support_endpoint.py', 'ysupport/execution/codex_support_contract.py', 'ysupport/bot/bot_behavior.py', 'ysupport/bot/ticket_intake.py', 'ysupport/tools/onchain_tools.py', 'ysupport/tools/vault_position_tools.py', 'ysupport/execution/ysupport_codex_instructions.md', "tests/internal_rpc_e2e.py"]}
     report["ok"] = True
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(json.dumps(report, indent=2) + "\n")

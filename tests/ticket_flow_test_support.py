@@ -18,7 +18,7 @@ class FakeInvestigationExecutor:
 class TicketFlowTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         boundary_patcher = patch(
-            "ysupport._outer_support_boundary_result",
+            'ysupport.bot.client._outer_support_boundary_result',
             return_value={
                 "classification": "yearn_support",
                 "tripwire_triggered": False,
@@ -27,7 +27,7 @@ class TicketFlowTestCase(unittest.IsolatedAsyncioTestCase):
         boundary_patcher.start()
         self.addCleanup(boundary_patcher.stop)
         summary_patcher = patch(
-            "discord_support_runtime.summarize_handoff_summary",
+            'ysupport.bot.discord_support_runtime.summarize_handoff_summary',
             return_value=None,
         )
         summary_patcher.start()

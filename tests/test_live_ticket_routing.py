@@ -5,18 +5,18 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-import config
-from state import (
+from ysupport import config
+from ysupport.bot.state import (
     clear_ticket_investigation_job,
     get_or_create_ticket_investigation_job,
     stopped_channels,
     stop_reasons_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     strip_handoff_placeholder,
 )
-from ticket_investigation.context import merge_explicit_evidence
-from discord_support_runtime import (
+from ysupport.execution.context import merge_explicit_evidence
+from ysupport.bot.discord_support_runtime import (
     _classify_ticket_message_action,
     _extract_ticket_owner_user_id_from_messages,
     _maybe_recover_runtime_stopped_ticket_for_message,
@@ -44,7 +44,7 @@ class RoutingTests(unittest.TestCase):
             222,
         )
 
-    @patch("discord_support_runtime._is_support_staff_member")
+    @patch('ysupport.bot.discord_support_runtime._is_support_staff_member')
     def test_classify_ticket_message_action_active_ticket_separates_owner_and_staff(
         self,
         mock_is_support_staff_member,
@@ -100,7 +100,7 @@ class RoutingTests(unittest.TestCase):
             "ignore",
         )
 
-    @patch("discord_support_runtime._is_support_staff_member")
+    @patch('ysupport.bot.discord_support_runtime._is_support_staff_member')
     def test_classify_ticket_message_action_stopped_ticket_supports_staff_commands(
         self,
         mock_is_support_staff_member,
@@ -158,7 +158,7 @@ class RoutingTests(unittest.TestCase):
             "Main difference from Aave:\n- Flex uses fixed rates.\n- Aave uses variable rates.",
         )
 
-    @patch("discord_support_runtime._is_support_staff_member")
+    @patch('ysupport.bot.discord_support_runtime._is_support_staff_member')
     def test_runtime_stopped_ticket_recovers_for_owner_message(
         self,
         mock_is_support_staff_member,
@@ -182,7 +182,7 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    @patch("discord_support_runtime._is_support_staff_member")
+    @patch('ysupport.bot.discord_support_runtime._is_support_staff_member')
     def test_runtime_stopped_ticket_recovers_for_known_owner_with_contributor_role(
         self,
         mock_is_support_staff_member,
@@ -206,7 +206,7 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    @patch("discord_support_runtime._is_support_staff_member")
+    @patch('ysupport.bot.discord_support_runtime._is_support_staff_member')
     def test_runtime_stopped_ticket_does_not_recover_for_non_owner_contributor(
         self,
         mock_is_support_staff_member,
@@ -230,7 +230,7 @@ class RoutingTests(unittest.TestCase):
             stopped_channels.discard(channel_id)
             stop_reasons_by_channel.pop(channel_id, None)
 
-    @patch("discord_support_runtime._is_support_staff_member")
+    @patch('ysupport.bot.discord_support_runtime._is_support_staff_member')
     def test_boundary_stopped_ticket_does_not_recover_for_owner_message(
         self,
         mock_is_support_staff_member,

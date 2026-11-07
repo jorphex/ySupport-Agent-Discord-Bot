@@ -7,18 +7,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MCP_TRANSPORT=streamable-http \
     ENABLE_REPO_CONTEXT=true \
     REPO_CONTEXT_DB_PATH=/data/repo_context.sqlite3 \
-    REPO_CONTEXT_MANIFEST_PATH=/app/yearn_rag/repo_sources.json
+    REPO_CONTEXT_MANIFEST_PATH=/app/ysupport/retrieval/repo_sources.json
 
 WORKDIR /app
 
-COPY requirements-mcp.lock .
-RUN pip install --no-cache-dir -r requirements-mcp.lock \
+COPY requirements/mcp.lock ./requirements/mcp.lock
+RUN pip install --no-cache-dir -r requirements/mcp.lock \
     && groupadd --gid 10001 ysupport-mcp \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin ysupport-mcp
 
-COPY mcp_server.py vault_search_tools.py kong_vaults.py docs_repo_tools.py support_dashboard_tools.py ./
-COPY repo_context.py repo_context_build.py config.py ./
-COPY yearn_rag/repo_sources.json ./yearn_rag/repo_sources.json
+COPY ysupport/__init__.py ysupport/config.py ./ysupport/
+COPY ysupport/integrations/__init__.py ysupport/integrations/mcp_server.py ./ysupport/integrations/
+COPY ysupport/tools/__init__.py ysupport/tools/vault_search_tools.py ysupport/tools/kong_vaults.py ysupport/tools/support_dashboard_tools.py ./ysupport/tools/
+COPY ysupport/retrieval/__init__.py ysupport/retrieval/docs_repo_tools.py ysupport/retrieval/repo_context.py ysupport/retrieval/repo_context_build.py ysupport/retrieval/repo_sources.json ./ysupport/retrieval/
 
 USER 10001:10001
 
@@ -27,4 +28,4 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import sys, urllib.error, urllib.request\ntry:\n urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8001/mcp', method='POST'), timeout=3)\nexcept urllib.error.HTTPError as exc:\n sys.exit(0 if exc.code == 401 else 1)\nexcept OSError:\n sys.exit(1)\nsys.exit(1)"]
 
-CMD ["python", "mcp_server.py"]
+CMD ["python", "-m", "ysupport.integrations.mcp_server"]

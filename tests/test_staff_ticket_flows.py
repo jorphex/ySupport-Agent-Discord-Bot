@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import discord
 
-import config
-import state
-from state import (
+from ysupport import config
+from ysupport.bot import state
+from ysupport.bot.state import (
     active_ticket_executor_tasks,
     active_ticket_payloads,
     BotRunContext,
@@ -27,15 +27,15 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from ticket_investigation.contracts import (
+from ysupport.execution.contracts import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
 )
-from views import StopBotView
-from discord_support_runtime import (
+from ysupport.bot.views import StopBotView
+from ysupport.bot.discord_support_runtime import (
     _build_staff_summon_history,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
 from tests.ticket_flow_test_support import (
@@ -132,9 +132,9 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-                patch("ysupport._build_staff_summon_history", return_value=recent_history),
-                patch("ysupport.send_long_message", new=send_staff_reply),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
+                patch('ysupport.bot.client._build_staff_summon_history', return_value=recent_history),
+                patch('ysupport.bot.client.send_long_message', new=send_staff_reply),
             ):
                 await bot.on_message(message)
                 await pending_tasks[channel_id]
@@ -161,7 +161,7 @@ class TicketFlowTests(TicketFlowTestCase):
             )
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
-                patch("telegram_handoff_controller.edit_handoff_notice", return_value=True),
+                patch('ysupport.bot.telegram_handoff_controller.edit_handoff_notice', return_value=True),
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(
                     {
@@ -207,10 +207,10 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with (
-                patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch("ysupport._notify_handoff") as mock_notify,
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
+                patch('ysupport.bot.client._notify_handoff') as mock_notify,
                 patch(
-                    "ysupport._build_staff_summon_history",
+                    'ysupport.bot.client._build_staff_summon_history',
                     return_value=[],
                 ),
             ):
@@ -407,8 +407,8 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-                patch("views.retire_handoff_notice", return_value=True) as retire,
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
+                patch('ysupport.bot.views.retire_handoff_notice', return_value=True) as retire,
             ):
                 await bot.on_message(message)
                 await bot.on_message(staff_image_message)
@@ -434,14 +434,14 @@ class TicketFlowTests(TicketFlowTestCase):
             )
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             ):
                 await bot.on_message(owner_message)
             self.assertEqual(channel.sent_messages, [])
             self.assertEqual(requests, [])
 
             # Simulate a process restart without overwriting the durable snapshot.
-            with patch("state.persist_ticket_state", return_value=True):
+            with patch('ysupport.bot.state.persist_ticket_state', return_value=True):
                 clear_ticket_channel_state(channel_id)
             state.hydrate_ticket_state(channel_id)
             self.assertEqual(stop_reasons_by_channel[channel_id], "staff_takeover")
@@ -462,7 +462,7 @@ class TicketFlowTests(TicketFlowTestCase):
             }
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
-                patch("telegram_handoff_controller.edit_handoff_notice", return_value=True),
+                patch('ysupport.bot.telegram_handoff_controller.edit_handoff_notice', return_value=True),
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
@@ -496,7 +496,7 @@ class TicketFlowTests(TicketFlowTestCase):
             self.assertIsNone(payload["team_handoff_notice"])
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             ):
                 await bot.on_message(owner_message)
             self.assertEqual(len(requests), 1)
@@ -534,7 +534,7 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+                patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             ):
                 await bot.on_message(message)
 
@@ -653,9 +653,9 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _HistoryChannel),
-                patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch("ysupport._notify_handoff") as notify,
+                patch('ysupport.bot.client.discord.TextChannel', _HistoryChannel),
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
+                patch('ysupport.bot.client._notify_handoff') as notify,
             ):
                 await bot.on_message(summon_message)
                 summon_task = pending_tasks[channel_id]
@@ -768,9 +768,9 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
-                patch("ysupport.discord.TextChannel", _HistoryChannel),
-                patch("ysupport.send_long_message", new=fake_send_long_message),
-                patch("ysupport._notify_handoff") as notify,
+                patch('ysupport.bot.client.discord.TextChannel', _HistoryChannel),
+                patch('ysupport.bot.client.send_long_message', new=fake_send_long_message),
+                patch('ysupport.bot.client._notify_handoff') as notify,
             ):
                 await bot.on_message(message)
                 summon_task = pending_tasks[channel_id]

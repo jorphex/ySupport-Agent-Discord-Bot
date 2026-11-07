@@ -16,17 +16,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tests.optimization_e2e import eventually
-import config
-import state
+from ysupport import config
+from ysupport.bot import state
 from tests.test_ticket_intake import _FakeDiscordChannel
-from ticket_investigation.codex_support_endpoint import (
+from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.executor import TransportTicketInvestigationExecutor
-from ticket_investigation.json_endpoint import JsonEndpointTicketExecutionTransport
-from views import stop_ticket_for_manual_support, take_over_ticket_for_staff
-from ticket_execution.subprocess_utils import write_execution_artifacts
-from ysupport import TicketBot
+from ysupport.execution.executor import TransportTicketInvestigationExecutor
+from ysupport.execution.json_endpoint import JsonEndpointTicketExecutionTransport
+from ysupport.bot.views import stop_ticket_for_manual_support, take_over_ticket_for_staff
+from ysupport.execution.subprocess_utils import write_execution_artifacts
+from ysupport.bot.client import TicketBot
 
 SERVER = r"""import json,os,sys,threading,time,uuid
 from pathlib import Path
@@ -158,14 +158,14 @@ async def scenario(root, mode):
         with (
             patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
             patch.object(config, "COOLDOWN_SECONDS", 0.01),
-            patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
-            patch("ysupport._outer_support_boundary_result", new=boundary),
+            patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
+            patch('ysupport.bot.client._outer_support_boundary_result', new=boundary),
             patch(
-                "ticket_investigation.codex_support_app_server.write_execution_artifacts",
+                'ysupport.execution.codex_support_app_server.write_execution_artifacts',
                 new=write_artifacts,
             ),
             patch(
-                "ysupport._send_ticket_handoff_notice",
+                'ysupport.bot.client._send_ticket_handoff_notice',
                 new=AsyncMock(
                     return_value=state.TeamHandoffNotice(
                         telegram_chat_id="fixture",
@@ -175,11 +175,11 @@ async def scenario(root, mode):
                 ),
             ) as handoff,
             patch(
-                "yearn_targets.resolve_yearn_address_target",
+                'ysupport.tools.yearn_targets.resolve_yearn_address_target',
                 new=AsyncMock(return_value=SimpleNamespace(kind="eoa_or_missing_code")),
             ),
             patch(
-                "ticket_investigation.codex_support_attachments._download_attachment_image",
+                'ysupport.execution.codex_support_attachments._download_attachment_image',
                 new=download,
             ),
         ):
@@ -216,7 +216,7 @@ async def scenario(root, mode):
                 if mode == "staff":
                     await take_over_ticket_for_staff(7901)
                 elif mode == "delete":
-                    from ticket_channel_lifecycle import clear_deleted_ticket_channel
+                    from ysupport.bot.ticket_channel_lifecycle import clear_deleted_ticket_channel
 
                     await clear_deleted_ticket_channel(channels[7901])
                 else:
@@ -238,7 +238,7 @@ async def scenario(root, mode):
                 import os
                 import subprocess
 
-                recovery_script = "import json,state;state.hydrate_ticket_state(7901);print(json.dumps({'text':state.pending_messages[7901],'images':state.pending_attachments_by_channel[7901]}))"
+                recovery_script = "import json;from ysupport.bot import state;state.hydrate_ticket_state(7901);print(json.dumps({'text':state.pending_messages[7901],'images':state.pending_attachments_by_channel[7901]}))"
                 recovered = json.loads(
                     subprocess.check_output(
                         [sys.executable, "-B", "-c", recovery_script],
@@ -409,13 +409,13 @@ async def verify_intake_race(root, mode):
         with (
             patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
             patch.object(config, "COOLDOWN_SECONDS", 0.01),
-            patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+            patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             patch(
-                "ysupport._outer_support_boundary_result",
+                'ysupport.bot.client._outer_support_boundary_result',
                 new=AsyncMock(return_value={"tripwire_triggered": False}),
             ),
             patch(
-                "ticket_investigation.codex_support_attachments._download_attachment_image",
+                'ysupport.execution.codex_support_attachments._download_attachment_image',
                 new=download,
             ),
         ):
@@ -567,14 +567,14 @@ async def verify_reply_recovery(root, mode):
         with (
             patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
             patch.object(config, "COOLDOWN_SECONDS", 0.01),
-            patch("ysupport.discord.TextChannel", _FakeDiscordChannel),
+            patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             patch(
-                "ysupport._outer_support_boundary_result",
+                'ysupport.bot.client._outer_support_boundary_result',
                 new=AsyncMock(return_value={"tripwire_triggered": False}),
             ),
-            patch("ysupport._DiscordProgressReporter.close", new=close_progress),
+            patch('ysupport.bot.client._DiscordProgressReporter.close', new=close_progress),
             patch(
-                "ticket_investigation.codex_support_attachments._download_attachment_image",
+                'ysupport.execution.codex_support_attachments._download_attachment_image',
                 new=download,
             ),
         ):
@@ -597,7 +597,7 @@ async def verify_reply_recovery(root, mode):
             snapshot = json.loads((state._TICKET_STATE_DIR / "7982.json").read_text())
             if mode in ("shutdown", "wallet_shutdown"):
                 await bot.close()
-                script = "import json,state;state.hydrate_ticket_state(7982);print(json.dumps({'pending':state.pending_messages.get(7982),'images':state.pending_attachments_by_channel.get(7982),'history':state.conversation_threads.get(7982),'wallet':state.get_or_create_ticket_investigation_job(7982).evidence.wallet,'last_wallet':state.last_wallet_by_channel.get(7982)}))"
+                script = "import json;from ysupport.bot import state;state.hydrate_ticket_state(7982);print(json.dumps({'pending':state.pending_messages.get(7982),'images':state.pending_attachments_by_channel.get(7982),'history':state.conversation_threads.get(7982),'wallet':state.get_or_create_ticket_investigation_job(7982).evidence.wallet,'last_wallet':state.last_wallet_by_channel.get(7982)}))"
                 recovered = json.loads(
                     subprocess.check_output(
                         [sys.executable, "-B", "-c", script],
@@ -626,7 +626,7 @@ async def verify_reply_recovery(root, mode):
                 assert stopped["pending_ticket_input"] is None
                 assert stopped["stopped"]
             elif mode == "delete":
-                from ticket_channel_lifecycle import clear_deleted_ticket_channel
+                from ysupport.bot.ticket_channel_lifecycle import clear_deleted_ticket_channel
 
                 await clear_deleted_ticket_channel(channel)
                 assert not (state._TICKET_STATE_DIR / "7982.json").exists()
@@ -729,14 +729,14 @@ async def main(artifact):
                 }
     report["ok"] = all(s["ok"] for s in report["scenarios"].values())
     names = [
-        "ysupport.py",
-        "state.py",
-        "discord_support_runtime.py",
-        "ticket_intake.py",
-        "ticket_investigation/executor.py",
-        "ticket_investigation/codex_support_endpoint.py",
-        "ticket_investigation/codex_support_app_server.py",
-        "ticket_investigation/steering.py",
+        'ysupport/bot/client.py',
+        'ysupport/bot/state.py',
+        'ysupport/bot/discord_support_runtime.py',
+        'ysupport/bot/ticket_intake.py',
+        'ysupport/execution/executor.py',
+        'ysupport/execution/codex_support_endpoint.py',
+        'ysupport/execution/codex_support_app_server.py',
+        'ysupport/execution/steering.py',
         "tests/steering_e2e.py",
     ]
     report["source_sha256"] = {

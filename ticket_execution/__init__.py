@@ -1,1 +1,0 @@
-"""Ticket execution package."""

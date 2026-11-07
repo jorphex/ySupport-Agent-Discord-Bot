@@ -1,3 +1,53 @@
+# Package and path organization
+
+Goal: group loose root modules under one ysupport package without changing bot,
+MCP, investigation, ingestion, persistence or authentication behavior.
+
+Layout: ysupport/{bot,execution,integrations,tools,retrieval,ingestion}; retain
+basenames where practical. Combine execution modules in one package. Keep public
+service/deployment files and the bot requirements entry at root. Group MCP
+requirements, screenshots and local maintainer references. Move generated docs
+and their checkouts into ignored .cache storage; keep state/auth/database roots.
+
+Constraints and failure modes (before implementation):
+- Work in an isolated checkout until checks pass; do not move files under a live
+  investigation or accepted handoff. Keep Stop/staff/Telegram ownership, RPC
+  isolation, model settings, provider budgets and retention rules unchanged.
+- Update imports, patch targets, embedded subprocess code, CLI commands, source
+  hash lists, resource paths, scripts, Docker allowlists and the docs cron caller.
+  Do not add compatibility shims or leave a second import identity for modules.
+- CWD-independent paths must still find .env, prompt, vault data, manifest, cached
+  sources, SQLite and the venv. Private RPC must retain its stdlib-only client.
+- Preserve generated data, checkout edits/timestamps and embedding fingerprints;
+  no live model, RPC, embedding or platform-message calls during offline checks.
+- Build and smoke-test the minimal MCP image without bot/RPC code or credentials.
+  Keep the previous image and a file/cron rollback before idle activation.
+
+- [x] Map file, import, resource, deployment and external caller dependencies.
+- [x] Add layout/process E2E acceptance checks and record the initial failures.
+- [x] Move files and update their callers, imports and path lookups.
+- [x] Run tests/E2Es, inspect stale paths and review both caller directions.
+- [x] Apply while idle, move ignored data/references, update cron and verify health.
+
+Pre-activation review: 286 tests and all eight offline E2E runners pass. A separate
+read-only, non-root candidate container returns 401 without auth and exposes the
+same 11 authenticated tools. It contains no credentials, bot/execution or RPC code.
+The runtime function ASTs are unchanged except removal of two obsolete CLI import
+bootstraps; config/resources now resolve through the package. Serialized keys,
+workflow IDs, database filename, auth and state roots remain unchanged. Check
+artifacts and move mappings are in `.cache/verification/layout-*.json`.
+
+Activation complete: generated sources/checkouts were renamed with matching bytes,
+file timestamps and modes; daily cron points to the new refresh script/log.
+The host bot logged into Discord and initialized Telegram on the same model and
+concurrency. Auth, repository DB and ticket state hashes are unchanged; ticket
+1633 stays stopped. The live restricted service can import the package and find
+resources. Authenticated MCP reports a ready/fresh index; deployment and rollback
+evidence is in `.cache/verification/layout-activation.json` and related reports.
+A log-check timestamp format error triggered one safe rollback before successful
+activation; its artifact is retained separately. No hosted model, embedding, RPC
+or platform-message test calls were made.
+
 # Remove E2E-covered unit tests and publish steering
 
 Goal: remove tests whose meaningful assertions are covered by current E2Es, keep

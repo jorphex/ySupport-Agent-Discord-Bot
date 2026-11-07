@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import vault_position_tools
+from ysupport.tools import vault_position_tools
 
 
 class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
@@ -22,11 +22,11 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_check_all_deposits_combines_v1_and_active_results(self) -> None:
         with (
             patch(
-                "vault_position_tools.resolve_ens_name",
+                'ysupport.tools.vault_position_tools.resolve_ens_name',
                 return_value="0x0000000000000000000000000000000000000001",
             ),
             patch(
-                "vault_position_tools.query_v1_deposits_logic",
+                'ysupport.tools.vault_position_tools.query_v1_deposits_logic',
                 new=AsyncMock(
                     return_value=vault_position_tools.DepositScanResult(
                         text="V1 deposit result", found=True, complete=True
@@ -34,7 +34,7 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ) as query_v1,
             patch(
-                "vault_position_tools.query_active_deposits_logic",
+                'ysupport.tools.vault_position_tools.query_active_deposits_logic',
                 new=AsyncMock(
                     return_value=vault_position_tools.DepositScanResult(
                         text="Active deposit result", found=True, complete=True
@@ -73,15 +73,15 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "vault_position_tools.resolve_ens_name",
+                'ysupport.tools.vault_position_tools.resolve_ens_name',
                 return_value="0x0000000000000000000000000000000000000001",
             ),
             patch(
-                "vault_position_tools.query_v1_deposits_logic",
+                'ysupport.tools.vault_position_tools.query_v1_deposits_logic',
                 new=AsyncMock(return_value=empty),
             ),
             patch(
-                "vault_position_tools.query_active_deposits_logic",
+                'ysupport.tools.vault_position_tools.query_active_deposits_logic',
                 new=AsyncMock(return_value=incomplete),
             ),
         ):
@@ -156,15 +156,15 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "vault_position_tools.ensure_web3_instances",
+                'ysupport.tools.vault_position_tools.ensure_web3_instances',
                 return_value={"ethereum": object()},
             ),
             patch(
-                "vault_position_tools.fetch_kong_vault_catalog",
+                'ysupport.tools.vault_position_tools.fetch_kong_vault_catalog',
                 new=AsyncMock(return_value=[vault_info]),
             ),
             patch(
-                "vault_position_tools._fetch_vault_and_gauge_balances",
+                'ysupport.tools.vault_position_tools._fetch_vault_and_gauge_balances',
                 new=AsyncMock(
                     return_value=vault_position_tools._VaultBalanceResult(
                         vault_info=vault_info,
@@ -194,15 +194,15 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "vault_position_tools.ensure_web3_instances",
+                'ysupport.tools.vault_position_tools.ensure_web3_instances',
                 return_value={"ethereum": object()},
             ),
             patch(
-                "vault_position_tools.fetch_kong_vault_catalog",
+                'ysupport.tools.vault_position_tools.fetch_kong_vault_catalog',
                 new=AsyncMock(return_value=[vault_info]),
             ),
             patch(
-                "vault_position_tools._fetch_vault_and_gauge_balances",
+                'ysupport.tools.vault_position_tools._fetch_vault_and_gauge_balances',
                 new=AsyncMock(
                     return_value=vault_position_tools._VaultBalanceResult(
                         vault_info=vault_info,
@@ -240,15 +240,15 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "vault_position_tools.ensure_web3_instances",
+                'ysupport.tools.vault_position_tools.ensure_web3_instances',
                 return_value={"ethereum": object()},
             ),
             patch(
-                "vault_position_tools.fetch_kong_vault_catalog",
+                'ysupport.tools.vault_position_tools.fetch_kong_vault_catalog',
                 new=AsyncMock(return_value=[vault_info]),
             ),
             patch(
-                "vault_position_tools._fetch_vault_and_gauge_balances",
+                'ysupport.tools.vault_position_tools._fetch_vault_and_gauge_balances',
                 new=balance_check,
             ),
         ):
@@ -280,7 +280,7 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
             eth = _Eth()
 
         with (
-            patch("vault_position_tools.get_web3_instance", return_value=_Web3()),
+            patch('ysupport.tools.vault_position_tools.get_web3_instance', return_value=_Web3()),
             patch.object(
                 vault_position_tools,
                 "V1_VAULTS",
@@ -304,7 +304,7 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_v1_withdrawal_uses_loaded_catalog_without_network(self) -> None:
         vault = vault_position_tools.V1_VAULTS[0]
         with patch(
-            "vault_position_tools.get_web3_instance",
+            'ysupport.tools.vault_position_tools.get_web3_instance',
             return_value=object(),
         ):
             result = await vault_position_tools.core_get_withdrawal_instructions(
@@ -329,9 +329,9 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         with (
-            patch("vault_position_tools.get_web3_instance", return_value=object()),
+            patch('ysupport.tools.vault_position_tools.get_web3_instance', return_value=object()),
             patch(
-                "vault_position_tools.fetch_kong_vault_snapshot",
+                'ysupport.tools.vault_position_tools.fetch_kong_vault_snapshot',
                 new=fetch_snapshot,
             ),
         ):
@@ -347,9 +347,9 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_withdrawal_rejects_non_yearn_kong_snapshot(self) -> None:
         vault_address = "0x1111111111111111111111111111111111111111"
         with (
-            patch("vault_position_tools.get_web3_instance", return_value=object()),
+            patch('ysupport.tools.vault_position_tools.get_web3_instance', return_value=object()),
             patch(
-                "vault_position_tools.fetch_kong_vault_snapshot",
+                'ysupport.tools.vault_position_tools.fetch_kong_vault_snapshot',
                 new=AsyncMock(
                     return_value={
                         "chainId": 1,
@@ -384,7 +384,7 @@ class VaultPositionToolTests(unittest.IsolatedAsyncioTestCase):
                 [
                     sys.executable,
                     "-c",
-                    "import vault_position_tools; print(len(vault_position_tools.V1_VAULTS))",
+                    'import ysupport.tools.vault_position_tools as vault_position_tools; print(len(vault_position_tools.V1_VAULTS))',
                 ],
                 cwd=working_directory,
                 env=environment,

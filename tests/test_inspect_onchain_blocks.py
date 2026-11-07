@@ -3,8 +3,8 @@ import tests as _test_environment  # noqa: F401
 import unittest
 from unittest.mock import patch
 
-import chain_access
-import onchain_tools
+from ysupport.tools import chain_access
+from ysupport.tools import onchain_tools
 
 
 class InspectOnchainBlockIdentifierTests(unittest.IsolatedAsyncioTestCase):

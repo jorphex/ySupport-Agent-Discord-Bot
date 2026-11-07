@@ -3,7 +3,7 @@ import tests as _test_environment  # noqa: F401
 import unittest
 from unittest.mock import patch
 
-from utils import send_long_message
+from ysupport.bot.utils import send_long_message
 
 
 class _FakeChannel:
@@ -34,8 +34,8 @@ class SendLongMessageTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_long_message_propagates_partial_chunk_delivery(self) -> None:
         channel = _FailingAfterOneChannel()
         with (
-            patch("utils.config.MAX_DISCORD_MESSAGE_LENGTH", 5),
-            patch("utils.asyncio.sleep", return_value=None),
+            patch('ysupport.bot.utils.config.MAX_DISCORD_MESSAGE_LENGTH', 5),
+            patch('ysupport.bot.utils.asyncio.sleep', return_value=None),
         ):
             with self.assertRaisesRegex(RuntimeError, "Discord chunk send failed"):
                 await send_long_message(channel, "first\nsecond")

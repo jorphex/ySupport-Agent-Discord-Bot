@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import discord
 
-import config
-import yearn_targets
-from state import (
+from ysupport import config
+from ysupport.tools import yearn_targets
+from ysupport.bot.state import (
     BotRunContext,
     clear_team_handoff_notice,
     clear_ticket_investigation_job,
@@ -24,14 +24,14 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from ticket_intake import (
+from ysupport.bot.ticket_intake import (
     known_yearn_address_hint,
 )
-from ticket_investigation.contracts import (
+from ysupport.execution.contracts import (
     TicketAgentFlowOutcome,
     TicketTurnRequest,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
 
@@ -108,7 +108,7 @@ class _FakeTriggerMessage:
 class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         boundary_patcher = patch(
-            "ysupport._outer_support_boundary_result",
+            'ysupport.bot.client._outer_support_boundary_result',
             return_value={
                 "classification": "yearn_support",
                 "tripwire_triggered": False,
@@ -117,7 +117,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         boundary_patcher.start()
         self.addCleanup(boundary_patcher.stop)
         summary_patcher = patch(
-            "discord_support_runtime.summarize_handoff_summary",
+            'ysupport.bot.discord_support_runtime.summarize_handoff_summary',
             return_value=None,
         )
         summary_patcher.start()
@@ -149,7 +149,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_yearn_address_target_prefers_known_strategy_match(self) -> None:
         address = "0x1111111111111111111111111111111111111111"
         with patch(
-            "yearn_targets._get_kong_address_index",
+            'ysupport.tools.yearn_targets._get_kong_address_index',
             return_value={
                 "0x1111111111111111111111111111111111111111": [
                     {
@@ -178,10 +178,10 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_yearn_address_target_falls_back_to_contract_profile(self) -> None:
         address = "0x3333333333333333333333333333333333333333"
         with (
-            patch("yearn_targets._get_kong_address_index", return_value={}),
-            patch("yearn_targets.get_web3_instance", return_value=object()),
+            patch('ysupport.tools.yearn_targets._get_kong_address_index', return_value={}),
+            patch('ysupport.tools.yearn_targets.get_web3_instance', return_value=object()),
             patch(
-                "yearn_targets.inspect_contract_profile",
+                'ysupport.tools.yearn_targets.inspect_contract_profile',
                 return_value={"kind": "erc20_like", "has_code": True, "symbol": "TEST", "name": "Test Contract"},
             ),
         ):
@@ -236,9 +236,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
 
         resolved_wallet = "0xAbcdefABcdefABcdefABcdefABcdefABcdefABCD"
         try:
-            with patch("chain_access.resolve_ens_name", return_value=resolved_wallet):
+            with patch('ysupport.tools.chain_access.resolve_ens_name', return_value=resolved_wallet):
                 with patch(
-                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    'ysupport.bot.ticket_intake.yearn_targets.resolve_yearn_address_target',
                     return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=resolved_wallet,
                         kind="eoa_or_missing_code",
@@ -246,8 +246,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                         is_contract=False,
                     ),
                 ):
-                    with patch("ysupport.send_long_message", new=fake_channel.send):
-                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    with patch('ysupport.bot.client.send_long_message', new=fake_channel.send):
+                        with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                             await bot.process_ticket_message(channel_id, run_context)
             observed_last_wallet = last_wallet_by_channel.get(channel_id)
         finally:
@@ -313,9 +313,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("chain_access.resolve_ens_name", return_value=vault_address):
+            with patch('ysupport.tools.chain_access.resolve_ens_name', return_value=vault_address):
                 with patch(
-                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    'ysupport.bot.ticket_intake.yearn_targets.resolve_yearn_address_target',
                     return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=vault_address,
                         kind="vault",
@@ -326,8 +326,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                         is_contract=True,
                     ),
                 ):
-                    with patch("ysupport.send_long_message", new=fake_channel.send):
-                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    with patch('ysupport.bot.client.send_long_message', new=fake_channel.send):
+                        with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                             await bot.process_ticket_message(channel_id, run_context)
         finally:
             pending_messages.pop(channel_id, None)
@@ -391,9 +391,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("chain_access.resolve_ens_name", return_value=contract_address):
+            with patch('ysupport.tools.chain_access.resolve_ens_name', return_value=contract_address):
                 with patch(
-                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    'ysupport.bot.ticket_intake.yearn_targets.resolve_yearn_address_target',
                     return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=contract_address,
                         kind="contract_unknown",
@@ -402,8 +402,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                         is_contract=True,
                     ),
                 ):
-                    with patch("ysupport.send_long_message", new=fake_channel.send):
-                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    with patch('ysupport.bot.client.send_long_message', new=fake_channel.send):
+                        with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                             await bot.process_ticket_message(channel_id, run_context)
         finally:
             pending_messages.pop(channel_id, None)
@@ -476,9 +476,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("chain_access.resolve_ens_name", return_value=resolved_wallet):
+            with patch('ysupport.tools.chain_access.resolve_ens_name', return_value=resolved_wallet):
                 with patch(
-                    "ticket_intake.yearn_targets.resolve_yearn_address_target",
+                    'ysupport.bot.ticket_intake.yearn_targets.resolve_yearn_address_target',
                     return_value=yearn_targets.ResolvedYearnAddressTarget(
                         address=resolved_wallet,
                         kind="eoa_or_missing_code",
@@ -486,8 +486,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                         is_contract=False,
                     ),
                 ):
-                    with patch("ysupport.send_long_message", new=fake_channel.send):
-                        with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                    with patch('ysupport.bot.client.send_long_message', new=fake_channel.send):
+                        with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                             await bot.process_ticket_message(channel_id, run_context)
         finally:
             pending_messages.pop(channel_id, None)
@@ -558,7 +558,7 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
         clear_ticket_investigation_job(channel_id)
 
         try:
-            with patch("ticket_intake.yearn_targets.resolve_yearn_address_target") as mock_resolve_target:
+            with patch('ysupport.bot.ticket_intake.yearn_targets.resolve_yearn_address_target') as mock_resolve_target:
                 mock_resolve_target.return_value = yearn_targets.ResolvedYearnAddressTarget(
                     address=vault_address,
                     kind="vault",
@@ -568,8 +568,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
                     vault_label="USDC V3 Vault",
                     is_contract=True,
                 )
-                with patch("ysupport.send_long_message", new=fake_channel.send):
-                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+                with patch('ysupport.bot.client.send_long_message', new=fake_channel.send):
+                    with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                         await bot.process_ticket_message(channel_id, run_context)
         finally:
             pending_messages.pop(channel_id, None)
@@ -623,9 +623,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             await channel.send(message, **kwargs)
 
         try:
-            with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
-                with patch("ysupport.send_long_message", new=fake_send_long_message):
-                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+            with patch('ysupport.bot.client._outer_support_boundary_result', new=fake_boundary):
+                with patch('ysupport.bot.client.send_long_message', new=fake_send_long_message):
+                    with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                         await bot.process_ticket_message(channel_id, run_context)
             self.assertEqual(fake_channel.sent_messages, ["Boundary reply"])
             self.assertIn(channel_id, stopped_channels)
@@ -674,9 +674,9 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             await channel.send(message, **kwargs)
 
         try:
-            with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
-                with patch("ysupport.send_long_message", new=fake_send_long_message):
-                    with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+            with patch('ysupport.bot.client._outer_support_boundary_result', new=fake_boundary):
+                with patch('ysupport.bot.client.send_long_message', new=fake_send_long_message):
+                    with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                         await bot.process_ticket_message(channel_id, run_context)
             self.assertEqual(fake_channel.sent_messages, [config.SECURITY_ALTERNATE_CONTACT_MESSAGE])
             self.assertNotIn(channel_id, stopped_channels)
@@ -719,8 +719,8 @@ class TicketBotWalletFlowTests(unittest.IsolatedAsyncioTestCase):
             await channel.send(message, **kwargs)
 
         try:
-            with patch("ysupport.send_long_message", new=fake_send_long_message):
-                with patch("ysupport.discord.TextChannel", _FakeDiscordChannel):
+            with patch('ysupport.bot.client.send_long_message', new=fake_send_long_message):
+                with patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel):
                     await bot.process_ticket_message(channel_id, run_context)
 
             self.assertEqual(fake_channel.sent_messages, ["An unexpected error occurred."])

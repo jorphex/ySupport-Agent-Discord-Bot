@@ -1,0 +1,197 @@
+import argparse
+import asyncio
+import json
+from pathlib import Path
+import shutil
+import sys
+from typing import Any
+
+from ysupport import config
+from ysupport.execution.codex_support_sessions import CodexSupportSessionManager
+from ysupport.retrieval.repo_context import get_repo_context_status
+
+
+def build_ticket_execution_status(*, include_smoke_probe: bool = False) -> dict[str, Any]:
+    runtime_validation_error = None
+    try:
+        config.validate_runtime_environment_config()
+        runtime_validation_ok = True
+    except ValueError as exc:
+        runtime_validation_ok = False
+        runtime_validation_error = str(exc)
+
+    validation_error = None
+    try:
+        config.validate_ticket_execution_runtime_config()
+        validation_ok = True
+    except ValueError as exc:
+        validation_ok = False
+        validation_error = str(exc)
+
+    uses_codex = "codex_support_exec" in config.ticket_execution_endpoint_modes()
+    status = {
+        "runtime_environment": {
+            "validation_ok": runtime_validation_ok,
+            "validation_error": runtime_validation_error,
+            "issues": config.runtime_environment_validation_issues(),
+        },
+        "ticket_execution": {
+            "primary_endpoint": config.TICKET_EXECUTION_ENDPOINT,
+            "fallback_endpoint": config.TICKET_EXECUTION_FALLBACK_ENDPOINT or None,
+            "uses_codex": uses_codex,
+            "artifact_dir": config.TICKET_EXECUTION_ARTIFACT_DIR or None,
+            "codex_session_dir": config.TICKET_EXECUTION_CODEX_SESSION_DIR or None,
+            "codex_session_max_age_hours": config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+            "codex_session_summary": _build_codex_session_summary(),
+            "sandbox_policy": {
+                "workspace_mode": "temporary_per_turn",
+                "export_mode": (
+                    "read_only_copy"
+                    if config.TICKET_EXECUTION_ARTIFACT_DIR
+                    else "ephemeral_only"
+                ),
+                "scratch_env_var": "TICKET_EXECUTION_RUN_DIR",
+            },
+            "summary": config.ticket_execution_runtime_summary(),
+            "warnings": config.ticket_execution_runtime_warnings(),
+            "validation_ok": validation_ok,
+            "validation_error": validation_error,
+            "primary_command_probe": _probe_command(config.TICKET_EXECUTION_ENDPOINT),
+            "fallback_command_probe": _probe_command(
+                config.TICKET_EXECUTION_FALLBACK_ENDPOINT
+            ),
+            "shadow_command_probe": _probe_command(
+                config.TICKET_EXECUTION_SHADOW_ENDPOINT
+            ),
+            "canary_command_probe": _probe_command(
+                config.TICKET_EXECUTION_CANARY_ENDPOINT
+            )
+            if config.ticket_execution_canary_is_active()
+            else None,
+        },
+        "repo_context": get_repo_context_status(),
+    }
+    if include_smoke_probe:
+        status["ticket_execution"]["smoke_probe"] = _probe_endpoint_smoke()
+    return status
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Report ticket execution readiness.")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Build the configured endpoint and execute its smoke probe.",
+    )
+    args = parser.parse_args(argv or [])
+    include_smoke_probe = args.smoke
+    status = build_ticket_execution_status(include_smoke_probe=include_smoke_probe)
+    print(json.dumps(status, indent=2, sort_keys=True))
+    exit_ok = (
+        0
+        if status["ticket_execution"]["validation_ok"]
+        and status["runtime_environment"]["validation_ok"]
+        else 1
+    )
+    if include_smoke_probe:
+        smoke_probe = status["ticket_execution"].get("smoke_probe", {})
+        if not smoke_probe.get("ok"):
+            return 1
+    return exit_ok
+
+
+def _probe_command(mode: str) -> dict[str, Any] | None:
+    if not mode:
+        return None
+    try:
+        command = _resolve_base_command(mode)
+    except ValueError as exc:
+        return {"mode": mode, "available": False, "error": str(exc)}
+    if not command:
+        return None
+
+    executable = command[0]
+    resolved_path: str | None = None
+    if "/" in executable:
+        executable_path = Path(executable)
+        if not executable_path.is_absolute():
+            executable_path = Path(config.TICKET_EXECUTION_SUBPROCESS_CWD) / executable_path
+        resolved_path = (
+            str(executable_path.resolve())
+            if executable_path.exists()
+            else None
+        )
+    else:
+        resolved_path = shutil.which(executable)
+
+    return {
+        "mode": mode,
+        "command": command,
+        "available": resolved_path is not None,
+        "resolved_path": resolved_path,
+    }
+
+
+def _build_codex_session_summary() -> dict[str, Any] | None:
+    session_dir = config.TICKET_EXECUTION_CODEX_SESSION_DIR
+    if not session_dir:
+        return None
+    manager = CodexSupportSessionManager(
+        Path(session_dir),
+        max_age_hours=config.TICKET_EXECUTION_CODEX_SESSION_MAX_AGE_HOURS,
+        create_root=False,
+    )
+    summary = manager.summary(prune_expired=False)
+    return {
+        "root_dir": summary["root_dir"],
+        "active_sessions": summary["active_sessions"],
+    }
+
+
+def _probe_endpoint_smoke() -> dict[str, Any]:
+    try:
+        from ysupport.execution.json_endpoint import build_ticket_execution_json_endpoint
+        from ysupport.execution.transport import (
+            TicketExecutionTransportResult,
+            build_smoke_transport_request,
+        )
+    except ModuleNotFoundError as exc:
+        return {
+            "ok": None,
+            "error": f"Smoke probe unavailable: {exc}",
+            "raw_final_reply": None,
+        }
+
+    request = build_smoke_transport_request()
+    try:
+        endpoint = build_ticket_execution_json_endpoint()
+        response_json = asyncio.run(endpoint.execute_json_turn(request.to_json()))
+        response = TicketExecutionTransportResult.from_json(response_json)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "raw_final_reply": None,
+        }
+
+    raw_final_reply = response.flow_outcome.get("raw_final_reply")
+    smoke_ok = isinstance(raw_final_reply, str) and raw_final_reply.startswith(
+        "ticket_execution_smoke_ok:"
+    )
+    return {
+        "ok": smoke_ok,
+        "error": None if smoke_ok else "Smoke probe returned unexpected payload.",
+        "raw_final_reply": raw_final_reply,
+    }
+
+
+def _resolve_base_command(mode: str) -> list[str] | None:
+    from ysupport.execution.json_endpoint import (
+        resolve_ticket_execution_base_command,
+    )
+
+    return resolve_ticket_execution_base_command(mode)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

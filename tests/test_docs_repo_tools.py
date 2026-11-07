@@ -3,8 +3,8 @@ import tests as _test_environment  # noqa: F401
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import docs_repo_tools
-from docs_repo_tools import (
+from ysupport.retrieval import docs_repo_tools
+from ysupport.retrieval.docs_repo_tools import (
     _docs_query_specs,
     _should_include_flex_docs,
     _top_matches_by_score,

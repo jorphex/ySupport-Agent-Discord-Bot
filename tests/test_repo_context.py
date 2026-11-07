@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-import repo_context
-import repo_context_build
+from ysupport.retrieval import repo_context
+from ysupport.retrieval import repo_context_build
 
 
 class RepoContextStatusTests(unittest.TestCase):

@@ -45,31 +45,31 @@ os.environ["TICKET_EXECUTION_ENDPOINT"] = "codex_support_exec"
 os.environ["MCP_SERVER_API_KEY"] = "offline-test-key"
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
-import config
-import docs_repo_tools
-import repo_context
-import repo_context_build
-import state
-from codex_support_home import prune_codex_support_caches
-from telegram_handoff_controller import TelegramHandoffController
-from ticket_investigation.codex_support_endpoint import (
+from ysupport import config
+from ysupport.retrieval import docs_repo_tools
+from ysupport.retrieval import repo_context
+from ysupport.retrieval import repo_context_build
+from ysupport.bot import state
+from ysupport.execution.codex_support_home import prune_codex_support_caches
+from ysupport.bot.telegram_handoff_controller import TelegramHandoffController
+from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.executor import TransportTicketInvestigationExecutor
-from ticket_investigation.json_endpoint import JsonEndpointTicketExecutionTransport
+from ysupport.execution.executor import TransportTicketInvestigationExecutor
+from ysupport.execution.json_endpoint import JsonEndpointTicketExecutionTransport
 from tests.test_ticket_intake import (
     _FakeDiscordChannel,
     _FakeOriginalMessage,
     _FakePublicChannel,
     _FakeTriggerMessage,
 )
-from views import (
+from ysupport.bot.views import (
     InitialInquiryView,
     stop_ticket_for_manual_support,
     take_over_ticket_for_staff,
 )
-from yearn_rag.fetch_yearn_docs import SOURCE_URL, refresh_yearn_docs
-from ysupport import TicketBot
+from ysupport.ingestion.fetch_yearn_docs import SOURCE_URL, refresh_yearn_docs
+from ysupport.bot.client import TicketBot
 
 
 async def eventually(predicate, *, timeout=8):
@@ -119,8 +119,8 @@ def verify_cache_retention(root):
 
 
 def verify_docs_checkout(root):
-    from yearn_rag.embed_and_store import source_fingerprint
-    from yearn_rag.process_docs import process_markdown_files
+    from ysupport.ingestion.embed_and_store import source_fingerprint
+    from ysupport.ingestion.process_docs import process_markdown_files
 
     source = root / "origin"
     source.mkdir(parents=True)
@@ -659,7 +659,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             patch.object(config, "TELEGRAM_BOT_TOKEN", "fixture"),
             patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
             patch.dict(os.environ, {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}),
-            patch("handoff._telegram_api_call", new=api),
+            patch('ysupport.integrations.handoff._telegram_api_call', new=api),
         ):
             for channel in (501, 502, 503):
                 notice(channel)
@@ -752,7 +752,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
         original = _FakeOriginalMessage(8001, "Where can I find the withdrawal docs?")
         channel = _FakePublicChannel(801, original)
         with patch(
-            "ysupport._outer_support_boundary_result",
+            'ysupport.bot.client._outer_support_boundary_result',
             new=AsyncMock(return_value={"tripwire_triggered": False}),
         ):
             await asyncio.gather(
@@ -885,7 +885,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     cases = json.loads(evaluation.CASE_PATH.read_text())
     by_id = {case["id"]: case for case in cases}
     import copy
-    import ysupport
+    from ysupport.bot import client as ysupport
 
     probes, expected = [], []
 
@@ -947,8 +947,8 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
 
     output = root / "native-evaluation.json"
     with (
-        patch("support_boundary.Runner.run", new=classifier),
-        patch("ysupport.is_ticket_waiting_for_team", new=simulate_broken_guard),
+        patch('ysupport.bot.support_boundary.Runner.run', new=classifier),
+        patch('ysupport.bot.client.is_ticket_waiting_for_team', new=simulate_broken_guard),
     ):
         status = await evaluation.run(
             SimpleNamespace(output=output, case=[]),
@@ -980,21 +980,21 @@ async def main(artifact):
     report["source_hashes"] = {
         name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
         for name in (
-            "telegram_handoff_controller.py",
-            "ysupport.py",
-            "views.py",
-            "bot_behavior.py",
-            "docs_repo_tools.py",
-            "repo_context.py",
-            "repo_context_build.py",
-            "codex_support_home.py",
-            "ticket_investigation/codex_support_endpoint.py",
-            "ticket_investigation/internal_rpc.py",
-            "chain_access.py",
-            "onchain_tools.py",
-            "vault_position_tools.py",
-            "yearn_rag/fetch_yearn_docs.py",
-            "yearn_rag/update_docs.sh",
+            'ysupport/bot/telegram_handoff_controller.py',
+            'ysupport/bot/client.py',
+            'ysupport/bot/views.py',
+            'ysupport/bot/bot_behavior.py',
+            'ysupport/retrieval/docs_repo_tools.py',
+            'ysupport/retrieval/repo_context.py',
+            'ysupport/retrieval/repo_context_build.py',
+            'ysupport/execution/codex_support_home.py',
+            'ysupport/execution/codex_support_endpoint.py',
+            'ysupport/execution/internal_rpc.py',
+            'ysupport/tools/chain_access.py',
+            'ysupport/tools/onchain_tools.py',
+            'ysupport/tools/vault_position_tools.py',
+            'ysupport/ingestion/fetch_yearn_docs.py',
+            'scripts/update_docs.sh',
             "tests/optimization_e2e.py",
             "tests/native_support_e2e.py",
             "tests/native_support_cases.json",

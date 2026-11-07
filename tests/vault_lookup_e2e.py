@@ -150,10 +150,10 @@ async def run(report):
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
         with patch("dotenv.load_dotenv", return_value=False):
-            import mcp_server
-        import kong_vaults
-        import vault_search_tools
-        import config
+            from ysupport.integrations import mcp_server
+        from ysupport.tools import kong_vaults
+        from ysupport.tools import vault_search_tools
+        from ysupport import config
         import uvicorn
 
         logging.getLogger().setLevel(logging.ERROR)
@@ -373,7 +373,7 @@ async def main(args):
         raise
     finally:
         report["source_hashes"] = {n: hashlib.sha256((SOURCE_ROOT/n).read_bytes()).hexdigest() for n in (
-            "mcp_server.py", "vault_search_tools.py", "kong_vaults.py", "support_dashboard_tools.py", "tests/vault_lookup_e2e.py",
+            'ysupport/integrations/mcp_server.py', 'ysupport/tools/vault_search_tools.py', 'ysupport/tools/kong_vaults.py', 'ysupport/tools/support_dashboard_tools.py', "tests/vault_lookup_e2e.py",
         )}
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')

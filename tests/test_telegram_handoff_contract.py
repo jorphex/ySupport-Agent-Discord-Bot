@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import discord
 
-import config
-import handoff
-from discord_support_runtime import InternalInstructionTurnResult
-from state import (
+from ysupport import config
+from ysupport.integrations import handoff
+from ysupport.bot.discord_support_runtime import InternalInstructionTurnResult
+from ysupport.bot.state import (
     TeamHandoffNotice,
     channel_intent_after_button,
     clear_team_handoff_notice,
@@ -21,13 +21,13 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     DISMISS_HANDOFF_CALLBACK_DATA,
     build_closed_handoff_notice,
     build_handoff_notice,
     build_pending_delivery_handoff_notice,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
 from tests.ticket_flow_test_support import TicketFlowTestCase
@@ -118,15 +118,15 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"):
                 with patch(
-                    "telegram_handoff_controller.edit_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     new=fake_edit_handoff_notice,
                 ):
                     with patch(
-                        "telegram_handoff_controller._run_internal_instruction_turn",
+                        'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
                         new=fake_internal_turn,
                     ):
                         with patch(
-                            "telegram_handoff_controller.send_long_message",
+                            'ysupport.bot.telegram_handoff_controller.send_long_message',
                             new=fake_send_long_message,
                         ):
                             await bot.telegram_handoffs._handle_telegram_handoff_update(
@@ -209,7 +209,7 @@ class TicketFlowTests(TicketFlowTestCase):
             patch.dict("os.environ", {"YSUPPORT_ALLOW_TEST_TELEGRAM": "1"}),
             patch.object(config, "TELEGRAM_BOT_TOKEN", "test-token"),
             patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
-            patch("handoff._telegram_api_call", new=fake_telegram_api_call),
+            patch('ysupport.integrations.handoff._telegram_api_call', new=fake_telegram_api_call),
         ):
             await handoff.send_handoff_notice(
                 "ticket handoff",
@@ -284,11 +284,11 @@ class TicketFlowTests(TicketFlowTestCase):
     async def test_retire_handoff_notice_falls_back_to_closed_status(self) -> None:
         with (
             patch(
-                "handoff.delete_telegram_message",
+                'ysupport.integrations.handoff.delete_telegram_message',
                 return_value=False,
             ) as delete_message,
             patch(
-                "handoff.edit_handoff_notice",
+                'ysupport.integrations.handoff.edit_handoff_notice',
                 return_value=True,
             ) as edit_notice,
         ):

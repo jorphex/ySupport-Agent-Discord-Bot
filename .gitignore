@@ -14,12 +14,8 @@ NOTES.md
 plan.md
 MODEL_MAINTAINER_REFERENCE.md
 OPERATOR_MAINTAINER_REFERENCE.md
-/yearn_rag/yearn-devdocs
-/yearn_rag/cleaned_yearn_docs.json
-/yearn_rag/cleaned_flex_docs.json
-/yearn_rag/flex-docs/
-/yearn_rag/update_docs.log
 /.cache/repo_context/
 /.cache/docs_ingestion/
 /.cache/verification/
 .tmp_replay/
+/.cache/docs_sources/

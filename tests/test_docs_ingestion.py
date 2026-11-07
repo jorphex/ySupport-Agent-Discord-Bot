@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 from pinecone.models.vectors.responses import ListItem, ListResponse
 
-from yearn_rag import embed_and_store
-from yearn_rag import fetch_flex_docs
-from yearn_rag.fetch_flex_docs import write_markdown_file
+from ysupport.ingestion import embed_and_store
+from ysupport.ingestion import fetch_flex_docs
+from ysupport.ingestion.fetch_flex_docs import write_markdown_file
 
 
 def _docs() -> list[dict[str, object]]:
@@ -132,25 +132,25 @@ class _FakeIndex:
 class RefreshEntrypointTests(unittest.TestCase):
     def test_refresh_stages_fail_independently_and_preserve_last_success(self) -> None:
         steps = [
-            "fetch_yearn_docs.py",
-            "fetch_flex_docs.py",
-            "process_docs.py",
-            "embed_and_store.py",
-            "build_repo_context.py",
-            "verify_repo_context.py",
+            "ysupport.ingestion.fetch_yearn_docs",
+            "ysupport.ingestion.fetch_flex_docs",
+            "ysupport.ingestion.process_docs",
+            "ysupport.ingestion.embed_and_store",
+            "ysupport.ingestion.build_repo_context",
+            "ysupport.ingestion.verify_repo_context",
         ]
-        script = Path(embed_and_store.__file__).with_name("update_docs.sh")
+        script = Path(__file__).resolve().parents[1] / "scripts" / "update_docs.sh"
         for failed_step in ["", *steps]:
             with self.subTest(failed_step=failed_step), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                rag_dir = root / "yearn_rag"
-                (rag_dir / "yearn-devdocs").mkdir(parents=True)
+                rag_dir = root / "scripts"
+                rag_dir.mkdir(parents=True)
                 shutil.copy2(script, rag_dir / script.name)
                 bin_dir = root / ".venv" / "bin"
                 bin_dir.mkdir(parents=True)
                 stub = (
                     '#!/bin/bash\n'
-                    'step="${1##*/}"\n'
+                    'step="$2"\n'
                     '[[ "${0##*/}" == "git" ]] && step=git\n'
                     'printf "%s\\n" "$step" >> "$REFRESH_TEST_EVENTS"\n'
                     '[[ "$step" != "$REFRESH_TEST_FAIL" ]]\n'
@@ -180,7 +180,7 @@ class RefreshEntrypointTests(unittest.TestCase):
                 docs_failed = failed_step in steps[:4]
                 repo_failed = failed_step in steps[4:]
                 expected = steps[: steps.index(failed_step) + 1] if docs_failed else steps[:4]
-                expected += steps[4:5] if failed_step == "build_repo_context.py" else steps[4:]
+                expected += steps[4:5] if failed_step == "ysupport.ingestion.build_repo_context" else steps[4:]
                 self.assertEqual(events_path.read_text().splitlines(), expected)
                 for stage, failed in (("docs", docs_failed), ("repo", repo_failed)):
                     status = dict(

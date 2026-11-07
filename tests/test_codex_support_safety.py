@@ -9,19 +9,19 @@ import tempfile
 import unittest
 from unittest import mock
 
-from codex_support_contract import (
+from ysupport.execution.codex_support_contract import (
     SignedTransactionSafetyViolation,
     SupportTurnResult,
 )
-from codex_support_sessions import CodexSupportSessionManager
-from ticket_investigation.codex_support_endpoint import (
+from ysupport.execution.codex_support_sessions import CodexSupportSessionManager
+from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.codex_support_subprocess import (
+from ysupport.execution.codex_support_subprocess import (
     CodexSupportExecutionOutput,
 )
-from ticket_investigation.executor import TicketExecutionHooks
-from ticket_investigation.transport import (
+from ysupport.execution.executor import TicketExecutionHooks
+from ysupport.execution.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
@@ -269,7 +269,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     new=mock.AsyncMock(return_value=True),
                 ) as mock_delete,
                 mock.patch(
-                    "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                    'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                     side_effect=fake_run_streaming_subprocess,
                 ),
             ):
@@ -349,7 +349,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     side_effect=fake_delete,
                 ),
                 mock.patch(
-                    "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                    'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                     side_effect=fake_run_streaming_subprocess,
                 ),
             ):
@@ -406,7 +406,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     new=mock.AsyncMock(return_value=True),
                 ) as mock_delete,
                 mock.patch(
-                    "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                    'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                     return_value=CodexSupportExecutionOutput(
                         final_response_text=unsafe_response
                     ),
@@ -467,7 +467,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
                     new=mock.AsyncMock(return_value=False),
                 ) as mock_delete,
                 mock.patch(
-                    "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                    'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                     side_effect=fake_run_streaming_subprocess,
                 ),
                 self.assertLogs(level="WARNING") as captured_logs,
@@ -544,7 +544,7 @@ class CodexSupportEndpointTests(unittest.IsolatedAsyncioTestCase):
             )
 
             with mock.patch(
-                "ticket_investigation.codex_support_endpoint.run_codex_support_json_subprocess",
+                'ysupport.execution.codex_support_endpoint.run_codex_support_json_subprocess',
                 return_value=CodexSupportExecutionOutput(
                     final_response_text=invalid_response
                 ),

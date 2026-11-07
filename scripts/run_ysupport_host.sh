@@ -15,4 +15,4 @@ fi
 export PYTHONUNBUFFERED=1
 : "${TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE:?TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE must point to service-owned auth}"
 
-exec "${PYTHON}" ysupport.py
+exec "${PYTHON}" -m ysupport.bot.client

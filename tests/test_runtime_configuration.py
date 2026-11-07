@@ -10,8 +10,8 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 
-import config
-from ticket_execution.status import (
+from ysupport import config
+from ysupport.execution.status import (
     _build_codex_session_summary,
     build_ticket_execution_status,
     main as ticket_execution_status_main,
@@ -179,7 +179,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
             config.TICKET_EXECUTION_CODEX_HOME = None
             captured = io.StringIO()
             with patch(
-                "ticket_execution.status.get_repo_context_status",
+                'ysupport.execution.status.get_repo_context_status',
                 return_value={"state": "disabled", "fresh": False},
             ):
                 with redirect_stdout(captured):
@@ -207,7 +207,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
             config.YEARN_TICKET_CATEGORY_ID = None
             captured = io.StringIO()
             with patch(
-                "ticket_execution.status.get_repo_context_status",
+                'ysupport.execution.status.get_repo_context_status',
                 return_value={"state": "disabled", "fresh": False},
             ):
                 with redirect_stdout(captured):
@@ -242,7 +242,7 @@ class TicketExecutionStatusTests(unittest.TestCase):
                 config.TICKET_EXECUTION_SUBPROCESS_COMMAND = ["./worker.sh", "--json"]
                 config.TICKET_EXECUTION_SUBPROCESS_CWD = temp_dir
                 with patch(
-                    "ticket_execution.status.get_repo_context_status",
+                    'ysupport.execution.status.get_repo_context_status',
                     return_value={"state": "ready", "fresh": True},
                 ):
                     status = build_ticket_execution_status()

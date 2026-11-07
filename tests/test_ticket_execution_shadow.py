@@ -6,10 +6,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from ticket_investigation.json_endpoint import (
+from ysupport.execution.json_endpoint import (
     ShadowTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.transport import (
+from ysupport.execution.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )

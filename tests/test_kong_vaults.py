@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-import kong_vaults
-import yearn_targets
+from ysupport.tools import kong_vaults
+from ysupport.tools import yearn_targets
 
 
 class _Response:

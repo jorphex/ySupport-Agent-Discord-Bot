@@ -1,18 +1,18 @@
 import unittest
 
 
-import config
-from state import BotRunContext, TicketInvestigationJob
-from ticket_investigation.codex_support_endpoint import (
+from ysupport import config
+from ysupport.bot.state import BotRunContext, TicketInvestigationJob
+from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.json_endpoint import (
+from ysupport.execution.json_endpoint import (
     FailoverTicketExecutionJsonEndpoint,
     build_ticket_execution_json_endpoint,
 )
-from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
-from ticket_investigation.contracts import TicketTurnRequest
-from ticket_investigation.transport import (
+from ysupport.execution.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
+from ysupport.execution.contracts import TicketTurnRequest
+from ysupport.execution.transport import (
     TicketExecutionTransportRequest,
 )
 

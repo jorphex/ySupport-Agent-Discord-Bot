@@ -12,24 +12,24 @@ from dataclasses import dataclass
 from unittest.mock import patch
 
 
-from ticket_execution.subprocess_utils import run_bounded_subprocess
-from ticket_execution.workspace import TicketExecutionWorkspace
-from ticket_investigation.json_endpoint import (
+from ysupport.execution.subprocess_utils import run_bounded_subprocess
+from ysupport.execution.workspace import TicketExecutionWorkspace
+from ysupport.execution.json_endpoint import (
     FailoverTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
-from ticket_investigation.executor import (
+from ysupport.execution.subprocess_endpoint import SubprocessTicketExecutionJsonEndpoint
+from ysupport.execution.executor import (
     TicketExecutionTransport,
     TicketExecutionHooks,
     TicketExecutionNonFallbackError,
     TransportTicketInvestigationExecutor,
 )
-from ticket_investigation.transport import (
+from ysupport.execution.transport import (
     TicketExecutionTransportRequest,
     TicketExecutionTransportResult,
 )
-from ticket_investigation.contracts import TicketAgentFlowOutcome, TicketTurnRequest
-from state import BotRunContext, TicketInvestigationJob
+from ysupport.execution.contracts import TicketAgentFlowOutcome, TicketTurnRequest
+from ysupport.bot.state import BotRunContext, TicketInvestigationJob
 
 
 
@@ -768,9 +768,9 @@ class TicketExecutorTests(unittest.IsolatedAsyncioTestCase):
             workflow_name="tests.endpoint.subprocess_export_failure",
         )
 
-        with self.assertLogs("ticket_investigation.subprocess_endpoint", level="WARNING") as logs:
+        with self.assertLogs('ysupport.execution.subprocess_endpoint', level="WARNING") as logs:
             with patch(
-                "ticket_investigation.subprocess_endpoint.TicketExecutionWorkspace.export_copy",
+                'ysupport.execution.subprocess_endpoint.TicketExecutionWorkspace.export_copy',
                 side_effect=OSError("disk full"),
             ):
                 response_json = await endpoint.execute_json_turn(request.to_json())

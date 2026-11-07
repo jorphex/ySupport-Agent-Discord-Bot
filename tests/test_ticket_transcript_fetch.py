@@ -4,7 +4,7 @@ import io
 import unittest
 from contextlib import redirect_stderr
 
-from ticket_transcript_fetch import (
+from ysupport.integrations.ticket_transcript_fetch import (
     TranscriptMessage,
     main,
     normalize_message,

@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import discord
 
-import config
-import state
-from state import (
+from ysupport import config
+from ysupport.bot import state
+from ysupport.bot.state import (
     TeamHandoffNotice,
     clear_ticket_channel_state,
     conversation_threads,
@@ -22,15 +22,15 @@ from state import (
     ticket_investigation_jobs,
     ticket_owner_user_id_by_channel,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     DISMISS_HANDOFF_CALLBACK_DATA,
     build_dismissed_handoff_notice,
     build_handoff_notice,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
-from views import take_over_ticket_for_staff
+from ysupport.bot.views import take_over_ticket_for_staff
 
 from tests.ticket_flow_test_support import TicketFlowTestCase
 
@@ -128,18 +128,18 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
                 patch(
-                    "telegram_handoff_controller.answer_telegram_callback_query",
+                    'ysupport.bot.telegram_handoff_controller.answer_telegram_callback_query',
                     new=fake_answer_callback,
                 ),
                 patch(
-                    "telegram_handoff_controller.retire_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.retire_handoff_notice',
                     new=fake_retire_notice,
                 ),
-                patch("state.reset_ticket_codex_session") as reset_session,
+                patch('ysupport.bot.state.reset_ticket_codex_session') as reset_session,
                 patch(
-                    "telegram_handoff_controller._run_internal_instruction_turn"
+                    'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn'
                 ) as internal_turn,
-                patch("telegram_handoff_controller.send_long_message") as send_message,
+                patch('ysupport.bot.telegram_handoff_controller.send_long_message') as send_message,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
 
@@ -242,13 +242,13 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
                 patch(
-                    "telegram_handoff_controller.answer_telegram_callback_query",
+                    'ysupport.bot.telegram_handoff_controller.answer_telegram_callback_query',
                     new=fake_answer_callback,
                 ),
                 patch(
-                    "telegram_handoff_controller.retire_handoff_notice"
+                    'ysupport.bot.telegram_handoff_controller.retire_handoff_notice'
                 ) as retire_notice,
-                patch("state.reset_ticket_codex_session") as reset_session,
+                patch('ysupport.bot.state.reset_ticket_codex_session') as reset_session,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(
                     callback_update(
@@ -331,14 +331,14 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
                 patch(
-                    "telegram_handoff_controller.answer_telegram_callback_query",
+                    'ysupport.bot.telegram_handoff_controller.answer_telegram_callback_query',
                     return_value=True,
                 ),
                 patch(
-                    "telegram_handoff_controller.retire_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.retire_handoff_notice',
                     return_value=False,
                 ) as retire_notice,
-                patch("telegram_handoff_controller.logging.warning") as warning,
+                patch('ysupport.bot.telegram_handoff_controller.logging.warning') as warning,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
 
@@ -364,7 +364,7 @@ class TicketFlowTests(TicketFlowTestCase):
             await take_over_ticket_for_staff(channel_id)
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
-                patch("telegram_handoff_controller._run_internal_instruction_turn") as run,
+                patch('ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn') as run,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update({
                     "message": {
@@ -386,11 +386,11 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
                 patch(
-                    "telegram_handoff_controller.answer_telegram_callback_query",
+                    'ysupport.bot.telegram_handoff_controller.answer_telegram_callback_query',
                     return_value=True,
                 ),
                 patch(
-                    "telegram_handoff_controller.retire_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.retire_handoff_notice',
                     return_value=True,
                 ) as retry_retire,
             ):
@@ -435,15 +435,15 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
-                patch("state._write_json", return_value=False),
+                patch('ysupport.bot.state._write_json', return_value=False),
                 patch(
-                    "telegram_handoff_controller.answer_telegram_callback_query",
+                    'ysupport.bot.telegram_handoff_controller.answer_telegram_callback_query',
                     return_value=True,
                 ) as answer_callback,
                 patch(
-                    "telegram_handoff_controller.retire_handoff_notice"
+                    'ysupport.bot.telegram_handoff_controller.retire_handoff_notice'
                 ) as retire_notice,
-                patch("telegram_handoff_controller.logging.error") as log_error,
+                patch('ysupport.bot.telegram_handoff_controller.logging.error') as log_error,
             ):
                 await bot.telegram_handoffs._handle_telegram_handoff_update(update)
 
@@ -484,11 +484,11 @@ class TicketFlowTests(TicketFlowTestCase):
             with (
                 patch.object(config, "TELEGRAM_YSUPPORT_CHAT", "123"),
                 patch(
-                    "telegram_handoff_controller.answer_telegram_callback_query",
+                    'ysupport.bot.telegram_handoff_controller.answer_telegram_callback_query',
                     return_value=True,
                 ) as retry_answer,
                 patch(
-                    "telegram_handoff_controller.retire_handoff_notice",
+                    'ysupport.bot.telegram_handoff_controller.retire_handoff_notice',
                     return_value=True,
                 ) as retry_retire,
             ):

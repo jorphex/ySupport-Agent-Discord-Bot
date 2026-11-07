@@ -5,7 +5,7 @@ import json
 import unittest
 from urllib import error
 
-import discord_api
+from ysupport.integrations import discord_api
 
 
 class _FakeJsonResponse:
@@ -33,7 +33,7 @@ class DiscordApiTests(unittest.TestCase):
                 "DISCORD_BOT_TOKEN",
                 "test-token",
             ),
-            unittest.mock.patch("discord_api.request.urlopen") as mock_urlopen,
+            unittest.mock.patch('ysupport.integrations.discord_api.request.urlopen') as mock_urlopen,
         ):
             with self.assertRaisesRegex(
                 ValueError,
@@ -57,10 +57,10 @@ class DiscordApiTests(unittest.TestCase):
         with (
             unittest.mock.patch.object(discord_api.config, "DISCORD_BOT_TOKEN", "test-token"),
             unittest.mock.patch(
-                "discord_api.request.urlopen",
+                'ysupport.integrations.discord_api.request.urlopen',
                 side_effect=[rate_limited_error, success_response],
             ),
-            unittest.mock.patch("discord_api.time.sleep") as mock_sleep,
+            unittest.mock.patch('ysupport.integrations.discord_api.time.sleep') as mock_sleep,
         ):
             payload = discord_api.discord_get_json("https://discord.com/api/v10/test")
 
@@ -73,10 +73,10 @@ class DiscordApiTests(unittest.TestCase):
         with (
             unittest.mock.patch.object(discord_api.config, "DISCORD_BOT_TOKEN", "test-token"),
             unittest.mock.patch(
-                "discord_api.request.urlopen",
+                'ysupport.integrations.discord_api.request.urlopen',
                 side_effect=[error.URLError("temporary failure"), success_response],
             ),
-            unittest.mock.patch("discord_api.time.sleep") as mock_sleep,
+            unittest.mock.patch('ysupport.integrations.discord_api.time.sleep') as mock_sleep,
         ):
             payload = discord_api.discord_get_json("https://discord.com/api/v10/test")
 
@@ -96,7 +96,7 @@ class DiscordApiTests(unittest.TestCase):
         with (
             unittest.mock.patch.object(discord_api.config, "DISCORD_BOT_TOKEN", "test-token"),
             unittest.mock.patch(
-                "discord_api.request.urlopen",
+                'ysupport.integrations.discord_api.request.urlopen',
                 side_effect=not_found_error,
             ),
         ):

@@ -3,10 +3,10 @@ import tests as _test_environment  # noqa: F401
 import json
 import unittest
 
-from ticket_investigation.json_endpoint import (
+from ysupport.execution.json_endpoint import (
     ConditionalTicketExecutionJsonEndpoint,
 )
-from ticket_investigation.transport import TicketExecutionTransportRequest
+from ysupport.execution.transport import TicketExecutionTransportRequest
 
 
 class _StaticEndpoint:

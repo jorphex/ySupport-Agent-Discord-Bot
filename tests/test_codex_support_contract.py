@@ -3,14 +3,14 @@ import tests as _test_environment  # noqa: F401
 import json
 import unittest
 
-from codex_support_contract import (
+from ysupport.execution.codex_support_contract import (
     SignedTransactionSafetyViolation,
     SupportTurnRequest,
     SupportTurnResult,
     support_result_to_transport_result,
     verify_support_turn_result,
 )
-from ticket_investigation.transport import (
+from ysupport.execution.transport import (
     TicketExecutionTransportRequest,
 )
 

@@ -8,20 +8,20 @@ from unittest.mock import patch
 
 import discord
 
-import config
-from state import (
+from ysupport import config
+from ysupport.bot.state import (
     TicketInvestigationJob,
     clear_public_conversation,
     public_conversations,
     PublicConversation,
 )
-from handoff import (
+from ysupport.integrations.handoff import (
     TelegramSentMessage,
 )
-from ticket_investigation.contracts import (
+from ysupport.execution.contracts import (
     TicketAgentFlowOutcome,
 )
-from ysupport import (
+from ysupport.bot.client import (
     TicketBot,
 )
 from tests.ticket_flow_test_support import (
@@ -63,7 +63,7 @@ class TicketFlowTests(TicketFlowTestCase):
         bot = TicketBot(intents=discord.Intents.none())
         bot.investigation_executor = _FailingExecutor()
 
-        with patch("ysupport._outer_support_boundary_result", new=fake_boundary):
+        with patch('ysupport.bot.client._outer_support_boundary_result', new=fake_boundary):
             handled = await bot._handle_public_trigger_message(trigger_message, "y")
 
         self.assertTrue(handled)
@@ -92,7 +92,7 @@ class TicketFlowTests(TicketFlowTestCase):
 
         try:
             with patch(
-                "ysupport._outer_support_boundary_result",
+                'ysupport.bot.client._outer_support_boundary_result',
                 side_effect=RuntimeError("classifier unavailable"),
             ):
                 handled = await bot._handle_public_trigger_message(trigger_message, "y")
@@ -126,10 +126,10 @@ class TicketFlowTests(TicketFlowTestCase):
 
         with (
             patch(
-                "ysupport._outer_support_boundary_result",
+                'ysupport.bot.client._outer_support_boundary_result',
                 return_value={"tripwire_triggered": False},
             ),
-            patch("ysupport._notify_handoff") as mock_notify,
+            patch('ysupport.bot.client._notify_handoff') as mock_notify,
         ):
             handled = await bot._handle_public_trigger_message(trigger_message, "y")
 
@@ -191,11 +191,11 @@ class TicketFlowTests(TicketFlowTestCase):
 
             with (
                 patch(
-                    "ysupport._outer_support_boundary_result",
+                    'ysupport.bot.client._outer_support_boundary_result',
                     return_value={"tripwire_triggered": False},
                 ),
                 patch(
-                    "discord_support_runtime.send_handoff_notice",
+                    'ysupport.bot.discord_support_runtime.send_handoff_notice',
                     new=fake_send_handoff_notice,
                 ),
             ):
@@ -324,10 +324,10 @@ class TicketFlowTests(TicketFlowTestCase):
         try:
             with (
                 patch(
-                    "ysupport.send_long_message",
+                    'ysupport.bot.client.send_long_message',
                     side_effect=RuntimeError("Discord send failed"),
                 ),
-                patch("ysupport.reset_public_codex_session") as reset_session,
+                patch('ysupport.bot.client.reset_public_codex_session') as reset_session,
             ):
                 await bot._handle_public_trigger_message(trigger_message, "y")
 

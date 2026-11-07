@@ -17,9 +17,27 @@ Explicit stop also cancels that handoff's queued or active investigation and
 releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
 Notice edits and deletion are ordered per message, including canceled HTTP calls.
 
+## Layout
+
+- `ysupport/bot/`: Discord routing, ticket state and handoff control.
+- `ysupport/execution/`: native execution, steering, private RPC and replay CLIs.
+- `ysupport/integrations/`: Discord/Telegram clients, transcript fetch and MCP server.
+- `ysupport/tools/`: data and internal on-chain helpers; vault reference data.
+- `ysupport/retrieval/`: docs/repository queries, index builder and source manifest.
+- `ysupport/ingestion/`: docs fetch, processing, embedding and index-refresh commands.
+- `scripts/`, `systemd/`, `requirements/`: launch/refresh scripts, host service and
+  MCP dependency locks. Root `requirements.txt` installs the host bot dependencies.
+- `tests/`, `assets/`: verification runners and Discord screenshots.
+- `.cache/`: generated docs/checkouts, ingestion status, repository index and local
+  verification artifacts. Runtime state and auth retain their configured roots.
+
+Run Python entry points from the repo root with `python -m`, for example
+`.venv/bin/python -m ysupport.execution.status --help`. The host runner and docs
+refresh script set the working directory themselves.
+
 ## Documentation ingestion
 
-- `yearn_rag/update_docs.sh` runs daily. It requires the repo `.venv` and permits
+- `scripts/update_docs.sh` runs daily. It requires the repo `.venv` and permits
   one refresh at a time. Docs and repository stages run independently; either
   failure makes the job fail. Neither stage publishes an incomplete corpus.
 - The generated docs checkout is shallow and sparse. Refresh preserves unchanged
@@ -44,12 +62,12 @@ Notice edits and deletion are ordered per message, including canceled HTTP calls
   source filenames and identifiers retain code retrieval priority.
 - Set `DOCS_INGESTION_FORCE_REFRESH=1` for a full repair. Per-stage status and last
   success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron overwrites
-  `yearn_rag/update_docs.log` each run to bound log growth.
+  `.cache/docs_ingestion/update_docs.log` each run to bound log growth.
 
 ## Runtime and tools
 
-- Production and defaults use `codex_support_exec`. `support_boundary.py` owns the
-  outer classifier and prompt; native evaluations use the same classifier.
+- Production and defaults use `codex_support_exec`. The outer classifier and prompt
+  live in `ysupport/bot/support_boundary.py`; native evaluations use the same classifier.
 - `TICKET_EXECUTION_MAX_CONCURRENT_TURNS` permits two investigations at once by
   default (range 1–8); production sets it to 8. Turns within a conversation remain
   serial. Session/cache maintenance starts only when idle and yields after its current deletion if
@@ -71,14 +89,14 @@ Notice edits and deletion are ordered per message, including canceled HTTP calls
   with staff attachments labeled separately.
 - The local specialist engine and JSON worker are retired; `local` fails explicitly.
   An external JSON backend requires `subprocess` and an explicit
-  `TICKET_EXECUTION_SUBPROCESS_COMMAND`. `ticket_execution.replay_cli` supports
+  `TICKET_EXECUTION_SUBPROCESS_COMMAND`. `ysupport.execution.replay_cli` supports
   native and explicit external backends; replay sessions are isolated by default.
 - RPC investigation runs inside the bot through a private per-turn command.
   Transaction, contract, position and withdrawal helpers support bounded reads,
   plus allowed balance, nonce, fee, block and storage queries. Operations, provider
   calls, log ranges and time are limited. MCP has no RPC tools or credentials.
-- `ticket_transcript_fetch.py` provides manual, read-only review; live turns do not
-  import it. Docs namespace discovery is cached for five minutes; this cache does
+- `ysupport/integrations/ticket_transcript_fetch.py` provides manual, read-only review;
+  live turns do not import it. Docs namespace discovery is cached for five minutes; this cache does
   not store answers or wallet observations.
 - Idle session cleanup also removes expired generated plugin catalogs and staging
   snapshots. It uses the configured session age and preserves auth, installed
@@ -107,6 +125,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 
 | Module | Coverage | JSON evidence under `.cache/verification/` |
 | --- | --- | --- |
+| `tests.layout_e2e` | Package imports, resource paths, CLI entry points and host launch script | `layout-e2e.json` |
 | `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
 | `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
 | `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
@@ -160,9 +179,10 @@ Neither uses live RPC quota.
 
 ## Deployment
 
-Production runs `ysupport.py` on the host under an unprivileged `ysupport` systemd
-user. `mcp_server.py` runs in Docker. Use a dedicated bot `CODEX_HOME` and
-service-owned auth; do not expose an operator's home directory.
+Production runs `python -m ysupport.bot.client` on the host under an unprivileged
+`ysupport` systemd user. `python -m ysupport.integrations.mcp_server` runs in Docker.
+Use a dedicated bot `CODEX_HOME` and service-owned auth; do not expose an operator's
+home directory.
 
 MCP listens on `127.0.0.1:8001` and requires the configured bearer token before
 executing tools. Its dedicated image pins the base image and full Python dependency
