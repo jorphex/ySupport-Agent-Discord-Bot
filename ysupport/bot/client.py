@@ -348,6 +348,9 @@ class TicketBot(discord.Client):
                             channel_id=message.channel.id,
                             guild_id=getattr(getattr(message.channel, "guild", None), "id", None),
                             source="public",
+                            channel_name=getattr(message.channel, "name", None),
+                            message_id=message.reference.message_id,
+                            support_reply=raw_reply,
                         )
                         if notice is not None:
                             final_reply = build_user_handoff_reply(
@@ -1088,6 +1091,8 @@ class TicketBot(discord.Client):
                                 channel_id=channel_id,
                                 guild_id=guild_id,
                                 investigation_job=proposed_job,
+                                channel_name=getattr(channel, "name", None),
+                                support_reply=raw_final_reply,
                             )
                             handoff_sent = notice is not None
                             if handoff_sent:

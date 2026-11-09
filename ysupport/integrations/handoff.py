@@ -107,24 +107,31 @@ def build_handoff_notice(
     channel_id: int,
     guild_id: int | None,
     ticket_label: str | None = None,
+    channel_name: str | None = None,
+    message_id: int | None = None,
     reply_enabled: bool = True,
 ) -> str:
-    label = ticket_label or _default_ticket_label(channel_id)
+    label = ticket_label or (f"#{channel_name}" if channel_name else f"Channel {channel_id}")
+    if not reply_enabled:
+        label = f"Public support · {label}"
+    channel_url = f"https://discord.com/channels/{guild_id}/{channel_id}"
+    if message_id is not None:
+        channel_url += f"/{message_id}"
     link_line = (
-        f'<a href="https://discord.com/channels/{guild_id}/{channel_id}">{html.escape(label)}</a>'
+        f'<a href="{channel_url}">{html.escape(label)}</a>'
         if guild_id is not None
         else f"<b>{html.escape(label)}</b>"
     )
     lines = [link_line]
     if guild_id is not None:
         lines.append("")
-    lines.append(f"<b>Reason</b>: {html.escape(_summarize_text(reason))}")
-    lines.append(f"<b>Summary</b>: {html.escape(_summarize_text(summary))}")
+    lines.append(f"<b>Issue</b>: {html.escape(_summarize_text(summary))}")
+    lines.append(f"<b>Action</b>: {html.escape(_summarize_text(reason))}")
     lines.append("")
     if reply_enabled:
         lines.append(_REPLY_ENABLED_FOOTER)
     else:
-        lines.append("Alert only. Follow up in the linked Discord channel.")
+        lines.append("Alert only. Respond in Discord. Telegram replies to this alert are ignored.")
     return "\n".join(lines)
 
 
@@ -202,6 +209,7 @@ async def summarize_handoff_summary(
     *,
     reason: str,
     summary: str,
+    support_reply: str | None = None,
     recent_user_messages: list[str] | None = None,
     known_facts: list[str] | None = None,
 ) -> str | None:
@@ -211,6 +219,7 @@ async def summarize_handoff_summary(
         return None
 
     cleaned_summary = _summarize_text(summary, limit=600)
+    cleaned_support_reply = _summarize_text(strip_handoff_placeholder(support_reply), limit=2400)
     cleaned_messages = [
         _summarize_text(message, limit=500)
         for message in (recent_user_messages or [])
@@ -221,12 +230,13 @@ async def summarize_handoff_summary(
         for fact in (known_facts or [])
         if (fact or "").strip()
     ]
-    if not cleaned_messages and not cleaned_summary:
+    if not cleaned_messages and not cleaned_summary and not cleaned_support_reply:
         return None
 
     payload = {
         "reason": reason,
         "latest_text": cleaned_summary,
+        "support_reply": cleaned_support_reply,
         "recent_user_messages": cleaned_messages[-8:],
         "known_facts": cleaned_facts[:6],
     }
@@ -234,6 +244,9 @@ async def summarize_handoff_summary(
         "Return a JSON object with a single key named summary. "
         "Write one short internal-team summary sentence for a Telegram handoff notice. "
         "Use the recent user context to describe the real issue and what the user currently needs. "
+        "Include the key findings from support_reply, rather than repeating only the user's question. "
+        "Preserve uncertainty; user claims are not verified findings unless confirmed in support_reply. "
+        "The reason states the remaining team action; do not invent a diagnosis or imply that action already happened. "
         "If the latest text is only a short confirmation or escalation request, rely on earlier user context instead of summarizing only that confirmation. "
         "Include the most relevant concrete facts when useful, but stay concise and factual.\n\n"
         f"Context JSON:\n{json.dumps(payload, ensure_ascii=True)}"
@@ -464,11 +477,6 @@ def _get_handoff_summary_async_client() -> AsyncOpenAI:
     if _handoff_summary_async_client is None:
         _handoff_summary_async_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
     return _handoff_summary_async_client
-
-
-def _default_ticket_label(channel_id: int) -> str:
-    suffix = str(channel_id)[-4:]
-    return f"Ticket-{suffix}"
 
 
 def is_substantive_team_reply(text: str | None) -> bool:

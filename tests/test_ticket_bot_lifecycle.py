@@ -588,7 +588,7 @@ class TicketFlowTests(TicketFlowTestCase):
 
         self.assertEqual(len(notices), 1)
         self.assertIn(
-            "<b>Summary</b>: Withdraw button spins forever on the vault page and the user needs a manual team review.",
+            "<b>Issue</b>: Withdraw button spins forever on the vault page and the user needs a manual team review.",
             notices[0],
         )
 
@@ -632,4 +632,4 @@ class TicketFlowTests(TicketFlowTestCase):
             )
 
         self.assertEqual(len(notices), 1)
-        self.assertIn("<b>Summary</b>: yes please tell them", notices[0])
+        self.assertIn("<b>Issue</b>: yes please tell them", notices[0])

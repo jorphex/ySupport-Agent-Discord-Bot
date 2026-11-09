@@ -401,21 +401,27 @@ async def _notify_handoff(
     channel_id: int,
     guild_id: int | None,
     source: Literal["ticket", "public"],
+    channel_name: str | None = None,
+    message_id: int | None = None,
+    support_reply: str | None = None,
     recent_user_messages: list[str] | None = None,
     known_facts: list[str] | None = None,
 ) -> TelegramSentMessage | None:
     summarized_text = await summarize_handoff_summary(
         reason=reason,
         summary=summary,
+        support_reply=support_reply,
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
     )
     sent = await send_handoff_notice(
         build_handoff_notice(
             reason=reason,
-            summary=summarized_text or summary,
+            summary=summarized_text or strip_handoff_placeholder(support_reply) or summary,
             channel_id=channel_id,
             guild_id=guild_id,
+            channel_name=channel_name,
+            message_id=message_id,
             reply_enabled=source == "ticket",
         ),
         dismiss_enabled=source == "ticket",
@@ -456,6 +462,8 @@ async def _send_ticket_handoff_notice(
     channel_id: int,
     guild_id: int | None,
     investigation_job: TicketInvestigationJob,
+    channel_name: str | None = None,
+    support_reply: str | None = None,
 ) -> TelegramSentMessage | None:
     recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
     known_facts = _handoff_known_facts(investigation_job)
@@ -465,6 +473,8 @@ async def _send_ticket_handoff_notice(
         channel_id=channel_id,
         guild_id=guild_id,
         source="ticket",
+        channel_name=channel_name,
+        support_reply=support_reply,
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
     )

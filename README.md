@@ -17,6 +17,10 @@ Explicit stop also cancels that handoff's queued or active investigation and
 releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
 Notice edits and deletion are ordered per message, including canceled HTTP calls.
 
+Telegram notices use Discord channel names without server names. Public alerts
+link to the original user message and explicitly ignore Telegram replies. Issue
+summaries use the completed support answer; the action names the remaining team need.
+
 ## Layout
 
 - `ysupport/bot/`: Discord routing, ticket state and handoff control.
@@ -151,7 +155,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 | `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
 | `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
 | `tests.steering_e2e` | Native stdio processes: owner text/images, intake, handoff context, completion/ACK races, recovery and cancellation | `steering-e2e.json` |
-| `tests.telegram_http_e2e` | Real local HTTP: in-flight edits, terminal notice ordering, repeated/queued cancellation, errors and independent polling | `telegram-http-e2e.json` |
+| `tests.telegram_http_e2e` | Real local HTTP: source labels/links, findings in summaries, fallbacks, reply/dismissal behavior, notice ordering, cancellation and polling | `telegram-http-e2e.json` |
 | `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
 | `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
 

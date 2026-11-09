@@ -1,33 +1,40 @@
-# Repository cleanup and release
+# Clear Telegram handoff notices
 
-Goal: commit the reviewed evidence/safety changes, remove superseded material
-and duplicated tests, then push and verify the deployed source.
+Goal: identify the Discord source accurately and give contributors a concise,
+grounded issue and action. Show channel names without server names.
 
 Acceptance and constraints:
-- Preserve active tools, dynamic private RPC helpers, old-vault support, external
-  JSON backends, credentials, state, sessions and unrelated services.
-- Delete tests only with an explicit E2E replacement or an implementation-only
-  assertion that adds no behavior coverage. Retain unique failure/edge cases.
-- Preserve verifiable evaluation evidence. Remove only superseded local plans,
-  stale notes, orphaned bytecode and this task's temporary resources.
-- No new unit tests or dependencies. Run relevant E2Es, remaining tests, Ruff and
-  path/import checks. Keep test-to-E2E mapping in the verification artifact.
-- Split dependency-complete commits, push without force, deploy while idle and
-  verify Discord/Telegram/MCP, source hashes and unchanged auth/ticket state.
+- Public headers identify the channel and link to the original user message,
+  never the deleted trigger. Ticket headers use the actual channel name.
+- Escape channel names and notice content for Telegram HTML. Missing metadata
+  must fall back honestly, without fabricated ticket numbers or invalid links.
+- Summaries receive the completed support answer, preserve uncertainty and
+  distinguish user claims from findings. Summary failure must not block alerts.
+- Public notices explicitly say Telegram replies are ignored. Preserve public
+  state cleanup and ticket reply, takeover, stop and dismissal behavior.
+- Tighten public-answer guidance without dropping decisive evidence or limits.
+- No new dependencies, retention system, live chat messages or state changes.
 
-- [x] Audit callers, current coverage, stale references and release state.
-- [x] Verify E2E replacements, remove duplicate tests and superseded material.
-  Eight tests map to actual MCP/RPC/controller E2Es. HTTP auth now explicitly
-  rejects a wrong bearer token; vault fixtures include null/external origin.
-  Unique YIP, precision, state, failure and old-vault tests remain.
-- [x] Run checks and review the final diff; address concrete findings.
-  106 E2E scenarios and 278 remaining tests pass. Ruff, diff and resource/path
-  checks pass. Removed the now-empty warning wrapper found during review.
+Failure modes to verify before implementation: wrong source/message link;
+invented ticket label; server-name exposure; malformed HTML; omitted findings;
+unsupported summary claims; failed summarizer suppressing notification; public
+replies accidentally delivered; ticket reply/dismissal regressions.
 
-Release procedure: commit in dependency-complete groups, push, deploy while idle,
-verify health/state, and remove the temporary checkout. Commit IDs and release
-outcomes are recorded in `.cache/verification/cleanup-release-report.json`.
+- [x] Inspect source metadata, summary inputs, callers and existing E2E coverage.
+- [x] Extend local HTTP E2E coverage for source labels, links, summary inputs,
+  fallback and public/ticket reply behavior; confirm the regression fails.
+  All four new scenarios fail on missing support findings before runtime changes;
+  all five existing cancellation/ordering scenarios pass.
+- [x] Make the smallest presentation/context changes and update public guidance.
+- [x] Run relevant E2Es, existing tests, Ruff and diff checks; review and resolve
+  concrete findings. Save repeatable evidence under `.cache/verification/`.
+  Nine local HTTP scenarios, six optimization E2Es and 278 existing tests pass.
+  Reviewed metadata propagation, HTML escaping, summary limits/fallbacks and
+  compatibility with saved notices. No remaining concrete findings.
 
-Verification artifacts: `.cache/verification/cleanup-release-*.json`.
-Reviewed feature evidence remains in `evidence-fixes-report.json` and
-`review-fixes-report.json` in that directory.
+Release: commit the verified changes, restart ySupport while idle, and verify
+Discord/Telegram readiness, service imports and preserved auth/ticket state.
+Record the commit and deployment outcome in
+`.cache/verification/handoff-presentation-deployment.json`.
+
+Verification evidence: `.cache/verification/handoff-presentation-report.json`.
