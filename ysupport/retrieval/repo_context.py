@@ -245,6 +245,12 @@ def _rerank_repo_rows(rows: list[sqlite3.Row], query: str, *, limit: int) -> lis
     contract_hints = hints["contract_hints"]
     file_hints = hints["file_hints"]
     code_oriented = bool(hints["code_oriented"])
+    ui_terms = {"ui", "frontend", "screen", "dashboard", "display", "button"}
+    ui_topics = set(tokens) - ui_terms
+    ui_oriented = bool(ui_topics and ui_terms.intersection(tokens)) and not file_hints and not re.search(
+        r"\b(contracts?|functions?|interfaces?|abis?|bytecode|protocols?|on[- ]?chain)\b|\b[a-z_]\w*\(",
+        query_lower,
+    )
     explicit_source = bool(file_hints or identifier_hints or re.search(
         r"\b[\w-]+\.(?:py|[cm]?tsx?|[cm]?jsx?|graphql|gql|ya?ml|toml|txt|rst)\b", query_lower,
     ))
@@ -302,6 +308,10 @@ def _rerank_repo_rows(rows: list[sqlite3.Row], query: str, *, limit: int) -> lis
             boost -= 8.0
         if code_oriented and segment_type == "section":
             boost -= 3.0
+        if ui_oriented and row["authority_tag"] == "frontend_code":
+            evidence_tokens = _query_tokens(" ".join((row["repo_name"], row["product_tag"], path, title, snippet)))
+            if ui_topics.issubset(evidence_tokens):
+                boost += 24.0
         if (
             not explicit_source and segment_type in {"file", "chunk"}
             and row["authority_tag"] == "support_data" and row["product_tag"] in {"metrics", "indexing"}

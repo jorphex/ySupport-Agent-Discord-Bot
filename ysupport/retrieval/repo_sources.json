@@ -13,6 +13,7 @@
         "SECURITY.md",
         "SPECIFICATION.md",
         "TECH_SPEC.md",
+        "deployment.json",
         "contracts/*.sol",
         "contracts/**/*.sol",
         "contracts/*.vy",
@@ -40,6 +41,24 @@
         "**/artifacts/**",
         "**/cache/**"
       ]
+    },
+    {
+      "repo": "governance-apps",
+      "ref": null,
+      "product_tag": "styfi",
+      "authority_tag": "frontend_code",
+      "legacy": false,
+      "include": [
+        "docs/apps/styfi/vote-boost-apr.md",
+        "app/styfi/messages.ts",
+        "app/veyfi/messages.ts",
+        "lib/clients/styfi/apr.ts",
+        "lib/clients/styfi/deployment.ts",
+        "lib/deployment.json",
+        "lib/runtime/features.ts",
+        "docs/shared/runtime-modes.md"
+      ],
+      "exclude": []
     },
     {
       "repo": "yearn-vaults-v3",

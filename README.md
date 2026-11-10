@@ -83,6 +83,14 @@ refresh script set the working directory themselves.
   relationships and event-coverage context as `support_data`. Relevant sections
   remain eligible across product filters. Dated examples do not establish live
   balances or yields; generated data and unrelated operations files are excluded.
+- Eight selected `governance-apps` files provide `frontend_code` context for
+  stYFI/stYFIx displays, APR/Vote Boost, veYFI claims and feature gates. Plans,
+  mocks and test evidence are excluded. Contracts remain the protocol reference;
+  UI code/default flags do not prove live deployment. The stYFI source includes
+  its root `deployment.json` for recorded deployment references. UI questions
+  favor frontend excerpts matching the query's topic tokens exactly, keeping
+  yvUSD distinct from yvUSDC. Explicit protocol or function requests retain normal
+  code ranking, including requests without a filename.
 - Python, TypeScript, GraphQL, YAML and other text sources use overlapping chunks
   of at most 1,600 characters with a 200-character overlap. Later chunk titles
   identify line and character ranges; fetch returns the exact bounded chunk.

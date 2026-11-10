@@ -239,6 +239,7 @@ def verify_docs_checkout(root):
 
 def verify_repo_refresh(root):
     root.mkdir(parents=True)
+    configured_sources = {entry["repo"]: entry for entry in json.loads(config.REPO_CONTEXT_MANIFEST_PATH.read_text())["repos"]}
     revisions = {"one": "1" * 40, "two": "2" * 40}
     archives = []
     fail = set()
@@ -491,6 +492,66 @@ def verify_repo_refresh(root):
             with sqlite3.connect(db) as conn:
                 assert chunks == conn.execute("SELECT id,path,segment_type,title,snippet FROM segments WHERE repo_name='yearn/indexing' AND path != 'README.md' ORDER BY id").fetchall()
             assert all(repo_context.fetch_repo_artifacts([ref], db_path=db) for ref in text_refs.values())
+            assert "governance-apps" in configured_sources, "Governance frontend context is not configured"
+            governance_files = {
+                "docs/apps/styfi/vote-boost-apr.md": "# Vote Boost APR\nstYFI Current APR separates base rewards and Vote Boost from the completed reward epoch.\n",
+                "app/styfi/messages.ts": 'export const messages = { unstaking: "stYFI cooldown", withdrawable: "Fully unlocked and ready to withdraw", action: "Unstake using the stYFI contract function" };\n',
+                "app/veyfi/messages.ts": 'export const messages = { rewards: "veYFI rewards are claimable on the stYFI dashboard", claim: "Claim here", redeem: "LLYFI redemption has exit fees", token: "yvUSDC" };\n',
+                "lib/clients/styfi/apr.ts": "export const calculateApr = (rewardRate: number, balance: number) => rewardRate / balance;\n",
+                "lib/clients/styfi/deployment.ts": 'export const delegatedRewardClaimer = "0x2222222222222222222222222222222222222222";\n',
+                "lib/deployment.json": json.dumps({"STYFI": "0x1111111111111111111111111111111111111111"}),
+                "lib/runtime/features.ts": 'export const isDaoEnabled = (mode: string, NEXT_PUBLIC_ENABLE_DAO: boolean) => mode !== "production" || NEXT_PUBLIC_ENABLE_DAO;\n',
+                "docs/shared/runtime-modes.md": "# Runtime feature gates\nProduction app routes require approval; source presence does not prove live deployment.\n",
+            }
+            revisions.update({"governance-apps": "8" * 40, "stYFI": "9" * 40, "yearn-metrics": "a" * 40})
+            extra_files["governance-apps"] = {**governance_files,
+                "lib/clients/styfi/mock.ts": "stYFI mock-only balances\n",
+                "docs/apps/dao/delivery/evidence/run.md": "Mock DAO test evidence\n",
+                "docs/apps/styfi/user-stories.md": "Planned staking behavior\n"}
+            extra_files["stYFI"] = {
+                "deployment.json": json.dumps({"STYFI": "0x1111111111111111111111111111111111111111"}),
+                "contracts/StakedYFI.vy": "@external\ndef unstake(amount: uint256):\n    pass\n"
+                    + "".join(f"@external\ndef configure_{i}(_styfi: address):\n    pass\n" for i in range(8)),
+            }
+            extra_files["yearn-metrics"] = {
+                "docs/yvusd-effective-fees.md": "# yvUSD effective fees\nThe yvUSD dashboard fee display uses product accounting and underlying vault fees.\n",
+            }
+            payload["repos"].extend({**configured_sources[name], "ref": "main"} for name in ("stYFI", "governance-apps", "yearn-metrics"))
+            manifest.write_text(json.dumps(payload))
+            build()
+            with sqlite3.connect(db) as conn:
+                assert {r[0] for r in conn.execute("SELECT path FROM files WHERE repo_name='yearn/governance-apps'")} == set(governance_files)
+                assert conn.execute("SELECT COUNT(*) FROM files WHERE repo_name='yearn/stYFI' AND path='deployment.json'").fetchone()[0] == 1
+            governance_refs = {}
+            for query, name, expected_path in (
+                ("stYFI Current APR Vote Boost", "governance-apps", "docs/apps/styfi/vote-boost-apr.md"),
+                ("stYFI dashboard fully unlocked withdrawable", "governance-apps", "app/styfi/messages.ts"),
+                ("veYFI rewards claim stYFI dashboard", "governance-apps", "app/veyfi/messages.ts"),
+                ("stYFI dashboard features.ts NEXT_PUBLIC_ENABLE_DAO", "governance-apps", "lib/runtime/features.ts"),
+                ("StakedYFI.vy unstake", "stYFI", "contracts/StakedYFI.vy"),
+                ("StakedYFI.vy unstake dashboard", "stYFI", "contracts/StakedYFI.vy"),
+            ):
+                rows = repo_context.search_repo_context(query, db_path=db)
+                selected = next((r for r in rows if r.repo_name == f"yearn/{name}" and r.path == expected_path), None)
+                assert selected is not None, (query, [(r.repo_name, r.path) for r in rows])
+                fetched = repo_context.fetch_repo_artifacts([selected.artifact_ref], db_path=db)
+                assert fetched and fetched[0]["file_excerpt"]
+                assert selected.authority_tag == ("frontend_code" if name == "governance-apps" else "contract_code")
+                if name == "stYFI":
+                    assert rows[0].repo_name == "yearn/stYFI" and rows[0].path == expected_path
+                governance_refs[query] = selected.artifact_ref
+            ranking_controls = {}
+            for query, expected_repo in (
+                ("yvUSD dashboard fees", "yearn/yearn-metrics"),
+                ("yvUSD dashboard fee", "yearn/yearn-metrics"),
+                ("styfi dashboard contract unstake", "yearn/stYFI"),
+                ("styfi dashboard function unstake", "yearn/stYFI"),
+                ("styfi dashboard unstake()", "yearn/stYFI"),
+            ):
+                rows = repo_context.search_repo_context(query, db_path=db)
+                assert rows and rows[0].repo_name == expected_repo, (query, [(r.repo_name, r.path) for r in rows])
+                assert repo_context.fetch_repo_artifacts([rows[0].artifact_ref], db_path=db)
+                ranking_controls[query] = rows[0].artifact_ref
     finally:
         server.shutdown()
         server.server_close()
@@ -511,6 +572,9 @@ def verify_repo_refresh(root):
         "chunk_boundaries_overlap_and_budgets": True,
         "unchanged_rebuild_preserves_refs": True,
         "explanatory_docs_and_explicit_source_queries": True,
+        "curated_governance_search_fetch": governance_refs,
+        "styfi_root_deployment_indexed": True,
+        "frontend_product_and_protocol_ranking_controls": ranking_controls,
     }
 
 

@@ -208,6 +208,9 @@ async def search_repo_context(
     Includes selected yearn-metrics and yearn-envio docs and source as support_data.
     Use it for methodology, product relationships and event-coverage limits;
     dated examples and repository code do not establish current protocol state.
+    Selected governance-apps files are frontend_code for stYFI/stYFIx displays,
+    APR, veYFI claim routing and feature gates. Use contracts for protocol rules;
+    UI source and default flags do not prove a feature is deployed or enabled.
     Long text sources use overlapping chunks with line/character locations. Fetch
     the returned references for exact bounded excerpts before drawing conclusions.
 
