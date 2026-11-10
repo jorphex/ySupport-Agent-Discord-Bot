@@ -227,6 +227,7 @@ class TicketBot(discord.Client):
         public_lock: asyncio.Lock | None = None
         public_lock_acquired = False
         preserve_public_state_on_error = False
+        public_source = None
         logging.info(
             "Stateful public trigger '%s' detected by %s in channel %s",
             trigger_char_used,
@@ -254,6 +255,14 @@ class TicketBot(discord.Client):
             )
             await public_lock.acquire()
             public_lock_acquired = True
+            if not self.telegram_handoffs.public.prepare_trigger(message.reference.message_id):
+                await original_message.reply(
+                    "This concern already has a pending team handoff.",
+                    mention_author=False, suppress_embeds=True,
+                )
+                return True
+            public_source = self.telegram_handoffs.public.watch_source(
+                message.reference.message_id, message.channel.id)
             current_history: List[TResponseInputItem] = []
             public_investigation_job = None
             hydrate_public_conversation(original_author_id)
@@ -338,10 +347,13 @@ class TicketBot(discord.Client):
                         else "I could not determine a response."
                     )
                     if flow_outcome.requires_human_handoff:
+                        if public_source.deleted:
+                            return True
                         handoff_reason = (
                             flow_outcome.handoff_reason
                             or "manual follow-up needed"
                         )
+                        public_source.notifying = True
                         notice = await _notify_handoff(
                             reason=handoff_reason,
                             summary=original_message_text,
@@ -351,8 +363,23 @@ class TicketBot(discord.Client):
                             channel_name=getattr(message.channel, "name", None),
                             message_id=message.reference.message_id,
                             support_reply=raw_reply,
+                            reply_enabled=True,
+                            prepare_reply=True,
                         )
+                        if notice is not None and not await self.telegram_handoffs.public.register(
+                            message_id=message.reference.message_id,
+                            channel=message.channel, user_id=original_author_id,
+                            project_context=public_run_context.project_context, notice=notice,
+                            history=new_history or [{"role": "user", "content": original_message_text},
+                                {"role": "assistant", "content": raw_reply}],
+                        ):
+                            notice = None
+                        public_source.notifying = False
+                        if public_source.deleted:
+                            return True
                         if notice is not None:
+                            # The pending snapshot now owns the context, even if the announcement fails.
+                            clear_public_conversation(original_author_id)
                             final_reply = build_user_handoff_reply(
                                 raw_reply,
                                 location="here",
@@ -368,7 +395,9 @@ class TicketBot(discord.Client):
                         handoff_sent = False
                         final_reply = _render_support_reply(raw_reply)
                     await progress_reporter.close()
-                    await send_long_message(message.channel, final_reply)
+                    await send_long_message(message.channel, final_reply,
+                        reference=discord.MessageReference(message_id=message.reference.message_id,
+                            channel_id=message.channel.id, fail_if_not_exists=True))
                     if handoff_sent:
                         clear_public_conversation(original_author_id)
                     else:
@@ -445,6 +474,10 @@ class TicketBot(discord.Client):
                     )
             return True
         finally:
+            if public_source is not None:
+                self.telegram_handoffs.public.forget_source(message.reference.message_id, public_source)
+                if message.reference.message_id in self.telegram_handoffs.public.records:
+                    self.telegram_handoffs._wake_delivery_worker()
             if public_lock is not None and public_lock_acquired:
                 public_lock.release()
 
@@ -1230,7 +1263,18 @@ class TicketBot(discord.Client):
             )
 
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        await self.telegram_handoffs.public.discard_channel(channel.id)
         await clear_deleted_ticket_channel(channel)
+
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        await self.telegram_handoffs.public.discard_message(payload.message_id)
+
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
+        for message_id in payload.message_ids:
+            await self.telegram_handoffs.public.discard_message(message_id)
+
+    async def on_raw_thread_delete(self, payload: discord.RawThreadDeleteEvent):
+        await self.telegram_handoffs.public.discard_channel(payload.thread_id)
 
 
 def _build_discord_intents() -> discord.Intents:

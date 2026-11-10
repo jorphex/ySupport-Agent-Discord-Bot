@@ -1,6 +1,6 @@
 """Real authenticated vault MCP calls against controlled Kong HTTP responses.
 
-Run python -B -m tests.vault_lookup_e2e. Failure modes are recorded in PLAN.md.
+Run python -B -m tests.vault_lookup_e2e.
 No model, live provider, RPC, Discord or Telegram calls are made.
 """
 

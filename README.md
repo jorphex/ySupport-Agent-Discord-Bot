@@ -7,7 +7,7 @@ for product/process answers and tool evidence for stateful issues. Human help is
 requested when the remaining action requires it. This repo includes the live bot,
 ticket execution boundary and manual transcript-review tools.
 
-Staff participation pauses automatic Discord replies. Pending Telegram handoffs
+Staff participation pauses automatic ticket replies. Pending Telegram handoffs
 retain their context. A later substantive Telegram reply sends one Discord update
 and closes the handoff; the bot stays paused. Telegram dismissal or Discord
 **Stop Bot** closes the handoff and prevents further team-reply delivery. Accepted
@@ -17,9 +17,34 @@ Explicit stop also cancels that handoff's queued or active investigation and
 releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
 Notice edits and deletion are ordered per message, including canceled HTTP calls.
 
-Telegram notices use Discord channel names without server names. Public alerts
-link to the original user message and explicitly ignore Telegram replies. Issue
-summaries use the completed support answer; the action names the remaining team need.
+Telegram notices use Discord channel names without server names. Issue summaries
+use the completed support answer; the action names the remaining team need.
+
+New public handoffs link to the original message and accept one substantive
+Telegram reply. A notice starts as **Preparing**; replies are enabled after its
+context is saved and the initial Discord response finishes. Early replies are
+saved after registration and wait for that response; earlier updates are retried
+without acknowledgement. Recovery does not replay the initial response. A pending
+snapshot retains the question, findings and attachments after the active public
+conversation is cleared, including across restarts. Each concern has its own
+record and synthesis session. Delivery checks the latest 50 messages for explicitly
+linked replies, uses current source images and drafts one response to the original
+message. If relevant replies change during synthesis, it refreshes the draft once;
+image changes count, while signed URL changes alone do not. An already addressed
+concern can close without another post.
+
+Public dismissal affects only that concern. Delivery or dismissal clears context;
+source/channel deletion events also clear it. Recovery checks retained sources;
+confirmed deletions clear context, while temporary and permission errors retain it.
+Failed delivery stays pending for manual review and dismissal. Before posting,
+the bot saves a content hash and the last observed message ID. After interruption,
+it checks up to 50 subsequent messages for one exact reply by this bot to the
+original message. Uncertain sends require manual review; they are never resent.
+Each handoff has its own nonce to deduplicate HTTP retries. Completed notice
+cleanup retries independently when a fresh trigger starts, including after
+restart. A confirmed missing notice completes terminal cleanup. Public follow-ups
+still need a trigger. Use Dismiss to retire pending context; deleting only a
+Telegram notice sends no callback. Existing alert-only notices remain alert-only.
 
 ## Layout
 
@@ -156,6 +181,7 @@ Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
 | `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
 | `tests.steering_e2e` | Native stdio processes: owner text/images, intake, handoff context, completion/ACK races, recovery and cancellation | `steering-e2e.json` |
 | `tests.telegram_http_e2e` | Real local HTTP: source labels/links, findings in summaries, fallbacks, reply/dismissal behavior, notice ordering, cancellation and polling | `telegram-http-e2e.json` |
+| `tests.public_handoff_e2e` | Public triggers through native subprocesses and local Telegram HTTP: saved context, isolated concerns/sessions, linked replies/images, restart and ambiguous-send recovery, dismissal/deletion and failure cleanup | `public-handoff-e2e.json` |
 | `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
 | `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
 

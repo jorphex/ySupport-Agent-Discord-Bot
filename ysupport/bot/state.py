@@ -40,6 +40,7 @@ class BotRunContext:
     category_id: Optional[int] = None
     is_public_trigger: bool = False
     conversation_owner_id: Optional[int] = None
+    public_handoff_message_id: Optional[int] = None
     project_context: Literal["yearn", "unknown"] = "unknown"
     initial_button_intent: Optional[str] = None
     repo_search_calls: int = 0

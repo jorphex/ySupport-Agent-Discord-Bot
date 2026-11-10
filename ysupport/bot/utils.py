@@ -49,14 +49,17 @@ def split_long_message(text: str) -> list[str]:
 async def send_long_message(
     target: Union[discord.TextChannel, discord.Message],
     text: str,
-    view: discord.ui.View = None
+    view: discord.ui.View = None,
+    *,
+    reference: discord.MessageReference | None = None,
 ):
     """Send every Discord chunk, raising if delivery is incomplete."""
+    reply_kwargs = {"reference": reference, "mention_author": False} if reference is not None else {}
     if len(text) <= config.MAX_DISCORD_MESSAGE_LENGTH:
         if isinstance(target, discord.Message):
             await target.reply(text, view=view, suppress_embeds=True)
         else:
-            await target.send(text, view=view, suppress_embeds=True)
+            await target.send(text, view=view, suppress_embeds=True, **reply_kwargs)
         return
 
     chunks = split_long_message(text)
@@ -67,9 +70,9 @@ async def send_long_message(
             if isinstance(target, discord.Message):
                 await target.reply(chunk, view=view, suppress_embeds=True)
             else:
-                await target.send(chunk, view=view, suppress_embeds=True)
+                await target.send(chunk, view=view, suppress_embeds=True, **reply_kwargs)
             first_message = False
         else:
             channel = target.channel if isinstance(target, discord.Message) else target
-            await channel.send(chunk, suppress_embeds=True)
+            await channel.send(chunk, suppress_embeds=True, **reply_kwargs)
         await asyncio.sleep(0.3)

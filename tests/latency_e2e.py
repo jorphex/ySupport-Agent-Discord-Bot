@@ -1,6 +1,5 @@
 """Exercise concurrent native processes and ticket bursts without live messages.
 
-Failure modes and acceptance are recorded in PLAN.md before runtime changes.
 Run: python -B -m tests.latency_e2e --artifact .cache/verification/latency-e2e.json
 """
 

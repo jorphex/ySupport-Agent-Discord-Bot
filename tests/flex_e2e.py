@@ -3,7 +3,6 @@
 Run python -B -m tests.flex_e2e --artifact .cache/verification/flex-e2e.json.
 Add --native as the service user with RUN_NATIVE_SUPPORT_E2E=1 and explicit bot
 auth for real-model tool selection and interpretation. Never sends live messages.
-Failure modes are recorded in PLAN.md before implementation.
 """
 
 import argparse

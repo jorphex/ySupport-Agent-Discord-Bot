@@ -15,6 +15,7 @@ from ysupport import config
 from ysupport.integrations.handoff import (
     TelegramSentMessage,
     build_handoff_notice,
+    build_preparing_handoff_notice,
     send_handoff_notice,
     strip_handoff_placeholder,
     summarize_handoff_summary,
@@ -404,9 +405,12 @@ async def _notify_handoff(
     channel_name: str | None = None,
     message_id: int | None = None,
     support_reply: str | None = None,
+    reply_enabled: bool | None = None,
+    prepare_reply: bool = False,
     recent_user_messages: list[str] | None = None,
     known_facts: list[str] | None = None,
 ) -> TelegramSentMessage | None:
+    can_reply = source == "ticket" if reply_enabled is None else reply_enabled
     summarized_text = await summarize_handoff_summary(
         reason=reason,
         summary=summary,
@@ -414,25 +418,27 @@ async def _notify_handoff(
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
     )
-    sent = await send_handoff_notice(
-        build_handoff_notice(
-            reason=reason,
-            summary=summarized_text or strip_handoff_placeholder(support_reply) or summary,
-            channel_id=channel_id,
-            guild_id=guild_id,
-            channel_name=channel_name,
-            message_id=message_id,
-            reply_enabled=source == "ticket",
-        ),
-        dismiss_enabled=source == "ticket",
+    notice_text = build_handoff_notice(
+        reason=reason,
+        summary=summarized_text or strip_handoff_placeholder(support_reply) or summary,
+        channel_id=channel_id,
+        guild_id=guild_id,
+        channel_name=channel_name,
+        message_id=message_id,
+        reply_enabled=can_reply,
+        is_public=source == "public",
     )
+    preparing = prepare_reply and source == "public" and can_reply
+    sent = await send_handoff_notice(
+        build_preparing_handoff_notice(notice_text) if preparing else notice_text,
+        dismiss_enabled=can_reply and not preparing)
     if isinstance(sent, TelegramSentMessage):
         logging.info(
             "Sent Telegram handoff notice for %s channel %s.",
             source,
             channel_id,
         )
-        return sent
+        return TelegramSentMessage(sent.chat_id, sent.message_id, notice_text) if preparing else sent
     return None
 
 

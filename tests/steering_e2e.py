@@ -1,7 +1,6 @@
 """Controller + stdio child-process steering checks; no live platform messages.
 
-Failure cases are recorded in PLAN.md before implementation. The JSON artifact
-contains assertions and source hashes so the checks can be repeated.
+The JSON artifact contains assertions and source hashes so the checks can be repeated.
 """
 
 import argparse

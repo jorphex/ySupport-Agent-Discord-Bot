@@ -208,8 +208,8 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         self.assertIn("couldn't send", failed_reply)
         self.assertIn(198, public_conversations)
-        self.assertNotIn("Reply to this message", failed_notices[0])
-        self.assertIn("Alert only", failed_notices[0])
+        self.assertIn("Preparing handoff", failed_notices[0])
+        self.assertIn("Public support", failed_notices[0])
 
         sent_reply, sent_notices = await run_case(
             original_author_id=200,
@@ -217,7 +217,7 @@ class TicketFlowTests(TicketFlowTestCase):
         )
         self.assertIn("I've notified", sent_reply)
         self.assertNotIn(200, public_conversations)
-        self.assertIn("Alert only", sent_notices[0])
+        self.assertIn("Public support", sent_notices[0])
 
         clear_public_conversation(198)
 

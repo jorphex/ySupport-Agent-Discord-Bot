@@ -355,6 +355,9 @@ def _is_valid_timestamp(value: Any) -> bool:
 
 def conversation_key_for_request(request) -> str | None:
     if request.run_context.get("is_public_trigger"):
+        message_id = request.run_context.get("public_handoff_message_id")
+        if message_id is not None:
+            return f"public_handoff:{message_id}"
         conversation_owner_id = request.run_context.get("conversation_owner_id")
         if conversation_owner_id is not None:
             return f"public_user:{conversation_owner_id}"

@@ -43,6 +43,10 @@ class TelegramHttpFixture:
                  summary_error=False, summary_output=None):
         self.entered, self.release, self.finished = (threading.Event() for _ in range(3))
         self.requests, self.applied = [], []
+        self.fail_methods = set()
+        self.enforce_idempotence = False
+        self.deleted_messages = set()
+        self.updates = []
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -53,15 +57,30 @@ class TelegramHttpFixture:
                 method = self.path.rsplit("/", 1)[-1]
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fixture.requests.append((method, payload))
+                request_index = len(fixture.requests)
                 held = method == held_method and (held_text is None or payload.get("text") == held_text)
                 if held:
                     fixture.entered.set()
                     released = fixture.release.wait(8)
                 else:
                     released = True
-                failed = not released or (held and fail) or (method == "responses" and summary_error)
+                already_applied = fixture.enforce_idempotence and (method, payload) in fixture.applied
+                deleted = (payload.get('chat_id'), payload.get('message_id')) in fixture.deleted_messages
+                if fixture.enforce_idempotence and method in {'editMessageText', 'deleteMessage'} and (already_applied or deleted):
+                    result = {'ok': False, 'error_code': 400, 'description': 'Bad Request: ' + (
+                        ('message to edit not found' if deleted else 'message is not modified')
+                        if method == 'editMessageText' else 'message to delete not found')}
+                    response = json.dumps(result).encode()
+                    self.send_response(400)
+                    self.send_header('Content-Length', str(len(response)))
+                    self.end_headers()
+                    self.wfile.write(response)
+                    return
+                failed = not released or (held and fail) or method in fixture.fail_methods or (method == "responses" and summary_error)
                 if not failed:
                     fixture.applied.append((method, payload))
+                    if method == 'deleteMessage':
+                        fixture.deleted_messages.add((payload.get('chat_id'), payload.get('message_id')))
                 if method == "responses":
                     result = {"id": "resp_fixture", "object": "response", "created_at": 0,
                         "model": "fixture", "status": "completed", "output": [
@@ -69,8 +88,9 @@ class TelegramHttpFixture:
                              "status": "completed", "content": [{"type": "output_text",
                                  "text": summary_output or "invalid fixture JSON", "annotations": []}]}]}
                 else:
-                    result = {"ok": not failed, "result": [] if method == "getUpdates" else (
-                        {"message_id": 9000 + len(fixture.requests), "chat": {"id": 123}}
+                    result = {"ok": not failed, "result": [u for u in fixture.updates
+                        if u.get('update_id', 0) >= (payload.get('offset') or 0)] if method == "getUpdates" else (
+                        {"message_id": 9000 + request_index, "chat": {"id": 123}}
                         if method == "sendMessage" else True)}
                 response = json.dumps(result).encode()
                 self.send_response(503 if failed else 200)
@@ -248,6 +268,7 @@ async def verify_handoff_presentation(*, public=True, metadata=True, summary_fai
                         trigger.content = "y"
                         await bot.on_message(trigger)
                         assert trigger.deleted
+                        await eventually(lambda: bot.telegram_handoffs.public.records[original_id].status == "open")
                     else:
                         state.pending_messages[channel_id] = question
                         state.remember_ticket_owner_user_id(channel_id, author_id)
@@ -261,7 +282,7 @@ async def verify_handoff_presentation(*, public=True, metadata=True, summary_fai
                     assert context["latest_text"] == question and context["reason"] == action
                     sends = [payload for method, payload in http.requests if method == "sendMessage"]
                     assert len(sends) == 1
-                    notice = sends[0]["text"]
+                    notice = bot.telegram_handoffs.public.records[original_id].message_text if public else sends[0]["text"]
                     assert "SERVER NAME" not in notice and "Ticket-7681" not in notice
                     assert "<b>Action</b>: " + action in notice
                     assert "<b>Issue</b>: " + (support_reply if summary_failure else summary) in notice
@@ -276,18 +297,20 @@ async def verify_handoff_presentation(*, public=True, metadata=True, summary_fai
                     else:
                         assert 'href=' not in notice and "Public support · Channel 7681" in notice
                     if public:
-                        assert "Respond in Discord. Telegram replies to this alert are ignored." in notice
-                        assert "reply_markup" not in sends[0]
+                        assert "I will post one reply to their original Discord message." in notice
+                        assert "Preparing handoff" in sends[0]["text"] and "reply_markup" not in sends[0]
+                        assert any(method == 'editMessageText' and payload['text'] == notice
+                            and payload['reply_markup']['inline_keyboard'] for method, payload in http.requests)
                         assert author_id not in state.public_conversations
                         assert not (state._PUBLIC_STATE_DIR / f"{author_id}.json").exists()
                         assert channel_id not in state.team_handoff_notice_by_channel
-                        before = len(http.requests)
-                        notice_id = 9000 + next(index for index, (method, _) in
-                            enumerate(http.requests, start=1) if method == "sendMessage")
-                        await bot.telegram_handoffs._handle_telegram_handoff_update({"message": {
-                            "message_id": 9999, "chat": {"id": 123}, "text": "Please update the user.",
-                            "reply_to_message": {"message_id": notice_id}}})
-                        assert len(http.requests) == before and len(executor.calls) == 1
+                        saved = bot.telegram_handoffs.public.records[original_id]
+                        assert saved.history and saved.status == "open"
+                        await bot.telegram_handoffs._handle_telegram_handoff_update({"callback_query": {
+                            "id": "public-dismiss", "data": "dismiss_handoff", "message": {
+                                "message_id": saved.telegram_message_id, "chat": {"id": 123}}}})
+                        await eventually(lambda: original_id not in bot.telegram_handoffs.public.records)
+                        assert channel_id not in state.stopped_channels and len(executor.calls) == 1
                     else:
                         assert "Reply to this message" in notice
                         assert sends[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "dismiss_handoff"
@@ -301,7 +324,7 @@ async def verify_handoff_presentation(*, public=True, metadata=True, summary_fai
                         assert any(method == "deleteMessage" for method, _ in http.requests)
                     return {"notice": notice, "findings_reached_summary_model": True,
                         "summary_fallback": summary_failure, "source_metadata_present": metadata,
-                        "public_reply_ignored" if public else "ticket_dismissal_preserved": True}
+                        "public_context_saved_and_dismissed" if public else "ticket_dismissal_preserved": True}
                 finally:
                     await bot.close()
                     state.clear_public_conversation(author_id)

@@ -2,7 +2,6 @@
 
 Only the model, RPC node and Kong responses are fixtures. No live messages or
 provider credentials are used. Evidence: .cache/verification/internal-rpc-e2e.json.
-Failure cases are recorded in PLAN.md before implementing the internal connection.
 """
 
 import argparse

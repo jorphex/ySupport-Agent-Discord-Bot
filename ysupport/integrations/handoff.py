@@ -9,7 +9,7 @@ import os
 import re
 import sys
 from typing import Any, Literal
-from urllib import request
+from urllib import error, request
 from weakref import WeakValueDictionary
 
 from openai import AsyncOpenAI
@@ -19,6 +19,10 @@ from ysupport import config
 
 class TelegramApiError(RuntimeError):
     """Raised when Telegram does not return a successful API response."""
+
+
+class TelegramMessageNotFound(TelegramApiError):
+    """Telegram confirmed that the notice targeted by an edit is absent."""
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,13 @@ _REPLY_ENABLED_FOOTER = (
     "To dismiss the handoff and handle the ticket in Discord, click the button below. "
     "The first reply or button action closes the handoff."
 )
+_PUBLIC_REPLY_ENABLED_FOOTER = (
+    "Reply to this message with the update I should give the user. "
+    "I will post one reply to their original Discord message. "
+    "Dismiss to handle this concern in Discord. "
+    "The first substantive reply or dismissal closes the handoff."
+)
+PREPARING_HANDOFF_TEXT = "Preparing handoff. Please wait before replying."
 _telegram_message_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
 
 _handoff_summary_async_client: AsyncOpenAI | None = None
@@ -110,9 +121,10 @@ def build_handoff_notice(
     channel_name: str | None = None,
     message_id: int | None = None,
     reply_enabled: bool = True,
+    is_public: bool = False,
 ) -> str:
     label = ticket_label or (f"#{channel_name}" if channel_name else f"Channel {channel_id}")
-    if not reply_enabled:
+    if is_public or not reply_enabled:
         label = f"Public support · {label}"
     channel_url = f"https://discord.com/channels/{guild_id}/{channel_id}"
     if message_id is not None:
@@ -129,7 +141,7 @@ def build_handoff_notice(
     lines.append(f"<b>Action</b>: {html.escape(_summarize_text(reason))}")
     lines.append("")
     if reply_enabled:
-        lines.append(_REPLY_ENABLED_FOOTER)
+        lines.append(_PUBLIC_REPLY_ENABLED_FOOTER if is_public else _REPLY_ENABLED_FOOTER)
     else:
         lines.append("Alert only. Respond in Discord. Telegram replies to this alert are ignored.")
     return "\n".join(lines)
@@ -140,6 +152,10 @@ def build_closed_handoff_notice(original_notice: str) -> str:
         original_notice,
         "<i>Reply received. Replies closed.</i>",
     )
+
+
+def build_preparing_handoff_notice(original_notice: str) -> str:
+    return _replace_handoff_footer(original_notice, f"<i>{PREPARING_HANDOFF_TEXT}</i>")
 
 
 def build_pending_delivery_handoff_notice(original_notice: str) -> str:
@@ -175,7 +191,7 @@ def build_dismissed_handoff_notice(original_notice: str) -> str:
 
 def _replace_handoff_footer(original_notice: str, replacement: str) -> str:
     lines = original_notice.splitlines()
-    if lines and lines[-1].strip() == _REPLY_ENABLED_FOOTER:
+    if lines and lines[-1].strip() in {_REPLY_ENABLED_FOOTER, _PUBLIC_REPLY_ENABLED_FOOTER}:
         lines[-1] = replacement
         return "\n".join(lines)
     return f"{original_notice}\n\n{replacement}"
@@ -186,23 +202,18 @@ async def send_handoff_notice(
     *,
     dismiss_enabled: bool = False,
 ) -> TelegramSentMessage | None:
-    reply_markup = None
-    if dismiss_enabled:
-        reply_markup = {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": _DISMISS_HANDOFF_BUTTON_TEXT,
-                        "callback_data": DISMISS_HANDOFF_CALLBACK_DATA,
-                    }
-                ]
-            ]
-        }
     return await send_telegram_message(
         chat_id=config.TELEGRAM_YSUPPORT_CHAT,
         message_text=message_text,
-        reply_markup=reply_markup,
+        reply_markup=_dismiss_markup() if dismiss_enabled else None,
     )
+
+
+def _dismiss_markup() -> dict[str, Any]:
+    return {"inline_keyboard": [[{
+        "text": _DISMISS_HANDOFF_BUTTON_TEXT,
+        "callback_data": DISMISS_HANDOFF_CALLBACK_DATA,
+    }]]}
 
 
 async def summarize_handoff_summary(
@@ -326,6 +337,8 @@ async def edit_handoff_notice(
     chat_id: str,
     message_id: int,
     message_text: str,
+    dismiss_enabled: bool = False,
+    missing_ok: bool = False,
 ) -> bool:
     if "unittest" in sys.modules and os.getenv("YSUPPORT_ALLOW_TEST_TELEGRAM") != "1":
         return False
@@ -335,10 +348,12 @@ async def edit_handoff_notice(
         "text": message_text,
         "disable_web_page_preview": True,
         "parse_mode": "HTML",
-        "reply_markup": {"inline_keyboard": []},
+        "reply_markup": _dismiss_markup() if dismiss_enabled else {"inline_keyboard": []},
     }
     try:
         response_payload = await _telegram_api_call("editMessageText", payload)
+    except TelegramMessageNotFound:
+        return missing_ok
     except TelegramApiError as exc:
         logging.error("%s", exc, exc_info=True)
         return False
@@ -436,11 +451,24 @@ async def _telegram_api_call(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(req, timeout=35) as response:
-            parsed = json.loads(response.read().decode("utf-8"))
-            if isinstance(parsed, dict):
-                return parsed
-            return None
+        try:
+            with request.urlopen(req, timeout=35) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+                return parsed if isinstance(parsed, dict) else None
+        except error.HTTPError as exc:
+            if exc.code == 400 and method in {"editMessageText", "deleteMessage"}:
+                try:
+                    detail = json.loads(exc.read(4096))
+                except (ValueError, OSError):
+                    detail = {}
+                description = str(detail.get("description", "")).lower() if isinstance(detail, dict) else ""
+                expected = ("bad request: message is not modified" if method == "editMessageText"
+                    else "bad request: message to delete not found")
+                if description.startswith(expected):
+                    return {"ok": True, "result": True}
+                if method == "editMessageText" and description == "bad request: message to edit not found":
+                    raise TelegramMessageNotFound("Telegram handoff notice no longer exists.") from exc
+            raise
 
     try:
         if method in {"editMessageText", "deleteMessage"}:
@@ -465,6 +493,8 @@ async def _telegram_api_call(
                     raise
         else:
             result = await asyncio.to_thread(_send)
+    except TelegramMessageNotFound:
+        raise
     except Exception as exc:
         raise TelegramApiError(f"Telegram API call {method} failed: {exc}") from exc
     if not result or result.get("ok") is not True:

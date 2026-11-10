@@ -53,6 +53,7 @@ from ysupport.bot.state import (
     ticket_owner_user_id_by_channel,
 )
 from ysupport.bot.utils import send_long_message
+from ysupport.bot.public_handoffs import PublicHandoffs, PublicHandoffRegistrationPending
 
 
 class _TelegramBotHost(Protocol):
@@ -65,6 +66,7 @@ class _TelegramBotHost(Protocol):
 class TelegramHandoffController:
     def __init__(self, bot: _TelegramBotHost) -> None:
         self.bot = bot
+        self.public = PublicHandoffs(bot)
         self.task: asyncio.Task[None] | None = None
         self._delivery_tasks: list[asyncio.Task[None]] = []
         self._delivery_wakeups: list[asyncio.Event] = []
@@ -81,6 +83,7 @@ class TelegramHandoffController:
     def start(self) -> bool:
         if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_YSUPPORT_CHAT:
             return False
+        self.public.hydrate()
         if self.task is None or self.task.done():
             self.task = asyncio.create_task(self._telegram_handoff_reply_loop())
         self._wake_delivery_worker()
@@ -132,6 +135,8 @@ class TelegramHandoffController:
                         persist_telegram_update_offset(self._telegram_update_offset)
             except asyncio.CancelledError:
                 raise
+            except PublicHandoffRegistrationPending:
+                await asyncio.sleep(0.1)
             except TelegramApiError as exc:
                 logging.warning(
                     "Telegram polling temporarily unavailable; retrying in 5 seconds: %s",
@@ -145,6 +150,7 @@ class TelegramHandoffController:
                 await asyncio.sleep(5)
 
     async def _resume_pending_telegram_handoff_replies(self) -> None:
+        await self.public.resume()
         for channel_id, notice in list(team_handoff_notice_by_channel.items()):
             if not self._can_deliver_handoff(channel_id, notice):
                 continue
@@ -194,6 +200,9 @@ class TelegramHandoffController:
         self._telegram_recovery_attempts.intersection_update(active_recovery_keys)
 
     async def _handle_telegram_handoff_update(self, update: dict[str, Any]) -> None:
+        if await self.public.handle(update):
+            self._wake_delivery_worker()
+            return
         callback_query = update.get("callback_query")
         if isinstance(callback_query, dict):
             await self._handle_telegram_handoff_dismissal(callback_query)
