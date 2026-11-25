@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from typing import Any, List, Literal
+from urllib.parse import urlsplit
 
 import discord
 from agents import TResponseInputItem
@@ -34,7 +35,7 @@ from ysupport.bot.state import (
     pending_messages,
     persist_ticket_state,
     recover_ticket_channel_from_runtime_stop,
-    remember_team_handoff_followup_attachments,
+    remember_team_handoff_followup,
     remember_team_handoff_notice,
     stopped_channels,
     TeamHandoffNotice,
@@ -42,6 +43,7 @@ from ysupport.bot.state import (
     TicketInvestigationJob,
 )
 from ysupport.bot.support_boundary import evaluate_support_boundary
+from ysupport.execution.codex_support_attachments import attachment_is_image
 from ysupport.execution.contracts import TicketTurnRequest
 from ysupport.execution.executor import (
     TicketExecutionHooks,
@@ -145,8 +147,8 @@ def _normalize_discord_attachment(
         "url": attachment.url,
         "content_type": content_type,
         "size": attachment.size,
-        "is_image": bool(content_type and content_type.startswith("image/")),
     }
+    payload["is_image"] = attachment_is_image(payload)
     attachment_id = getattr(attachment, "id", None)
     if attachment_id is not None:
         payload["attachment_id"] = attachment_id
@@ -169,12 +171,21 @@ def _attachment_payloads_from_message(
     return payloads
 
 
+def _attachment_identity(attachments):
+    return [(item.get("source_message_id"), item.get("attachment_id"), item.get("filename"),
+        item.get("size"), item.get("content_type"), urlsplit(str(item.get("url") or "")).path)
+        for item in attachments]
+
+
 async def _refresh_discord_attachment_urls(
     channel: discord.TextChannel,
     attachments: list[dict[str, Any]],
+    *,
+    current_only: bool = False,
 ) -> list[dict[str, Any]]:
     refreshed = [dict(attachment) for attachment in attachments]
     indexes_by_message: dict[int, list[int]] = {}
+    confirmed = set()
     for index, attachment in enumerate(refreshed):
         source_message_id = attachment.get("source_message_id")
         if (
@@ -187,13 +198,15 @@ async def _refresh_discord_attachment_urls(
     for source_message_id, indexes in indexes_by_message.items():
         try:
             source_message = await channel.fetch_message(source_message_id)
-        except Exception:
+        except Exception as exc:
             logging.warning(
                 "Could not refresh Discord attachment URLs from message %s in channel %s.",
                 source_message_id,
                 channel.id,
                 exc_info=True,
             )
+            if current_only and not isinstance(exc, discord.NotFound):
+                raise
             continue
         current_by_id = {
             str(attachment.id): attachment for attachment in source_message.attachments
@@ -202,9 +215,10 @@ async def _refresh_discord_attachment_urls(
             current = current_by_id.get(str(refreshed[index].get("attachment_id")))
             if current is None:
                 continue
-            current_payload = _normalize_discord_attachment(current)
-            current_payload["source_message_id"] = source_message_id
-            refreshed[index] = current_payload
+            refreshed[index].update(_normalize_discord_attachment(current))
+            confirmed.add(index)
+    if current_only:
+        return [refreshed[index] for index in sorted(confirmed)]
     return refreshed
 
 
@@ -270,12 +284,14 @@ def _record_waiting_for_team_followup(
     content = _message_text_for_turn(message)
     if not content:
         return
-    history = conversation_threads.setdefault(channel_id, [])
-    history.append({"role": "user", "content": content})
-    attachments = _attachment_payloads_from_message(message)
-    if attachments:
-        remember_team_handoff_followup_attachments(channel_id, attachments)
+    history_item = {"role": "user", "content": content}
+    if channel_id in team_handoff_notice_by_channel:
+        remember_team_handoff_followup(
+            channel_id, _attachment_payloads_from_message(message),
+            message_id=getattr(message, "id", None), history_item=history_item,
+        )
     else:
+        conversation_threads.setdefault(channel_id, []).append(history_item)
         persist_ticket_state(channel_id)
 
 
@@ -409,6 +425,7 @@ async def _notify_handoff(
     prepare_reply: bool = False,
     recent_user_messages: list[str] | None = None,
     known_facts: list[str] | None = None,
+    verified_evidence: list[str] | None = None,
 ) -> TelegramSentMessage | None:
     can_reply = source == "ticket" if reply_enabled is None else reply_enabled
     summarized_text = await summarize_handoff_summary(
@@ -427,6 +444,7 @@ async def _notify_handoff(
         message_id=message_id,
         reply_enabled=can_reply,
         is_public=source == "public",
+        verified_evidence=verified_evidence,
     )
     preparing = prepare_reply and source == "public" and can_reply
     sent = await send_handoff_notice(
@@ -470,6 +488,7 @@ async def _send_ticket_handoff_notice(
     investigation_job: TicketInvestigationJob,
     channel_name: str | None = None,
     support_reply: str | None = None,
+    verified_evidence: list[str] | None = None,
 ) -> TelegramSentMessage | None:
     recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
     known_facts = _handoff_known_facts(investigation_job)
@@ -483,6 +502,7 @@ async def _send_ticket_handoff_notice(
         support_reply=support_reply,
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
+        verified_evidence=verified_evidence,
     )
     return notice
 
@@ -517,6 +537,7 @@ async def _run_internal_instruction_turn(
     workflow_suffix: str,
     attachments: list[dict[str, Any]],
     current_history_override: List[TResponseInputItem] | None = None,
+    show_progress: bool = True,
 ) -> InternalInstructionTurnResult:
     investigation_job = deepcopy(get_or_create_ticket_investigation_job(channel_id))
     current_history = (
@@ -538,7 +559,7 @@ async def _run_internal_instruction_turn(
         {"role": "user", "content": prompt_text},
     ]
 
-    progress_reporter = _DiscordProgressReporter(channel, channel_id)
+    progress_reporter = _DiscordProgressReporter(channel, channel_id) if show_progress else None
     try:
         worker_result = await _execute_ticket_turn(
             executor=executor,
@@ -556,7 +577,7 @@ async def _run_internal_instruction_turn(
                 precomputed_boundary=None,
             ),
             hooks=TicketExecutionHooks(
-                send_progress_update=progress_reporter.update,
+                send_progress_update=progress_reporter.update if progress_reporter else None,
             ),
         )
         return InternalInstructionTurnResult(
@@ -565,7 +586,8 @@ async def _run_internal_instruction_turn(
             input_history=current_history,
         )
     finally:
-        await progress_reporter.close()
+        if progress_reporter:
+            await progress_reporter.close()
 
 
 @dataclass(frozen=True)
@@ -815,41 +837,61 @@ async def _build_staff_summon_history(
     scan_limit: int = 30,
     history_limit: int = 12,
     attachments: list[dict[str, Any]] | None = None,
+    reference_id: int | None = None,
 ) -> List[TResponseInputItem]:
     messages = [message async for message in channel.history(limit=scan_limit)]
     messages.reverse()
+    if reference_id is not None and not any(message.id == reference_id for message in messages):
+        messages.append(await channel.fetch_message(reference_id))
+        messages.sort(key=lambda message: message.id)
     history: List[TResponseInputItem] = []
     user_images: list[tuple[int, dict[str, Any]]] = []
+    reference_row = None
+    reference_images = []
     for message in messages:
         if message.id == exclude_message_id:
             continue
         content = _message_text_for_turn(message)
         if not content:
             continue
-        if message.author.bot:
-            if bot_user_id is None or message.author.id == bot_user_id:
+        author = message.author
+        if author.bot:
+            if bot_user_id is None or author.id == bot_user_id:
                 history.append({"role": "assistant", "content": content})
+                if message.id == reference_id:
+                    reference_row = history[-1]
             continue
-        if _is_support_staff_member(message.author):
+        owner = author.id == ticket_owner_user_id
+        staff = not owner and _is_support_staff_member(author)
+        if staff:
             history.append(
                 {
                     "role": "system",
                     "content": f"Internal support staff message: {content}",
                 }
             )
-            continue
-        if ticket_owner_user_id is None or message.author.id == ticket_owner_user_id:
+        elif owner or ticket_owner_user_id is None:
             history.append({"role": "user", "content": content})
-            if message.author.id == ticket_owner_user_id:
-                user_images.extend(
-                    (len(history) - 1, {**item, "source_author_role": "ticket_user"})
-                    for item in _attachment_payloads_from_message(message)
-                    if item["is_image"]
-                )
+        else:
+            continue
+        images = [
+            {**item, "source_author_role": "internal_team" if staff else "ticket_user"}
+            for item in _attachment_payloads_from_message(message) if item["is_image"]
+        ] if owner or message.id == reference_id else []
+        if message.id == reference_id:
+            reference_row, reference_images = history[-1], images
+        elif owner:
+            user_images.extend((len(history) - 1, item) for item in images)
+    recent_history = history[-history_limit:]
+    offset = max(0, len(history) - history_limit)
+    if reference_row is not None and all(row is not reference_row for row in recent_history):
+        recent_history = [reference_row, *recent_history[1:]]
+        offset += 1
     if attachments is not None:
-        offset = max(0, len(history) - history_limit)
-        attachments.extend([item for index, item in user_images if index >= offset][-4:])
-    return history[-history_limit:]
+        # Reserve image slots for an explicit reference before filling from recent history.
+        selected_images = [item for index, item in user_images if index >= offset] + reference_images
+        attachments.extend(selected_images[-4:])
+    return recent_history
 
 
 # Discord Bot Implementation

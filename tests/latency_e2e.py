@@ -21,7 +21,7 @@ from tests.optimization_e2e import eventually
 from ysupport import config
 from ysupport.bot import state
 from ysupport.execution.codex_support_home import prune_codex_support_caches
-from tests.test_ticket_intake import _FakeDiscordChannel
+from tests.test_ticket_intake import _FakeDiscordChannel, _FakeTicketWithHistory
 from ysupport.execution.codex_support_endpoint import CodexSupportTicketExecutionJsonEndpoint
 from ysupport.execution.transport import build_smoke_transport_request
 from ysupport.execution.executor import TransportTicketInvestigationExecutor
@@ -384,7 +384,7 @@ async def verify_telegram_concurrency(root):
         codex_command=[sys.executable, str(model), str(root), "exec"],
         codex_home=root / "home", env={}, timeout_seconds=15)
     bot.investigation_executor = TransportTicketInvestigationExecutor(JsonEndpointTicketExecutionTransport(endpoint))
-    channels = {i: _FakeDiscordChannel(i) for i in range(7401, 7410)}
+    channels = {i: _FakeTicketWithHistory(i) for i in range(7401, 7410)}
     direct = None
     for channel in channels.values():
         channel.category = SimpleNamespace(id=1)
@@ -477,7 +477,7 @@ async def verify_telegram_concurrency(root):
             await asyncio.gather(delivery, stopping)
             assert delivery.result() is None and not (root / "early.started").exists()
             assert all(channel not in state.handoff_delivery_tasks for channel in channels)
-            assert not any(str(payload.get("message_id")) == "7407" and "Update delivery failed" in payload.get("text", "")
+            assert not any(str(payload.get("message_id")) == "7407" and "Delivery needs review" in payload.get("text", "")
                            for method, payload in api_calls if method == "editMessageText"), "Deletion was reported as delivery failure"
             return {"handoff_replies_overlap": True, "bounded": True,
                     "stop_prevents_delivery": True, "each_reply_delivered_once": True,
@@ -572,7 +572,7 @@ async def verify_deleted_handoff_races(root):
             codex_home=directory / "home", env={}, timeout_seconds=15)
         bot = TicketBot(intents=__import__("discord").Intents.none())
         bot.investigation_executor = TransportTicketInvestigationExecutor(JsonEndpointTicketExecutionTransport(endpoint))
-        peer = _FakeDiscordChannel(7502)
+        peer = _FakeTicketWithHistory(7502)
         peer.category = SimpleNamespace(id=1)
         state.conversation_threads[peer.id] = [{"role": "user", "content": "Please check my ticket."}]
         bot.get_channel = lambda channel_id: peer if channel_id == peer.id else None

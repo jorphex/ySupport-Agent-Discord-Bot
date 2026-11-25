@@ -122,6 +122,7 @@ def build_handoff_notice(
     message_id: int | None = None,
     reply_enabled: bool = True,
     is_public: bool = False,
+    verified_evidence: list[str] | None = None,
 ) -> str:
     label = ticket_label or (f"#{channel_name}" if channel_name else f"Channel {channel_id}")
     if is_public or not reply_enabled:
@@ -139,6 +140,9 @@ def build_handoff_notice(
         lines.append("")
     lines.append(f"<b>Issue</b>: {html.escape(_summarize_text(summary))}")
     lines.append(f"<b>Action</b>: {html.escape(_summarize_text(reason))}")
+    if verified_evidence and not is_public:
+        lines.extend(["", "<b>Verified evidence</b>"])
+        lines.extend(html.escape(_summarize_text(fact.replace("`", ""), limit=440)) for fact in verified_evidence[:3])
     lines.append("")
     if reply_enabled:
         lines.append(_PUBLIC_REPLY_ENABLED_FOOTER if is_public else _REPLY_ENABLED_FOOTER)
@@ -168,10 +172,7 @@ def build_pending_delivery_handoff_notice(original_notice: str) -> str:
 def build_failed_delivery_handoff_notice(original_notice: str) -> str:
     return _replace_handoff_footer(
         original_notice,
-        (
-            "<i>Update delivery failed. Open the ticket, stop ySupport, "
-            "and reply there manually.</i>"
-        ),
+        "<i>Delivery needs review. Check the ticket for the update before replying in Discord.</i>",
     )
 
 

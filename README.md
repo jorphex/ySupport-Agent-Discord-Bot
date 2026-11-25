@@ -16,6 +16,15 @@ deliver independent handoffs; polling and dismissal remain responsive.
 Explicit stop also cancels that handoff's queued or active investigation and
 releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
 Notice edits and deletion are ordered per message, including canceled HTTP calls.
+Private Telegram updates use recent Discord text and images in a fresh session.
+ySupport checks recorded input, fetches older messages by ID, and redrafts
+once if context changes before posting. Recorded screenshots take priority.
+It saves the update's fingerprint before posting a single Discord message.
+Delivery, recovery, and staff follow-ups preserve older ticket history. Staff
+summons read the directly referenced Discord message and refresh saved
+screenshots when the instruction calls for them.
+Uncertain delivery and missing Discord context go to staff review. Telegram
+notice edits retry independently of Discord delivery.
 
 Telegram notices use Discord channel names without server names. Issue summaries
 use the completed support answer; the action names the remaining team need.
@@ -150,6 +159,18 @@ refresh script set the working directory themselves.
   or an unknown vault version returns no write recipe. Simulations can become
   stale before submission; the wallet must simulate again. V1/V2 handling stays
   unchanged. Native child PATH includes the bot venv so `python` uses its interpreter.
+- Confirmed payouts and executable V3 redemption steps cite private tool results
+  from the current turn. The bot renders the verified amount, block and reference
+  from those results and includes the evidence in private Telegram handoffs.
+  Payout verification requires a matching positive underlying transfer in the
+  withdrawal receipt. Ordinary wallet-history reads skip the payout asset lookup.
+  A share burn can be reported separately when payment is unverified. A corrected
+  transaction hash supersedes the withdrawal target. The investigation retains
+  both hashes for reference.
+  A linked vault, named chain, and named wallet constrain evidence selection.
+  Confirmed payouts identify the verified wallet.
+  Exact V3 redemptions require matching raw shares and recipient in the simulation.
+  Maximum redemption steps require an explicit full-balance request in the current turn.
 - `ysupport/integrations/ticket_transcript_fetch.py` provides manual, read-only review;
   live turns do not import it. Docs namespace discovery is cached for five minutes; this cache does
   not store answers or wallet observations.

@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from ysupport.bot.bot_behavior import is_wallet_first_data_intent
+from ysupport.execution.contracts import PRIVATE_TICKET_HANDOFF_CONTEXT_LIMIT
 from ysupport.execution.transport import TicketExecutionTransportRequest, TicketExecutionTransportResult
 from ysupport.execution.executor import TicketExecutionNonFallbackError
 
@@ -134,12 +135,15 @@ class SupportTurnRequest:
         *,
         ysupport_mcp_enabled: bool = True,
     ) -> "SupportTurnRequest":
+        channel_type = "public" if request.run_context.get("is_public_trigger") else "ticket"
+        transcript_limit = (PRIVATE_TICKET_HANDOFF_CONTEXT_LIMIT
+                            if channel_type == "ticket" and request.turn_source == "internal_team"
+                            else _MAX_RECENT_TRANSCRIPT_ITEMS)
         recent_history = [
             item
-            for item in list(request.current_history)[-_MAX_RECENT_TRANSCRIPT_ITEMS:]
+            for item in request.current_history[-transcript_limit:]
             if isinstance(item, dict)
         ]
-        channel_type = "public" if request.run_context.get("is_public_trigger") else "ticket"
         allowed_tools = ["shell", "web_search"]
         if ysupport_mcp_enabled:
             allowed_tools.append("ysupport_mcp")

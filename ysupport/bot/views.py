@@ -14,13 +14,15 @@ from ysupport.bot.state import (
     cancel_pending_ticket_task,
     channels_awaiting_initial_button_press,
     conversation_threads,
+    has_team_handoff_context,
     hydrate_ticket_state,
     mark_ticket_channel_stopped,
     pending_messages,
     pending_attachments_by_channel,
     pending_tasks,
     persist_ticket_state,
-    remember_team_handoff_followup_attachments,
+    remember_team_handoff_followup,
+    retained_handoff_attachments,
     stop_ticket_channel,
     stop_reasons_by_channel,
     stopped_channels,
@@ -45,30 +47,33 @@ def is_ticket_support_staff(user: discord.abc.User) -> bool:
 
 
 async def take_over_ticket_for_staff(channel_id: int) -> bool:
-    if channel_id not in team_handoff_notice_by_channel:
+    if not has_team_handoff_context(channel_id):
         return await stop_ticket_for_manual_support(channel_id)
+    reason = stop_reasons_by_channel.get(channel_id)
+    has_handoff = channel_id in team_handoff_notice_by_channel
     # Staff participation pauses automation without resolving an outstanding handoff.
     # An explicit stop must remain stronger than a later staff acknowledgement.
-    reason = stop_reasons_by_channel.get(channel_id)
     if channel_id not in stopped_channels or reason in {
         "staff_takeover",
         "runtime_error",
     }:
         queued_text = pending_messages.pop(channel_id, None)
-        queued_attachments = pending_attachments_by_channel.pop(channel_id, [])
         if queued_text:
             conversation_threads.setdefault(channel_id, []).append(
                 {"role": "user", "content": queued_text}
             )
-        if queued_attachments:
-            remember_team_handoff_followup_attachments(channel_id, queued_attachments)
+        if has_handoff and (queued_attachments := pending_attachments_by_channel.pop(channel_id, [])):
+            remember_team_handoff_followup(channel_id, queued_attachments)
         mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
     task = pending_tasks.get(channel_id)
     await cancel_pending_ticket_task(channel_id)
     if task is not None and active_ticket_executor_tasks.get(channel_id) is task:
         active_ticket_executor_tasks.pop(channel_id, None)
     pending_messages.pop(channel_id, None)
-    pending_attachments_by_channel.pop(channel_id, None)
+    if has_handoff:
+        pending_attachments_by_channel.pop(channel_id, None)
+    else:
+        pending_attachments_by_channel[channel_id] = retained_handoff_attachments(channel_id)
     active_ticket_payloads.pop(channel_id, None)
     return persist_ticket_state(channel_id)
 

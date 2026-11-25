@@ -180,6 +180,7 @@ class TicketFlowTests(TicketFlowTestCase):
             chat_id: str,
             message_id: int,
             message_text: str,
+            missing_ok: bool = False,
         ) -> bool:
             failed_status_edits.append((chat_id, message_id, message_text))
             return True
@@ -204,8 +205,10 @@ class TicketFlowTests(TicketFlowTestCase):
                 await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
                 await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
                 self.assertEqual(delivery_calls, 1)
+                self.assertEqual(notice.status, "review")
 
                 notice.telegram_message_id = 457
+                notice.status = "pending_delivery"
                 await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
                 self.assertEqual(delivery_calls, 2)
                 self.assertEqual(

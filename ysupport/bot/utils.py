@@ -52,9 +52,14 @@ async def send_long_message(
     view: discord.ui.View = None,
     *,
     reference: discord.MessageReference | None = None,
+    nonce: str | None = None,
 ):
     """Send every Discord chunk, raising if delivery is incomplete."""
     reply_kwargs = {"reference": reference, "mention_author": False} if reference is not None else {}
+    if nonce is not None:
+        if len(text) > config.MAX_DISCORD_MESSAGE_LENGTH:
+            raise ValueError("A tracked Discord reply must fit in one message.")
+        reply_kwargs.update(nonce=nonce, allowed_mentions=discord.AllowedMentions.none())
     if len(text) <= config.MAX_DISCORD_MESSAGE_LENGTH:
         if isinstance(target, discord.Message):
             await target.reply(text, view=view, suppress_embeds=True)

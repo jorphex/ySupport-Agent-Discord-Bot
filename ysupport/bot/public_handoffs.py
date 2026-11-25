@@ -8,13 +8,13 @@ import hashlib
 import logging
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import discord
 
 from ysupport import config
 from ysupport.bot import state
 from ysupport.bot.discord_support_runtime import (
+    _attachment_identity,
     _attachment_payloads_from_message,
     _build_turn_request,
     _find_team_handoff_notice,
@@ -40,12 +40,6 @@ class PublicSource:
     channel_id: int
     deleted: bool = False
     notifying: bool = False
-
-
-def _attachment_identity(attachments):
-    return [(item.get("source_message_id"), item.get("attachment_id"), item.get("filename"),
-        item.get("size"), item.get("content_type"), urlsplit(str(item.get("url") or "")).path)
-        for item in attachments]
 
 
 @dataclass

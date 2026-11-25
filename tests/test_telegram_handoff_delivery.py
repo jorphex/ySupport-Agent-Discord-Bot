@@ -34,7 +34,7 @@ from ysupport.bot.client import (
 )
 from tests.ticket_flow_test_support import TicketFlowTestCase
 from tests.test_ticket_intake import (
-    _FakeDiscordChannel,
+    _FakeTicketWithHistory as _FakeDiscordChannel,
 )
 
 
@@ -139,7 +139,7 @@ class TicketFlowTests(TicketFlowTestCase):
         edited_messages: list[tuple[str, int, str]] = []
 
         async def fake_edit_handoff_notice(
-            *, chat_id: str, message_id: int, message_text: str
+            *, chat_id: str, message_id: int, message_text: str, missing_ok: bool = False
         ) -> bool:
             edited_messages.append((chat_id, message_id, message_text))
             return True
@@ -258,8 +258,8 @@ class TicketFlowTests(TicketFlowTestCase):
             self.assertEqual(state.stop_reasons_by_channel[channel_id], "staff_takeover")
             self.assertFalse(delivered)
             self.assertEqual(conversation_threads[channel_id], previous_history)
-            self.assertEqual(notice.status, "pending_delivery")
-            reset_session.assert_called_once_with(channel_id)
+            self.assertEqual(notice.status, "posting")
+            reset_session.assert_called_with(channel_id)
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
@@ -423,7 +423,7 @@ class TicketFlowTests(TicketFlowTestCase):
 
             self.assertFalse(delivered)
             send_message.assert_not_awaited()
-            reset_session.assert_called_once_with(channel_id)
+            reset_session.assert_called_with(channel_id)
             self.assertIn(channel_id, stopped_channels)
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
         finally:
@@ -492,7 +492,7 @@ class TicketFlowTests(TicketFlowTestCase):
             self.assertNotIn(channel_id, conversation_threads)
             self.assertNotIn(channel_id, ticket_investigation_jobs)
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
-            reset_session.assert_called_once_with(channel_id)
+            reset_session.assert_called_with(channel_id)
         finally:
             clear_ticket_channel_state(channel_id, delete_persisted=True)
 
@@ -503,6 +503,8 @@ class TicketFlowTests(TicketFlowTestCase):
         previous_history = [{"role": "user", "content": "initial issue"}]
         conversation_threads[channel_id] = list(previous_history)
         original_attachment = {"url": "https://cdn.example/original.png"}
+        fake_channel.original_message.attachments.append(SimpleNamespace(
+            id=501, url=original_attachment["url"], filename="original.png", size=5, content_type="image/png"))
         late_attachment = {"url": "https://cdn.example/late.png"}
         notice = TeamHandoffNotice(
             telegram_chat_id="123",
@@ -518,7 +520,7 @@ class TicketFlowTests(TicketFlowTestCase):
         bot.get_channel = lambda _channel_id: fake_channel
 
         async def fake_internal_turn(**kwargs) -> InternalInstructionTurnResult:
-            self.assertEqual(kwargs["attachments"], [original_attachment])
+            self.assertEqual([item["url"] for item in kwargs["attachments"]], [original_attachment["url"]])
             return InternalInstructionTurnResult(
                 reply="The transaction is queued.",
                 conversation_history=previous_history
@@ -543,10 +545,6 @@ class TicketFlowTests(TicketFlowTestCase):
                 patch(
                     'ysupport.bot.telegram_handoff_controller.edit_handoff_notice',
                     return_value=True,
-                ),
-                patch(
-                    'ysupport.bot.telegram_handoff_controller._refresh_discord_attachment_urls',
-                    side_effect=lambda _channel, attachments: attachments,
                 ),
                 patch(
                     'ysupport.bot.telegram_handoff_controller._run_internal_instruction_turn',
@@ -580,7 +578,7 @@ class TicketFlowTests(TicketFlowTestCase):
             )
             self.assertEqual(
                 pending_attachments_by_channel[channel_id],
-                [late_attachment],
+                [{**late_attachment, "handoff_followup": True}],
             )
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
         finally:
@@ -610,7 +608,7 @@ class TicketFlowTests(TicketFlowTestCase):
         edits: list[tuple[str, int, str]] = []
 
         async def fake_edit_handoff_notice(
-            *, chat_id: str, message_id: int, message_text: str
+            *, chat_id: str, message_id: int, message_text: str, missing_ok: bool = False
         ) -> bool:
             edits.append((chat_id, message_id, message_text))
             return True

@@ -32,7 +32,7 @@ from ysupport.bot.client import (
 )
 from tests.ticket_flow_test_support import TicketFlowTestCase
 from tests.test_ticket_intake import (
-    _FakeDiscordChannel,
+    _FakeTicketWithHistory,
 )
 
 
@@ -41,7 +41,9 @@ class TicketFlowTests(TicketFlowTestCase):
         self,
     ) -> None:
         channel_id = 95
-        fake_channel = _FakeDiscordChannel(channel_id)
+        fake_channel = _FakeTicketWithHistory(channel_id)
+        fake_channel.original_message.attachments.append(SimpleNamespace(
+            filename="details.png", url="https://cdn.example/details.png", content_type="image/png", size=5))
         fake_channel.category = SimpleNamespace(id=1)
         fake_channel.guild = SimpleNamespace(id=2)
 
@@ -89,7 +91,7 @@ class TicketFlowTests(TicketFlowTestCase):
         }
 
         async def fake_edit_handoff_notice(
-            *, chat_id: str, message_id: int, message_text: str
+            *, chat_id: str, message_id: int, message_text: str, missing_ok: bool = False
         ) -> bool:
             edited_messages.append((chat_id, message_id, message_text))
             return True
@@ -154,15 +156,8 @@ class TicketFlowTests(TicketFlowTestCase):
                 "tell the user the tx is queued pending signatures",
             )
             self.assertEqual(
-                internal_turn_calls[0]["attachments"],
-                [
-                    {
-                        "filename": "details.png",
-                        "url": "https://cdn.example/details.png",
-                        "content_type": "image/png",
-                        "is_image": True,
-                    }
-                ],
+                [item["url"] for item in internal_turn_calls[0]["attachments"]],
+                ["https://cdn.example/details.png"],
             )
             self.assertIn(
                 "This input is from the internal team",

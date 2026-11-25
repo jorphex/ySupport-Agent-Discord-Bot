@@ -89,6 +89,12 @@ class TicketFlowTests(TicketFlowTestCase):
         }
         recent_history = [{"role": "user", "content": "Please check again."}]
         conversation_threads[channel_id] = [older_detail] + recent_history
+        owner = SimpleNamespace(id=owner_id, bot=False, name="owner")
+        channel.history_messages.extend([
+            SimpleNamespace(id=218, author=owner, content=older_detail["content"], attachments=[]),
+            SimpleNamespace(id=219, author=owner, content=recent_history[0]["content"], attachments=[]),
+            message,
+        ])
         during_generation = "Correction: this happened on Arbitrum."
         during_delivery = "The same error affects my second wallet."
         staff_reply = "An operator is reviewing this."
@@ -97,16 +103,12 @@ class TicketFlowTests(TicketFlowTestCase):
         requests = []
 
         async def owner_followup(text):
-            await bot.on_message(
-                SimpleNamespace(
-                    id=221,
-                    channel=channel,
-                    reference=None,
-                    content=text,
-                    author=SimpleNamespace(id=owner_id, bot=False, name="owner"),
-                    attachments=[],
-                )
+            followup = SimpleNamespace(
+                id=channel.history_messages[-1].id + 1, channel=channel, reference=None,
+                content=text, author=owner, attachments=[],
             )
+            channel.history_messages.append(followup)
+            await bot.on_message(followup)
 
         class _Executor:
             async def execute_turn(self, request, hooks=None):
@@ -175,8 +177,10 @@ class TicketFlowTests(TicketFlowTestCase):
                 )
                 await bot.telegram_handoffs._resume_pending_telegram_handoff_replies()
             self.assertEqual(len(requests), 2)
-            self.assertEqual(requests[1].current_history, history)
-            self.assertEqual(requests[1].attachments, notice.followup_attachments)
+            self.assertEqual(requests[1].current_history, [older_detail, *recent_history,
+                {"role": "system", "content": f"Internal support staff message: {message.content}"},
+                {"role": "user", "content": during_generation}, {"role": "user", "content": during_delivery}])
+            self.assertEqual([item["url"] for item in requests[1].attachments], ["https://cdn.example/staff.png"])
             self.assertIn(channel_id, stopped_channels)
             self.assertEqual(stop_reasons_by_channel[channel_id], "staff_takeover")
             self.assertNotIn(channel_id, team_handoff_notice_by_channel)
@@ -369,6 +373,14 @@ class TicketFlowTests(TicketFlowTestCase):
                 ],
             }
         )
+        owner = SimpleNamespace(id=owner_id, bot=False, name="owner")
+        channel.history_messages.extend([
+            SimpleNamespace(id=208, author=owner, content="My withdrawal failed.", attachments=[
+                SimpleNamespace(filename="error.png", url="https://cdn.example/error.png", content_type="image/png", size=123)
+            ]),
+            SimpleNamespace(id=209, author=owner, content="The queue also contains another detail.", attachments=[]),
+            message, staff_image_message,
+        ])
         attachments.append(
             {
                 "filename": "staff-error.png",
@@ -428,10 +440,12 @@ class TicketFlowTests(TicketFlowTestCase):
             owner_message = SimpleNamespace(
                 **{
                     **vars(message),
-                    "author": SimpleNamespace(id=owner_id, bot=False, name="owner"),
+                    "id": 212,
+                    "author": owner,
                     "content": "The error persists today.",
                 }
             )
+            channel.history_messages.append(owner_message)
             with (
                 patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
                 patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
@@ -470,7 +484,7 @@ class TicketFlowTests(TicketFlowTestCase):
 
             self.assertEqual(len(requests), 1)
             self.assertEqual(requests[0].turn_source, "internal_team")
-            self.assertEqual(requests[0].attachments, attachments)
+            self.assertEqual([item["url"] for item in requests[0].attachments], [item["url"] for item in attachments])
             self.assertIn(
                 {"role": "user", "content": "The queue also contains another detail."},
                 requests[0].current_history,

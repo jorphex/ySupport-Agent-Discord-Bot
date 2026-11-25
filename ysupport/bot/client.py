@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import importlib
 import logging
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, List
@@ -19,6 +20,7 @@ from agents import (
 
 from ysupport import config
 from ysupport.bot.discord_support_runtime import (
+    _attachment_identity,
     _DiscordProgressReporter,
     _attachment_payloads_from_message,
     _boundary_reply_from_output,
@@ -42,6 +44,7 @@ from ysupport.bot.discord_support_runtime import (
     _public_workflow_name,
     _record_button_requested_intent,
     _record_waiting_for_team_followup,
+    _refresh_discord_attachment_urls,
     _remember_sent_handoff_notice,
     _render_support_reply,
     _restore_active_ticket_payload,
@@ -70,6 +73,8 @@ from ysupport.bot.state import (
     clear_public_conversation,
     conversation_threads,
     get_or_create_ticket_investigation_job,
+    has_team_handoff_context,
+    history_discord_offsets_by_channel,
     hydrate_public_conversation,
     hydrate_ticket_state,
     hydrate_persisted_team_handoff_states,
@@ -84,7 +89,9 @@ from ysupport.bot.state import (
     prune_expired_public_conversations,
     public_conversations,
     remember_ticket_owner_user_id,
-    remember_team_handoff_followup_attachments,
+    remember_team_handoff_followup,
+    replace_ticket_history,
+    retained_handoff_attachments,
     reset_ticket_channel_for_terminal_reply,
     reset_public_codex_session,
     reset_ticket_codex_session,
@@ -105,6 +112,7 @@ from ysupport.execution.json_endpoint import (
     JsonEndpointTicketExecutionTransport,
     prune_codex_support_sessions,
 )
+from ysupport.execution.codex_support_attachments import attachment_is_image
 from ysupport.execution.context import (
     build_contextual_hints,
     merge_explicit_evidence,
@@ -528,7 +536,7 @@ class TicketBot(discord.Client):
                 {"role": "user", "content": queued_text}
             )
             if queued_attachments:
-                remember_team_handoff_followup_attachments(
+                remember_team_handoff_followup(
                     channel_id,
                     queued_attachments,
                 )
@@ -551,14 +559,14 @@ class TicketBot(discord.Client):
         pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
             [*attachments, *pending_attachments_by_channel.get(channel_id, [])]
         )
-        conversation_threads[channel_id] = [*history, {
+        replace_ticket_history(channel_id, [*history, {
             "role": "system",
             "content": (
                 "The last generated reply was not sent because a user follow-up arrived. "
                 "Answer the latest message and attachments using the completed investigation. "
                 "Reuse relevant observations and refresh any state that may have changed."
             ),
-        }]
+        }])
         _retire_uncommitted_ticket_payload(channel_id)
         persist_ticket_state(channel_id)
         logging.info("Deferred outdated ticket draft in %s for queued follow-up.", channel_id)
@@ -597,20 +605,77 @@ class TicketBot(discord.Client):
 
         current_task = asyncio.current_task()
         turn_result = None
-        preserve_handoff_history = channel_id in team_handoff_notice_by_channel
+        preserve_handoff_history = has_team_handoff_context(channel_id) or (
+            was_stopped and stop_reasons_by_channel.get(channel_id) == "staff_takeover"
+            and channel_id in history_discord_offsets_by_channel
+        )
         try:
+            retained = retained_handoff_attachments(channel_id)
             attachments = []
-            current_history = await _build_staff_summon_history(
-                message.channel,
-                exclude_message_id=message.id,
-                ticket_owner_user_id=ticket_owner_user_id_by_channel.get(channel_id),
-                bot_user_id=self.user.id if self.user is not None else None,
-                attachments=attachments,
-            )
+            reference = getattr(message, "reference", None)
+            reference_id = (getattr(reference, "message_id", None)
+                            if getattr(reference, "channel_id", channel_id) == channel_id else None)
+            try:
+                current_history = await _build_staff_summon_history(
+                    message.channel,
+                    exclude_message_id=message.id,
+                    ticket_owner_user_id=ticket_owner_user_id_by_channel.get(channel_id),
+                    bot_user_id=self.user.id if self.user is not None else None,
+                    attachments=attachments,
+                    reference_id=reference_id,
+                )
+            except (asyncio.TimeoutError, OSError, discord.HTTPException):
+                if reference_id is None:
+                    raise
+                await message.channel.send(
+                    "I couldn't load the referenced Discord message. Retry `y:` or include the relevant details in a new message.",
+                    suppress_embeds=True,
+                )
+                return
             attachments.extend(
                 {**item, "source_author_role": "internal_team"}
                 for item in _attachment_payloads_from_message(message)
             )
+            live_images = set(_attachment_identity(attachments))
+            missing_images = [
+                item for item, identity in zip(retained, _attachment_identity(retained))
+                if attachment_is_image(item) and identity not in live_images
+            ]
+            if reference_id is not None and any(
+                attachment_is_image(item) and item.get("source_message_id") == reference_id
+                for item in [*retained, *attachments]
+            ):
+                missing_images = [item for item in missing_images if item.get("source_message_id") == reference_id]
+            elif not re.search(r"\b(?:(?:screenshot|image|photo|picture|attachment|diagram)s?|attached)\b", prompt_text, re.I):
+                missing_images = []
+            if missing_images:
+                requested_images = missing_images[-4:]
+                try:
+                    refreshed = await _refresh_discord_attachment_urls(
+                        message.channel, requested_images, current_only=True,
+                    )
+                except (asyncio.TimeoutError, OSError, discord.HTTPException):
+                    await message.channel.send(
+                        "I couldn't load the saved screenshot. Please retry `y:` when it is available.",
+                        suppress_embeds=True,
+                    )
+                    return
+                if len(refreshed) != len(requested_images):
+                    available = {(item["source_message_id"], item["attachment_id"]) for item in refreshed}
+                    pending_attachments_by_channel[channel_id] = [
+                        item for item in pending_attachments_by_channel.get(channel_id, [])
+                        if item not in requested_images or (item.get("source_message_id"), item.get("attachment_id")) in available
+                    ]
+                    persist_ticket_state(channel_id)
+                    await message.channel.send(
+                        "A saved screenshot is no longer available. Attach it to a new `y:` message to try again.",
+                        suppress_embeds=True,
+                    )
+                    return
+                attachments = _dedupe_attachment_payloads([
+                    *refreshed,
+                    *attachments,
+                ])
             async with message.channel.typing():
                 turn_result = await _run_internal_instruction_turn(
                     executor=self.investigation_executor,
@@ -624,7 +689,7 @@ class TicketBot(discord.Client):
                     current_history_override=current_history,
                 )
             if not was_stopped and self._defer_ticket_reply_for_followups(
-                channel_id, [*current_history, {
+                channel_id, [*(conversation_threads.get(channel_id, current_history) if preserve_handoff_history else current_history), {
                     "role": "system", "content": "Internal support staff instruction: " + prompt_text,
                 }], attachments,
             ):
@@ -640,13 +705,21 @@ class TicketBot(discord.Client):
                 or stop_reasons_by_channel.get(channel_id) == "staff_takeover"
             ):
                 if preserve_handoff_history:
-                    # The summon uses a short Discord transcript. Keep the durable
-                    # handoff history, including followups received during this turn.
                     conversation_threads.setdefault(channel_id, []).append(
                         {"role": "assistant", "content": turn_result.reply}
                     )
                 else:
-                    conversation_threads[channel_id] = turn_result.conversation_history
+                    replace_ticket_history(channel_id, turn_result.conversation_history)
+                if retained:
+                    used = set(_attachment_identity(attachments))
+                    remaining = [
+                        item for item in pending_attachments_by_channel.get(channel_id, [])
+                        if item not in retained or _attachment_identity([item])[0] not in used
+                    ]
+                    if remaining:
+                        pending_attachments_by_channel[channel_id] = remaining
+                    else:
+                        pending_attachments_by_channel.pop(channel_id, None)
                 persist_ticket_state(channel_id)
         except asyncio.CancelledError:
             logging.info(
@@ -786,13 +859,17 @@ class TicketBot(discord.Client):
             stopped=channel_id in stopped_channels,
         )
 
-        if (
-            action in {"staff_takeover", "staff_summon"}
-            and channel_id in team_handoff_notice_by_channel
-        ):
-            staff_attachments = _attachment_payloads_from_message(message)
-            if staff_attachments:
-                remember_team_handoff_followup_attachments(channel_id, staff_attachments)
+        if action in {"staff_takeover", "staff_summon"} and (content := _message_text_for_turn(message)):
+            staff_history = ({"role": "system", "content": f"Internal support staff message: {content}"}
+                             if action == "staff_takeover" else None)
+            if channel_id in team_handoff_notice_by_channel:
+                remember_team_handoff_followup(
+                    channel_id, _attachment_payloads_from_message(message),
+                    message_id=message.id, history_item=staff_history,
+                )
+            elif staff_history and has_team_handoff_context(channel_id) and (channel_id not in stopped_channels
+                                    or stop_reasons_by_channel.get(channel_id) == "staff_takeover"):
+                conversation_threads.setdefault(channel_id, []).append(staff_history)
 
         if action == "ignore":
             if (
@@ -812,16 +889,6 @@ class TicketBot(discord.Client):
             return
 
         if action == "staff_takeover":
-            if channel_id in team_handoff_notice_by_channel:
-                conversation_threads.setdefault(channel_id, []).append(
-                    {
-                        "role": "system",
-                        "content": (
-                            "Internal support staff message: "
-                            f"{_message_text_for_turn(message)}"
-                        ),
-                    }
-                )
             stopped_durably = await take_over_ticket_for_staff(channel_id)
             logging.info(
                 "Support staff took manual control of ticket %s; persisted=%s.",
@@ -859,7 +926,10 @@ class TicketBot(discord.Client):
             existing_task = pending_tasks.get(channel_id)
             if existing_task is not None and not existing_task.done():
                 existing_task.cancel()
+            retained = retained_handoff_attachments(channel_id)
             _discard_pending_ticket_payload(channel_id)
+            if retained:
+                pending_attachments_by_channel[channel_id] = retained
             summon_task = asyncio.create_task(
                 self._handle_ticket_staff_summon(
                     message,
@@ -1126,12 +1196,13 @@ class TicketBot(discord.Client):
                                 investigation_job=proposed_job,
                                 channel_name=getattr(channel, "name", None),
                                 support_reply=raw_final_reply,
+                                verified_evidence=flow_outcome.verified_evidence,
                             )
                             handoff_sent = notice is not None
                             if handoff_sent:
                                 proposed_job.mark_escalated_to_human()
                                 investigation_job.apply_snapshot(proposed_job)
-                                conversation_threads[channel_id] = proposed_history
+                                replace_ticket_history(channel_id, proposed_history)
                                 _retire_uncommitted_ticket_payload(channel_id)
                                 _remember_sent_handoff_notice(
                                     channel_id=channel_id,
@@ -1195,7 +1266,7 @@ class TicketBot(discord.Client):
                     if proposed_job is not None and not handoff_state_committed:
                         investigation_job.apply_snapshot(proposed_job)
                         if proposed_history is not None:
-                            conversation_threads[channel_id] = proposed_history
+                            replace_ticket_history(channel_id, proposed_history)
                     _retire_uncommitted_ticket_payload(channel_id)
                     if stop_reason == "boundary_stop":
                         reset_ticket_channel_for_terminal_reply(channel_id)

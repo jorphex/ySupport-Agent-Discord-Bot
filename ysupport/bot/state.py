@@ -21,6 +21,8 @@ SpecialtyKey = Literal["data", "docs", "bug"]
 TeamHandoffNoticeStatus = Literal[
     "open",
     "pending_delivery",
+    "posting",
+    "review",
     "delivered_pending_close",
 ]
 InvestigationMode = Literal[
@@ -78,6 +80,10 @@ class TeamHandoffNotice:
     status: TeamHandoffNoticeStatus = "open"
     pending_reply_text: Optional[str] = None
     followup_attachments: List[Dict[str, Any]] = field(default_factory=list)
+    discord_input_ids: list[int] = field(default_factory=list)
+    delivery_digest: str | None = None
+    delivery_after_id: int | None = None
+    delivery_source_id: int | None = None
 
 
 @dataclass
@@ -154,6 +160,7 @@ class TicketInvestigationJob:
 stopped_channels: set[int] = set()
 stop_reasons_by_channel: Dict[int, TicketStopReason] = {}
 conversation_threads: Dict[int, List[TResponseInputItem]] = {}
+history_discord_offsets_by_channel: dict[int, dict[int, int]] = {}
 pending_messages: Dict[int, str] = {}
 pending_attachments_by_channel: Dict[int, List[Dict[str, Any]]] = {}
 pending_tasks: Dict[int, asyncio.Task] = {}
@@ -299,14 +306,20 @@ def hydrate_ticket_state(channel_id: int) -> None:
     if payload.get("bug_report_debounce"):
         bug_report_debounce_channels.add(channel_id)
     unfinished = payload.get("pending_ticket_input")
-    if isinstance(unfinished, dict) and unfinished.get("text") and not payload.get("stopped"):
-        pending_messages[channel_id] = str(unfinished["text"])
-        pending_attachments_by_channel[channel_id] = list(unfinished.get("attachments", []))
-        reset_ticket_codex_session(channel_id)
+    if isinstance(unfinished, dict):
+        text = unfinished.get("text")
+        if not payload.get("stopped") or (not text and stop_reasons_by_channel.get(channel_id) == "staff_takeover"):
+            pending_attachments_by_channel[channel_id] = list(unfinished.get("attachments", []))
+            if text:
+                pending_messages[channel_id] = str(text)
+                reset_ticket_codex_session(channel_id)
     handoff_payload = payload.get("team_handoff_notice")
+    history_offsets = payload.get("history_discord_offsets")
     if isinstance(handoff_payload, dict):
         handoff_message_id = handoff_payload.get("telegram_message_id")
         handoff_chat_id = handoff_payload.get("telegram_chat_id")
+        if history_offsets is None and handoff_payload.get("status") != "delivered_pending_close":
+            history_offsets = handoff_payload.get("discord_history_offsets")
         if handoff_message_id is not None and handoff_chat_id:
             team_handoff_notice_by_channel[channel_id] = TeamHandoffNotice(
                 telegram_chat_id=str(handoff_chat_id),
@@ -320,7 +333,22 @@ def hydrate_ticket_state(channel_id: int) -> None:
                     for attachment in handoff_payload.get("followup_attachments", [])
                     if isinstance(attachment, dict)
                 ],
+                discord_input_ids=[
+                    message_id for message_id in handoff_payload.get(
+                        "discord_input_ids", [handoff_payload.get("latest_discord_input_id")]
+                    )
+                    if type(message_id) is int
+                ],
+                delivery_digest=handoff_payload.get("delivery_digest"),
+                delivery_after_id=handoff_payload.get("delivery_after_id"),
+                delivery_source_id=handoff_payload.get("delivery_source_id"),
             )
+    if isinstance(history_offsets, dict):
+        count = len(conversation_threads[channel_id])
+        offsets = {int(message_id): offset for message_id, offset in history_offsets.items()
+                   if message_id.isdecimal() and type(offset) is int and 0 <= offset < count}
+        if offsets:
+            history_discord_offsets_by_channel[channel_id] = offsets
 
 
 def hydrate_persisted_team_handoff_states() -> int:
@@ -352,8 +380,8 @@ def _unfinished_ticket_input(channel_id: int) -> dict[str, Any] | None:
     queued = pending_messages.get(channel_id)
     if queued:
         text = f"{text}\n{queued}" if text else queued
-        attachments.extend(pending_attachments_by_channel.get(channel_id, []))
-    return {"text": text, "attachments": attachments} if text else None
+    attachments.extend(pending_attachments_by_channel.get(channel_id, []))
+    return {"text": text, "attachments": attachments} if text or attachments else None
 
 
 def persist_ticket_state(channel_id: int) -> bool:
@@ -362,6 +390,7 @@ def persist_ticket_state(channel_id: int) -> bool:
     payload = {
         "channel_id": channel_id,
         "history": list(conversation_threads.get(channel_id, [])),
+        "history_discord_offsets": history_discord_offsets_by_channel.get(channel_id, {}),
         "pending_ticket_input": _unfinished_ticket_input(channel_id),
         "investigation_job": _serialize_investigation_job(
             ticket_investigation_jobs.get(channel_id)
@@ -380,6 +409,24 @@ def persist_ticket_state(channel_id: int) -> bool:
         ),
     }
     return _write_json(_TICKET_STATE_DIR / f"{channel_id}.json", payload)
+
+
+def replace_ticket_history(
+    channel_id: int,
+    history: list[TResponseInputItem],
+    *,
+    discord_offsets: dict[int, int] | None = None,
+) -> None:
+    if discord_offsets is None and (previous := history_discord_offsets_by_channel.get(channel_id)):
+        saved = conversation_threads.get(channel_id, [])
+        prefix = next((index for index, (old, new) in enumerate(zip(saved, history)) if old != new),
+                      min(len(saved), len(history)))
+        discord_offsets = {message_id: index for message_id, index in previous.items() if index < prefix}
+    if discord_offsets:
+        history_discord_offsets_by_channel[channel_id] = discord_offsets
+    else:
+        history_discord_offsets_by_channel.pop(channel_id, None)
+    conversation_threads[channel_id] = history
 
 
 def clear_ticket_channel_state(
@@ -401,6 +448,7 @@ def clear_ticket_channel_state(
         else None
     )
     conversation_threads.pop(channel_id, None)
+    history_discord_offsets_by_channel.pop(channel_id, None)
     ticket_investigation_jobs.pop(channel_id, None)
     pending_messages.pop(channel_id, None)
     pending_attachments_by_channel.pop(channel_id, None)
@@ -487,13 +535,39 @@ def remember_team_handoff_notice(channel_id: int, notice: TeamHandoffNotice) -> 
     persist_ticket_state(channel_id)
 
 
-def remember_team_handoff_followup_attachments(
+def retained_handoff_attachments(channel_id: int) -> list[dict[str, Any]]:
+    offsets = history_discord_offsets_by_channel.get(channel_id, {})
+    return [item for item in pending_attachments_by_channel.get(channel_id, [])
+            if item.get("handoff_followup") or item.get("source_message_id") in offsets]
+
+
+def has_team_handoff_context(channel_id: int) -> bool:
+    return channel_id in team_handoff_notice_by_channel or bool(retained_handoff_attachments(channel_id))
+
+
+def remember_team_handoff_followup(
     channel_id: int,
     attachments: List[Dict[str, Any]],
+    *,
+    message_id: int | None = None,
+    history_item: TResponseInputItem | None = None,
 ) -> None:
     notice = team_handoff_notice_by_channel.get(channel_id)
     if notice is None:
         return
+    if history_item is not None:
+        history = conversation_threads.setdefault(channel_id, [])
+        offsets = history_discord_offsets_by_channel.setdefault(channel_id, {})
+        offset = offsets.get(message_id, len(history))
+        if offset < len(history):
+            history[offset] = history_item
+        else:
+            if type(message_id) is int:
+                offsets[message_id] = len(history)
+            history.append(history_item)
+    for source_id in [message_id, *(item.get("source_message_id") for item in attachments)]:
+        if type(source_id) is int and source_id not in notice.discord_input_ids:
+            notice.discord_input_ids.append(source_id)
     seen_urls = {
         str(attachment.get("url") or "").strip()
         for attachment in notice.followup_attachments
@@ -719,6 +793,10 @@ def _serialize_team_handoff_notice(
         "message_text": notice.message_text,
         "status": notice.status,
         "pending_reply_text": notice.pending_reply_text,
+        "discord_input_ids": list(notice.discord_input_ids),
+        "delivery_digest": notice.delivery_digest,
+        "delivery_after_id": notice.delivery_after_id,
+        "delivery_source_id": notice.delivery_source_id,
         "followup_attachments": [
             dict(attachment) for attachment in notice.followup_attachments
         ],

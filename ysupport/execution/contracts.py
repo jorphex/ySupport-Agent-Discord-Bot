@@ -6,6 +6,10 @@ from agents import TResponseInputItem
 from ysupport.bot.state import BotRunContext, TicketInvestigationJob
 
 
+PRIVATE_TICKET_CONTEXT_LIMIT = 30
+PRIVATE_TICKET_HANDOFF_CONTEXT_LIMIT = 2 * PRIVATE_TICKET_CONTEXT_LIMIT
+
+
 @dataclass
 class TicketAgentFlowOutcome:
     raw_final_reply: str

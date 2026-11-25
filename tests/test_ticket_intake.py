@@ -1,6 +1,7 @@
 import tests as _test_environment  # noqa: F401
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -48,14 +49,30 @@ class _FakeDiscordChannel:
     def __init__(self, channel_id: int):
         self.id = channel_id
         self.sent_messages: list[str] = []
+        self.history_messages = []
         self.category = None
         self.guild = None
 
     async def send(self, message: str, *args, **kwargs):
         self.sent_messages.append(message)
 
+    async def history(self, *, after=None, limit=None, oldest_first=False, **kwargs):
+        rows = [message for message in self.history_messages if after is None or message.id > after.id]
+        for message in (rows if oldest_first else rows[::-1])[:limit]:
+            yield message
+
     def typing(self):
         return _FakeTypingContext()
+
+
+class _FakeTicketWithHistory(_FakeDiscordChannel):
+    def __init__(self, channel_id: int):
+        super().__init__(channel_id)
+        self.original_message = SimpleNamespace(
+            id=channel_id + 10_000, content="initial issue", attachments=[],
+            author=SimpleNamespace(id=777, bot=False),
+        )
+        self.history_messages.append(self.original_message)
 
 
 class _FakeOriginalAuthor:

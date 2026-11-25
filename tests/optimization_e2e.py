@@ -61,6 +61,7 @@ from tests.test_ticket_intake import (
     _FakeDiscordChannel,
     _FakeOriginalMessage,
     _FakePublicChannel,
+    _FakeTicketWithHistory,
     _FakeTriggerMessage,
 )
 from ysupport.bot.views import (
@@ -671,9 +672,10 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     bot.investigation_executor = TransportTicketInvestigationExecutor(
         JsonEndpointTicketExecutionTransport(endpoint)
     )
-    channels = {i: _FakeDiscordChannel(i) for i in (501, 502, 503, 504, 505)}
+    channels = {i: _FakeTicketWithHistory(i) for i in (501, 502, 503, 504, 505)}
     for channel in channels.values():
         channel.category = SimpleNamespace(id=1)
+        channel.original_message.content = "What is the withdrawal status?"
     bot.get_channel = channels.get
     updates = asyncio.Queue()
     callbacks = []
@@ -702,7 +704,7 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             ),
         )
         state.conversation_threads[channel] = [
-            {"role": "user", "content": "What is the withdrawal status?"}
+            {"role": "user", "content": channels[channel].original_message.content}
         ]
         state.persist_ticket_state(channel)
 
