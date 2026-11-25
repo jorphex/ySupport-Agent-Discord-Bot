@@ -13,6 +13,7 @@ class TicketAgentFlowOutcome:
     completed_agent_key: str | None
     requires_human_handoff: bool
     handoff_reason: str | None = None
+    verified_evidence: list[str] = field(default_factory=list)
 
 
 @dataclass

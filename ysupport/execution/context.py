@@ -6,6 +6,11 @@ from ysupport.bot.state import TicketInvestigationJob
 
 
 TX_HASH_RE = re.compile(r"\b0x[a-fA-F0-9]{64}\b")
+_TX_CORRECTION = re.compile(
+    rf"\buse\s+`?({TX_HASH_RE.pattern})`?\s+instead\b|"
+    rf"\b(?:instead\s+use\s+|(?:right|correct) (?:tx(?: hash)?|transaction(?: hash)?|hash)\s*(?:is\b|:)\s*)"
+    rf"`?({TX_HASH_RE.pattern})", re.I,
+)
 CHAIN_NAMES = (
     "ethereum",
     "base",
@@ -25,6 +30,14 @@ def contains_tx_hash(text: str) -> bool:
     return bool(TX_HASH_RE.search(text))
 
 
+def corrected_tx_hash(text: str) -> str | None:
+    matches = list(_TX_CORRECTION.finditer(text))
+    if matches:
+        replacement = matches[-1]
+        return (replacement[1] or replacement[2]).lower()
+    return None
+
+
 def merge_explicit_evidence(
     investigation_job: TicketInvestigationJob,
     text: str,
@@ -32,8 +45,10 @@ def merge_explicit_evidence(
     if not text:
         return
 
+    if corrected := corrected_tx_hash(text):
+        investigation_job.evidence.withdrawal_tx_hash = corrected
     for tx_hash in TX_HASH_RE.findall(text):
-        investigation_job.remember_tx_hash(tx_hash)
+        investigation_job.remember_tx_hash(tx_hash.lower())
 
     chain_match = CHAIN_NAME_RE.search(text)
     if chain_match is not None:

@@ -24,11 +24,13 @@ from eth_abi import encode, decode  # noqa: E402
 from web3 import Web3  # noqa: E402
 from tests.internal_rpc_e2e import RpcNode, VAULT, WALLET, TX, SECRET  # noqa: E402
 from ysupport import config  # noqa: E402
+from ysupport.bot.state import TicketInvestigationJob  # noqa: E402
 from ysupport.tools import chain_access, vault_position_tools, kong_vaults  # noqa: E402
 from ysupport.execution.codex_support_endpoint import (
     CodexSupportTicketExecutionJsonEndpoint,
 )  # noqa: E402
-from ysupport.execution.transport import build_smoke_transport_request  # noqa: E402
+from ysupport.execution.context import merge_explicit_evidence  # noqa: E402
+from ysupport.execution.transport import build_smoke_transport_request, serialize_investigation_job  # noqa: E402
 
 ALPHA = "0x" + "ab" * 20
 BURN_TX = "0x" + "77" * 32
@@ -83,7 +85,7 @@ class Observations:
                 "transactions": [],
             }, None
         if method == "eth_getTransactionReceipt" and params[0].lower() in (TX, BURN_TX):
-            burn = params[0].lower() == BURN_TX
+            burn = params[0].lower() == BURN_TX or self.mode == "two_payouts"
             sender, receiver = (WALLET, ZERO) if burn else ("0x" + "55" * 20, WALLET)
             log = {
                 "address": VAULT,
@@ -202,6 +204,8 @@ class Observations:
                 return encoded(["uint256"], [value]), None
         if sig == selector("maxWithdraw(address)"):
             return encoded(["uint256"], [123]), None
+        if sig == selector("asset()"):
+            return encoded(["address"], ["0x" + ("55" if self.mode == "wrong_payout_token" else "66") * 20]), None
         if sig == selector("previewRedeem(uint256)"):
             shares = decode(["uint256"], bytes.fromhex(data[10:]))[0]
             return encoded(["uint256"], [shares * 6 // 5]), None
@@ -212,12 +216,14 @@ class Observations:
             assert (
                 loss == 0
                 and call.get("from", "").lower() == WALLET
-                and receiver.lower() == owner.lower() == WALLET
+                and owner.lower() == WALLET
+                and receiver.lower() == (ALPHA if self.mode == "exact_redemption" else WALLET)
             )
             if self.mode == "revert":
                 return None, {"code": 3, "message": "execution reverted"}
+            adjustment = {"loss": -1, "capacity_mismatch": 1}.get(self.mode, 0)
             return encoded(
-                ["uint256"], [shares * 6 // 5 - (1 if self.mode == "loss" else 0)]
+                ["uint256"], [shares * 6 // 5 + adjustment]
             ), None
         if sig == selector("echo(string)"):
             value = decode(["string"], bytes.fromhex(data[10:]))[0]
@@ -251,10 +257,18 @@ from pathlib import Path
 request=json.loads((Path(os.environ['TICKET_EXECUTION_RUN_DIR'])/'support_request.json').read_text())
 assert not any(k.endswith('_RPC_URL') or k=='ALCHEMY_KEY' for k in os.environ)
 values=[]
-for query in json.loads(request['current_user_message']):
+try:
+ instruction=json.JSONDecoder().raw_decode(request['current_user_message'])[0]
+except json.JSONDecodeError:
+ instruction=json.loads(Path(__file__).with_name('fixture_instruction.json').read_text())
+for query in (instruction['queries'] if isinstance(instruction,dict) else instruction):
  p=subprocess.run(request['support_state']['internal_rpc']['command'],input=json.dumps(query),text=True,capture_output=True,timeout=20)
  values.append(json.loads(p.stdout))
-answer={'answer':json.dumps(values),'requires_human_handoff':False,'handoff_kind':None,'handoff_reason':None,'evidence_summary':'Frozen provider observations over real RPC','used_tools':['shell']}
+Path(__file__).with_name('observations.json').write_text(json.dumps(values))
+answer={'answer':'Fixture reads complete.','requires_human_handoff':False,'handoff_kind':None,'handoff_reason':None,'evidence_summary':'Frozen provider observations over real RPC','used_tools':['shell']}
+if isinstance(instruction,dict):
+ refs=[item['ref'] for value in values for item in value.get('evidence',[])]
+ answer.update(answer=instruction['answer'],evidence_refs=(None if instruction.get('uncited') else refs if instruction['cite'] else ['fabricated']))
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(answer)}}))
 """)
         vault = {
@@ -300,7 +314,9 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 )
                 result = json.loads(await endpoint.execute_json_turn(request.to_json()))
                 assert SECRET not in json.dumps(result)
-                return json.loads(result["flow_outcome"]["raw_final_reply"])[0]
+                raw = (root / "observations.json").read_text()
+                assert SECRET not in raw
+                return json.loads(raw)[0]
 
             async def check(name, func):
                 try:
@@ -355,6 +371,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 "read_failure",
                 "revert",
                 "loss",
+                "capacity_mismatch",
                 "unknown_version",
             ):
                 await check("withdrawal_" + mode, lambda mode=mode: withdrawal(mode))
@@ -482,6 +499,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
 
             async def history_case(mode):
                 observations.mode = mode
+                before = len(node.calls)
                 reply = await turn(
                     {
                         "operation": "get_wallet_history",
@@ -494,6 +512,8 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                     }
                 )
                 assert reply["ok"], reply
+                assert not any(call["method"] == "eth_call" and call["params"][0]["data"][2:10] == selector("asset()")
+                               for call in node.calls[before:]), "Ordinary wallet history looked up the payout asset"
                 data = json.loads(reply["result"])
                 assert data["coverage"]["history_complete"] is False, data
                 if mode == "history_failure":
@@ -515,6 +535,353 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
 
             for mode in ("liquid", "history_failure", "zero_payout"):
                 await check("history_" + mode, lambda mode=mode: history_case(mode))
+
+            async def verified_claim(mode):
+                observations.mode = {"partial_fact": "zero_payout", "zero_shares": "zero"}.get(mode, mode)
+                vault["apiVersion"] = "3.0.0"
+                redemption = mode in {"redeem_ready", "revert", "wrong_wallet", "uncited_recipe",
+                                      "multiline_recipe", "multiline_parameters", "zero_shares"}
+                query = {"operation": "get_withdrawal_instructions", "arguments": {
+                    "chain": "ethereum", "vault_address": VAULT, "user_address_or_ens": WALLET,
+                }} if redemption else {"operation": "get_wallet_history", "arguments": {
+                    "chain": "ethereum", "wallet_address": WALLET, "token_address": VAULT,
+                    "tx_hashes_json": json.dumps([BURN_TX]), "verify_payout": True,
+                }}
+                answer = {
+                    "payout_paraphrase": "The withdrawal returned 999 USDC.",
+                    "multiline_recipe": "Open Write Contract.\n`redeem(999, wallet, wallet, 0)`.",
+                    "multiline_parameters": "Open Write Contract and select redeem.\nshares = 999\nreceiver = your wallet\nmax_loss = 0.",
+                    "partial_fact": "I can't tell whether you received a payout. The receipt shows a share burn. Please share the token transfer hash.",
+                }.get(mode, "You received 999 USDC from the withdrawal." if mode in {"uncited", "wrong_amount"}
+                      else "Call redeem(999, owner, owner, 0)." if mode == "uncited_recipe"
+                      else "")
+                ordinary = {
+                    "ordinary_docs": ("How does the withdrawal queue work?", "It determines which strategies supply liquidity."),
+                    "withdrawal_button": ("Where is the withdrawal button?", "Open the vault page and select Withdraw."),
+                    "ordinary_airdrop": ("Did I receive an airdrop?", "Which airdrop are you asking about?"),
+                    "ordinary_liquidation": (
+                        "Where are my funds after my Flex position was liquidated?",
+                        "The liquidation transaction shows which collateral was seized.",
+                    ),
+                }.get(mode)
+                queries = [] if ordinary or mode in {"payout_paraphrase", "multiline_recipe", "multiline_parameters"} else [query]
+                if ordinary:
+                    answer = ordinary[1]
+                instruction = {"queries": queries, "cite": mode != "forged",
+                    "uncited": bool(ordinary) or mode in {"uncited", "uncited_recipe", "payout_paraphrase",
+                                                        "multiline_recipe", "multiline_parameters"},
+                    "answer": answer}
+                request = replace(build_smoke_transport_request(), smoke_mode=None, aggregated_text=json.dumps(instruction))
+                if mode == "payout_paraphrase":
+                    request.aggregated_text += "\nWhat happened with my withdrawal?"
+                elif mode == "partial_fact":
+                    request.aggregated_text += "\nDid my withdrawal pay out?"
+                elif mode == "redeem_ready":
+                    request.aggregated_text += "\nRedeem all shares."
+                elif mode == "corrected_hash":
+                    request.aggregated_text += f"\nCorrection: use {TX} instead."
+                elif mode in {"remembered_correction", "durable_correction"}:
+                    (root / "fixture_instruction.json").write_text(json.dumps(instruction))
+                    request.aggregated_text = "Did the withdrawal go through?"
+                    request.current_history = [
+                        {"role": "user", "content": f"Check {BURN_TX}."},
+                        {"role": "user", "content": f"Correction: use {TX} instead."},
+                        {"role": "assistant", "content": "I'll check the corrected hash."},
+                    ]
+                    request.investigation_job["evidence"]["tx_hashes"] = [BURN_TX, TX]
+                    if mode == "durable_correction":
+                        job = TicketInvestigationJob(request.run_context["channel_id"])
+                        for item in request.current_history[:2]:
+                            merge_explicit_evidence(job, item["content"])
+                        request.investigation_job = serialize_investigation_job(job)
+                        assert job.evidence.tx_hashes == [BURN_TX, TX]
+                        request.current_history.extend(
+                            {"role": "user", "content": f"Follow-up {i}."} for i in range(12)
+                        )
+                elif ordinary:
+                    request.aggregated_text += "\n" + ordinary[0]
+                if mode == "wrong_wallet":
+                    request.investigation_job["evidence"]["wallet"] = ALPHA
+                outcome = json.loads(await endpoint.execute_json_turn(request.to_json()))["flow_outcome"]
+                answer = outcome["raw_final_reply"]
+                proofs = outcome.get("verified_evidence", [])
+                assert "999" not in answer, outcome
+                if mode in {"liquid", "redeem_ready", "wrong_amount"}:
+                    block = 4096 if redemption else 123
+                    assert proofs and "12000000" in answer and f"block {block}" in answer, outcome
+                    assert (BURN_TX in answer) != redemption, outcome
+                    if redemption:
+                        assert "max_loss=0" in answer and "10000000" in answer, outcome
+                elif ordinary:
+                    assert answer == ordinary[1] and not proofs
+                elif mode == "partial_fact":
+                    assert "burn" in answer.lower() and "couldn't verify" in answer.lower(), outcome
+                    assert "transfer hash" in answer.lower() and "12000000" not in answer, outcome
+                elif mode == "zero_shares":
+                    assert "zero vault shares" in answer and "block 4096" in answer, outcome
+                    assert proofs and "past holdings" in answer and "max_loss=" not in answer, outcome
+                else:
+                    assert all("share burn" in proof for proof in proofs) and "couldn't verify" in answer.lower(), outcome
+                    assert "12000000" not in answer and "max_loss=0" not in answer, outcome
+                return {"verified": proofs, "answer": answer}
+
+            for mode in ("liquid", "zero_payout", "wrong_payout_token", "history_failure", "forged", "redeem_ready", "zero_shares",
+                         "revert", "wrong_wallet", "wrong_amount", "uncited", "uncited_recipe",
+                         "payout_paraphrase", "multiline_recipe", "multiline_parameters", "partial_fact",
+                         "corrected_hash", "remembered_correction", "durable_correction", "ordinary_docs",
+                         "withdrawal_button", "ordinary_airdrop", "ordinary_liquidation"):
+                await check("claim_" + mode, lambda mode=mode: verified_claim(mode))
+
+            async def claim_scope(mode):
+                observations.mode = {
+                    "failed_receipt": "history_failure", "implicit_receipt": "history_failure",
+                    "two_receipts": "two_payouts", "two_wording": "two_payouts", "migration_burn": "zero_payout",
+                    "restated_second": "two_payouts", "exact_redemption": "exact_redemption",
+                    "return_to_owner": "exact_redemption",
+                    "switch_to_full_balance": "exact_redemption",
+                    "old_vault_recipient": "exact_redemption", "same_vault_exact": "exact_redemption",
+                    "negated_recipient": "exact_redemption", "prior_full_overrides_exact": "exact_redemption",
+                    "asset_followup": "exact_redemption", "new_owner_old_recipient": "exact_redemption",
+                    "raw_amount_overridden": "exact_redemption", "recipient_wallet_label": "exact_redemption",
+                    "restated_failed_receipt": "history_failure", "repeated_failed_receipt": "history_failure",
+                }.get(mode, "liquid")
+                compare_receipts = mode in {"two_receipts", "partial_receipts", "two_wording", "restated_second"}
+                hashes = [BURN_TX, TX] if compare_receipts else [BURN_TX]
+                history = {"operation": "get_wallet_history", "arguments": {
+                    "chain": "ethereum", "wallet_address": WALLET, "token_address": VAULT,
+                    "tx_hashes_json": json.dumps(hashes),
+                }}
+                if compare_receipts or mode in {"matching_wallet", "explicit_wallet", "remembered_wallet"}:
+                    history["arguments"]["verify_payout"] = True
+                redemption = {"operation": "get_withdrawal_instructions", "arguments": {
+                    "chain": "ethereum", "vault_address": VAULT,
+                }}
+                simulate = {**redemption, "arguments": {**redemption["arguments"], "user_address_or_ens": WALLET}}
+                exact = {**simulate, "arguments": {**simulate["arguments"], "shares_raw": "100", "receiver_address": ALPHA}}
+                third_party = {**simulate, "arguments": {**simulate["arguments"], "receiver_address": ALPHA}}
+                other_vault = "0x" + "55" * 20
+                vault_url = f"https://yearn.fi/vaults/1/{VAULT}"
+                exact_question = (
+                    f"How can I redeem only 100 raw shares from https://yearn.fi/vaults/1/{VAULT} "
+                    f"with wallet {WALLET}, to recipient {ALPHA}?"
+                )
+                question, draft, queries, cite = {
+                    "read_only_share_balance": (f"How many shares do I hold in {vault_url} with wallet {WALLET}? Only show the balance.",
+                        "Your wallet holds 10,000,000 raw vault shares.", [simulate], False),
+                    "additive_deposit_correction": (f"Correction: it was Base. Here is the second deposit transaction {TX}. Check both.",
+                        "I'll compare both deposit transactions on Base.", [], False),
+                    "remembered_wallet_after_correction": (f"Now redeem all from {vault_url}.", "", [simulate], True),
+                    "confirmed_bare_wallet": (f"Now redeem all from {vault_url}.", "", [simulate], True),
+                    "recipient_as_wallet_owner": (f"Redeem all from {vault_url} to wallet {WALLET}.", "", [simulate], True),
+                    "recipient_wallet_label": (f"Redeem all from {vault_url} with wallet {WALLET} to wallet {ALPHA}.",
+                        "", [third_party], True),
+                    "raw_amount_overridden": (exact_question + "\nWithdraw only 75 USDC.", "", [exact], True),
+                    "named_withdrawal_arguments": (f"How do I withdraw all from the V3 vault {vault_url}?",
+                        f"On the explorer's Write Contract tab, open `withdraw`. Enter `assets=75`, "
+                        f"`receiver={WALLET}`, `owner={WALLET}`, and `max_loss=0`, then click Write.", [], False),
+                    "withdrawn_funds_destination": (f"I withdrew in {BURN_TX}. Where did the funds go?",
+                        "The funds reached your wallet.", [{"operation": "get_receipt", "arguments": {
+                            "chain": "ethereum", "tx_hash": BURN_TX,
+                        }}], False),
+                    "negated_recipient": (f"Redeem all from {vault_url} with wallet {WALLET}. Do not send the proceeds to {ALPHA}.",
+                        "", [third_party], True),
+                    "prior_full_overrides_exact": ("Can you verify that now?", "", [exact], True),
+                    "asset_followup": ("Can I take out 75 USDC instead?", "", [exact], True),
+                    "corrected_vault_in_batch": (f"Redeem all from {vault_url} with wallet {WALLET}.\n"
+                        f"Correction: use https://yearn.fi/vaults/8453/{other_vault}.", "", [simulate], True),
+                    "confirmed_vault_in_batch": (f"Redeem all from https://yearn.fi/vaults/8453/{other_vault}.\n"
+                        f"Correction: redeem all from {vault_url} with wallet {WALLET}.", "", [simulate], True),
+                    "corrected_amount_in_batch": (f"Redeem all from {vault_url} with wallet {WALLET}.\n"
+                        "Actually, can I take out 75 USDC instead?", "", [simulate], True),
+                    "corrected_wallet_stale_proof": (
+                        f"Redeem all from {vault_url} with wallet {WALLET}.\n"
+                        f"Correction: redeem all from {vault_url} with wallet {ALPHA}.", "", [simulate], True),
+                    "new_owner_old_recipient": (f"Redeem all from {vault_url} with wallet {WALLET}.",
+                        "", [third_party], True),
+                    "new_owner_own_recipient": (f"Redeem all from {vault_url} with wallet {WALLET}.",
+                        "", [simulate], True),
+                    "contradictory_amounts_in_batch": (
+                        f"Redeem all from {vault_url} with wallet {WALLET}.\nWithdraw only 75 USDC.", "", [simulate], True),
+                    "multiline_withdraw": (f"Can I withdraw all from this V3 vault {vault_url}?",
+                        f"On the explorer, write this call:\nwithdraw(\n  999,\n  {WALLET},\n  {WALLET},\n  0\n)", [], False),
+                    "withdrawal_hash_plain_confirmation": (f"My withdrawal is {BURN_TX}. Can you confirm the tokens were sent?",
+                        "Yes, the USDC reached your wallet.", [{"operation": "get_receipt", "arguments": {
+                            "chain": "ethereum", "tx_hash": BURN_TX,
+                        }}], False),
+                    "unguarded_withdraw": (f"Can I withdraw all from this V3 vault {vault_url}?",
+                        f"Use withdraw(999, {WALLET}, {WALLET}, 0) on the explorer.", [], False),
+                    "unguarded_redeem": (f"Can I redeem all from this V3 vault {vault_url}?",
+                        "Call the four-argument redeem function with your maxRedeem balance, your wallet as owner and receiver, and zero max loss.",
+                        [], False),
+                    "unguarded_payout": (f"Did the USDC reach my wallet after I withdrew? Transaction: {BURN_TX}.",
+                        "Yes, the USDC arrived in your wallet.", [{"operation": "get_receipt", "arguments": {
+                            "chain": "ethereum", "tx_hash": BURN_TX,
+                        }}], False),
+                    "general_withdrawal_asset": ("Which asset does a Yearn vault pay when you withdraw?",
+                        "A withdrawal is paid in the vault's underlying token.", [], False),
+                    "failed_receipt": (f"Did the tokens reach my wallet? Withdrawal transaction {BURN_TX}.",
+                        "Yes. The USDC reached your wallet.", [history], False),
+                    "prose_recipe": (f"How do I redeem from {VAULT}?",
+                        "Open Write Contract and select the four-input redeem. Set _shares to 999 and _maxLoss to 0.", [], False),
+                    "run_recipe": (f"How do I pull my shares out of https://yearn.fi/vaults/1/{VAULT}?",
+                        "Run the four-argument redeem function with 999 shares, your address for both accounts, and zero as the final argument.",
+                        [], False),
+                    "implicit_receipt": ("Did the coins land in my account?",
+                        "Yes, the USDC arrived in your wallet.", [history], False),
+                    "restated_failed_receipt": (f"Did the coins land in my account? Tx: {BURN_TX}.",
+                        "Yes, the USDC arrived in your wallet.", [history], False),
+                    "repeated_failed_receipt": (f"Did the coins land in my account? Tx: {BURN_TX}.",
+                        "Yes, the USDC arrived in your wallet.", [history], False),
+                    "wrong_vault": (f"How can I redeem all shares from https://yearn.fi/vaults/1/{ALPHA} with wallet {WALLET}?",
+                        "", [simulate], True),
+                    "wrong_chain": (f"How can I redeem all shares from https://yearn.fi/vaults/8453/{VAULT} with wallet {WALLET}?",
+                        "", [simulate], True),
+                    "linked_vault": (f"How can I redeem all shares from {vault_url} with wallet {WALLET}?",
+                        "", [simulate], True),
+                    "unspecified_redemption_amount": (f"How can I redeem from {vault_url} with wallet {WALLET}?",
+                        "", [simulate], True),
+                    "spelled_amount": (f"Can I redeem fifty shares from {vault_url} with wallet {WALLET}?",
+                        "", [simulate], True),
+                    "asset_amount": (f"Can I take 100 USDC out of {vault_url}? My wallet is {WALLET}.",
+                        "", [simulate], True),
+                    "restricted_full_amount": (f"Redeem all except fifty shares from {vault_url}, wallet {WALLET}.",
+                        "", [simulate], True),
+                    "alternative_full_amount": (f"Should I redeem all shares or only half from {vault_url}, wallet {WALLET}?",
+                        "", [simulate], True),
+                    "old_vault_recipient": (f"New question: how do I withdraw all from {vault_url} with wallet {WALLET}?",
+                        "", [third_party], True),
+                    "new_vault_owner": (f"New question: how do I withdraw all from {vault_url} with wallet {WALLET}?",
+                        "", [simulate], True),
+                    "partial_target_override": (f"Use vault {VAULT} on the same network. Can I redeem all shares now?",
+                        "", [simulate], True),
+                    "same_vault_exact": ("Can you verify that same redemption now?", "", [exact], True),
+                    "wrong_redemption_parameters": (exact_question, "", [simulate], True),
+                    "exact_redemption": (exact_question, "", [exact], True),
+                    "return_to_owner": ("Actually, send it to my own wallet.", "", [exact], True),
+                    "switch_to_full_balance": ("Actually, withdraw all.", "", [exact], True),
+                    "ambiguous_redemption_amount": (f"How can I redeem half my shares from https://yearn.fi/vaults/1/{VAULT}?",
+                        "", [simulate], True),
+                    "linked_vault_followup": ("Can I redeem all shares from that vault now?", "", [simulate], True),
+                    "explicit_wallet": (f"Did {BURN_TX} pay this wallet {ALPHA}?",
+                        "", [history], True),
+                    "matching_wallet": (f"Did {BURN_TX} pay this wallet {WALLET}?",
+                        "", [history], True),
+                    "remembered_wallet": (f"Did the transaction {BURN_TX} pay out?",
+                        "", [history], True),
+                    "missing_wallet": (f"How do I withdraw from {VAULT}?",
+                        "Share your wallet address so I can verify a safe withdrawal.", [redemption], False),
+                    "two_receipts": ("Did both of those withdrawals pay out?", "", [history], True),
+                    "two_wording": ("Did the two withdrawals pay out?", "", [history], True),
+                    "restated_second": (f"Did both withdrawals pay out? The second is {TX}.", "", [history], True),
+                    "partial_receipts": ("Did both of those withdrawals pay out?", "", [history], True),
+                    "migration_read": (f"Which token did I receive during migration? The transfer is {BURN_TX}.",
+                        "This receipt lookup is incomplete. Check the destination transfer.", [history], False),
+                    "migration_burn": (f"Which replacement token did migration send in {BURN_TX}?",
+                        "The source burn is visible. Check the destination transfer for the replacement token.", [history], False),
+                    "migration_positive": (f"Which replacement token should I look for after migrating? Source transaction {BURN_TX}.",
+                        "Check the replacement token identified by the migration docs at the destination.", [history], False),
+                    "withdrawal_button_read": ("Where is the withdrawal button?",
+                        "Open the vault page and select Withdraw.", [history], False),
+                    "withdrawal_button_followup": ("Where is the withdrawal button?",
+                        "Open the vault page and select Withdraw.", [history], False),
+                }[mode]
+                if mode in {"migration_read", "withdrawal_button_read", "withdrawal_button_followup"}:
+                    observations.mode = "history_failure"
+                (root / "fixture_instruction.json").write_text(json.dumps({
+                    "queries": queries, "answer": draft, "cite": cite, "uncited": not cite,
+                }))
+                request = replace(build_smoke_transport_request(), smoke_mode=None, aggregated_text=question)
+                request.run_context["is_public_trigger"] = True
+                if mode == "additive_deposit_correction":
+                    job = TicketInvestigationJob(request.run_context["channel_id"])
+                    merge_explicit_evidence(job, f"Here is the first deposit transaction {BURN_TX}.")
+                    merge_explicit_evidence(job, question)
+                    request.investigation_job = serialize_investigation_job(job)
+                    assert job.evidence.tx_hashes == [BURN_TX, TX] and job.evidence.chain == "base"
+                if mode in {"remembered_wallet_after_correction", "confirmed_bare_wallet", "recipient_as_wallet_owner"}:
+                    request.investigation_job["evidence"]["wallet"] = ALPHA if mode == "recipient_as_wallet_owner" else WALLET
+                if mode in {"remembered_wallet_after_correction", "confirmed_bare_wallet"}:
+                    request.current_history = [{"role": "user", "content": f"Correction: my wallet is {ALPHA}."}]
+                if mode == "confirmed_bare_wallet":
+                    request.current_history += [
+                        {"role": "user", "content": WALLET},
+                        {"role": "assistant", "content": "Is this your wallet address?"},
+                        {"role": "user", "content": "Yes."},
+                    ]
+                if mode == "remembered_wallet":
+                    request.current_history = [{"role": "user", "content": f"My wallet is {ALPHA}."}]
+                if mode in {"implicit_receipt", "restated_failed_receipt", "repeated_failed_receipt", "withdrawal_button_followup"}:
+                    request.current_history = [{"role": "user", "content": f"My withdrawal transaction was {BURN_TX}."}]
+                if mode == "repeated_failed_receipt":
+                    request.current_history.append({"role": "user", "content": f"Here is the hash again: {BURN_TX}."})
+                if mode == "linked_vault_followup":
+                    request.current_history = [
+                        {"role": "user", "content": f"I mean https://yearn.fi/vaults/8453/{VAULT}, wallet {WALLET}."},
+                    ]
+                if mode in {"return_to_owner", "switch_to_full_balance", "same_vault_exact", "prior_full_overrides_exact",
+                            "asset_followup"}:
+                    request.current_history = [{"role": "user", "content": exact_question}]
+                if mode in {"new_owner_old_recipient", "new_owner_own_recipient"}:
+                    request.current_history = [{"role": "user", "content": exact_question.replace(WALLET, other_vault)}]
+                if mode == "prior_full_overrides_exact":
+                    request.current_history.append({"role": "user", "content": "Actually, redeem everything."})
+                if mode in {"old_vault_recipient", "new_vault_owner", "partial_target_override"}:
+                    prior = exact_question.replace(VAULT, other_vault)
+                    if mode == "partial_target_override":
+                        prior = f"The correct network is Base. See https://yearn.fi/vaults/8453/{other_vault}."
+                    request.current_history = [{"role": "user", "content": prior}]
+                if compare_receipts:
+                    request.current_history = [
+                        {"role": "user", "content": f"Check this withdrawal: {BURN_TX}"},
+                        {"role": "user", "content": f"Here is the second one: {TX}"},
+                    ]
+                outcome = json.loads(await endpoint.execute_json_turn(request.to_json()))["flow_outcome"]
+                reply = outcome["raw_final_reply"]
+                proofs = outcome.get("verified_evidence", [])
+                if mode in {"two_receipts", "two_wording", "restated_second"}:
+                    assert len(proofs) == 2 and all(tx in reply for tx in hashes), outcome
+                elif mode == "partial_receipts":
+                    assert len(proofs) == 1 and BURN_TX in reply and "couldn't verify" in reply.lower(), outcome
+                elif mode == "matching_wallet":
+                    assert len(proofs) == 1 and BURN_TX in reply, outcome
+                elif mode in {"linked_vault", "new_vault_owner", "confirmed_vault_in_batch", "new_owner_own_recipient",
+                              "confirmed_bare_wallet"}:
+                    assert len(proofs) == 1 and "max_loss=0" in reply and VAULT in reply, outcome
+                    assert f"receiver={WALLET}" in reply, outcome
+                elif mode == "recipient_wallet_label":
+                    assert len(proofs) == 1 and f"receiver={Web3.to_checksum_address(ALPHA)}, owner={WALLET}" in reply, outcome
+                elif mode in {"exact_redemption", "same_vault_exact"}:
+                    assert len(proofs) == 1 and f"shares=100, receiver={Web3.to_checksum_address(ALPHA)}" in reply, outcome
+                    assert "120 raw underlying units" in reply and "shares=10000000" not in reply, outcome
+                elif mode == "missing_wallet":
+                    assert "share your wallet address" in reply.lower() and not proofs, outcome
+                elif mode in {"migration_read", "migration_burn", "migration_positive",
+                              "withdrawal_button_read", "withdrawal_button_followup", "general_withdrawal_asset",
+                              "read_only_share_balance", "additive_deposit_correction"}:
+                    assert reply == draft and not proofs, outcome
+                else:
+                    assert "couldn't verify" in reply.lower() and "999" not in reply and reply != draft and not proofs, outcome
+                    assert "max_loss=0" not in reply, outcome
+                return {"reply": reply, "proofs": len(proofs)}
+
+            for mode in ("failed_receipt", "prose_recipe", "explicit_wallet", "matching_wallet", "remembered_wallet",
+                         "missing_wallet", "two_receipts", "partial_receipts", "migration_read", "withdrawal_button_read",
+                         "implicit_receipt", "run_recipe", "wrong_vault", "wrong_chain", "linked_vault", "two_wording",
+                         "migration_burn", "wrong_redemption_parameters", "exact_redemption", "ambiguous_redemption_amount",
+                         "linked_vault_followup", "return_to_owner", "switch_to_full_balance", "restated_second", "migration_positive",
+                         "withdrawal_button_followup", "unspecified_redemption_amount", "spelled_amount", "asset_amount",
+                         "restricted_full_amount", "alternative_full_amount",
+                         "old_vault_recipient", "new_vault_owner", "partial_target_override", "same_vault_exact",
+                         "restated_failed_receipt", "repeated_failed_receipt", "negated_recipient",
+                         "prior_full_overrides_exact", "asset_followup", "corrected_vault_in_batch",
+                         "confirmed_vault_in_batch", "corrected_amount_in_batch",
+                         "unguarded_redeem", "unguarded_withdraw", "unguarded_payout", "general_withdrawal_asset",
+                         "corrected_wallet_stale_proof", "new_owner_old_recipient", "new_owner_own_recipient", "contradictory_amounts_in_batch",
+                         "multiline_withdraw", "withdrawal_hash_plain_confirmation", "remembered_wallet_after_correction",
+                         "confirmed_bare_wallet", "recipient_as_wallet_owner", "recipient_wallet_label", "raw_amount_overridden",
+                         "named_withdrawal_arguments", "withdrawn_funds_destination", "read_only_share_balance",
+                         "additive_deposit_correction"):
+                await check("scope_" + mode, lambda mode=mode: claim_scope(mode))
 
             async def indexed_case(mode):
                 observations.mode = mode
@@ -712,6 +1079,9 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             *(root_path / "ysupport/tools").glob("*.py"),
             root_path / "ysupport/execution/internal_rpc.py",
             root_path / "ysupport/execution/json_endpoint.py",
+            root_path / "ysupport/execution/codex_support_contract.py",
+            root_path / "ysupport/execution/codex_support_endpoint.py",
+            root_path / "ysupport/execution/verified_evidence.py",
         ]
     }
     report["ok"] = all(v["ok"] for v in report["scenarios"].values())

@@ -60,6 +60,7 @@ TICKET_EXECUTION_TRANSPORT_RESULT_SCHEMA: dict[str, Any] = {
                 "completed_agent_key": {"type": ["string", "null"]},
                 "requires_human_handoff": {"type": "boolean"},
                 "handoff_reason": {"type": ["string", "null"]},
+                "verified_evidence": {"type": "array", "items": {"type": "string"}},
             },
             "additionalProperties": False,
         },
@@ -134,6 +135,7 @@ def serialize_investigation_evidence(
         "wallet": evidence.wallet,
         "chain": evidence.chain,
         "tx_hashes": list(evidence.tx_hashes),
+        "withdrawal_tx_hash": evidence.withdrawal_tx_hash,
         "withdrawal_target_chain": evidence.withdrawal_target_chain,
         "withdrawal_target_vault": evidence.withdrawal_target_vault,
     }
@@ -146,6 +148,7 @@ def deserialize_investigation_evidence(
         wallet=payload.get("wallet"),
         chain=payload.get("chain"),
         tx_hashes=list(payload.get("tx_hashes", [])),
+        withdrawal_tx_hash=payload.get("withdrawal_tx_hash"),
         withdrawal_target_chain=payload.get("withdrawal_target_chain"),
         withdrawal_target_vault=payload.get("withdrawal_target_vault"),
     )
@@ -158,6 +161,7 @@ def serialize_flow_outcome(flow_outcome: TicketAgentFlowOutcome) -> dict[str, An
         "completed_agent_key": flow_outcome.completed_agent_key,
         "requires_human_handoff": flow_outcome.requires_human_handoff,
         "handoff_reason": flow_outcome.handoff_reason,
+        **({"verified_evidence": list(flow_outcome.verified_evidence)} if flow_outcome.verified_evidence else {}),
     }
 
 
@@ -170,6 +174,7 @@ def deserialize_flow_outcome(payload: dict[str, Any]) -> TicketAgentFlowOutcome:
         completed_agent_key=payload.get("completed_agent_key"),
         requires_human_handoff=payload.get("requires_human_handoff", False),
         handoff_reason=payload.get("handoff_reason"),
+        verified_evidence=list(payload.get("verified_evidence", [])),
     )
 
 

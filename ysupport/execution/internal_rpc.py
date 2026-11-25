@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import socket
 import sys
+from uuid import uuid4
 
 
 class InternalRpcServer:
@@ -33,7 +34,9 @@ class InternalRpcServer:
             "description": "Scan wallet and gauge share balances, including older Yearn vaults. Use known chain and token/receipt-symbol filters; broad scans consume more RPC calls. For a known vault, prefer targeted reads or get_withdrawal_instructions. Balances do not establish recovery/distribution rights; use authoritative process documentation for those.",
         },
         "get_withdrawal_instructions": {
-            "required": ["vault_address", "chain"], "optional": ["user_address_or_ens"],
+            "required": ["vault_address", "chain"],
+            "optional": ["user_address_or_ens", "shares_raw", "receiver_address"],
+            "description": "For an exact V3 redemption, pass shares_raw as a positive integer in raw share units and receiver_address as the requested recipient. Omit shares_raw for maximum redeemable shares and receiver_address for the owner. Do not guess amounts or recipients.",
         },
         "read_contracts": {
             "required": ["chain", "calls_json"],
@@ -42,8 +45,8 @@ class InternalRpcServer:
         },
         "get_wallet_history": {
             "required": ["chain", "wallet_address", "token_address"],
-            "optional": ["tx_hashes_json", "from_block", "to_block", "max_results"],
-            "description": "Verify wallet-specific ERC20 transfers/burns from supplied transaction hashes (max five), a bounded block range (max 5000), or recent Kong transfer candidates. Coverage is scoped; absent recent transfers are not complete history or proof of an unpaid claim. Use for migration/retired receipts before inferring economic value or operator action.",
+            "optional": ["tx_hashes_json", "from_block", "to_block", "max_results", "verify_payout"],
+            "description": "Verify wallet-specific ERC20 transfers/burns from supplied transaction hashes (max five), a bounded block range (max 5000), or recent Kong transfer candidates. Coverage is scoped; absent recent transfers are not complete history or proof of an unpaid claim. Use for migration/retired receipts before inferring economic value or operator action. Set verify_payout=true only when confirming a withdrawal payout.",
         },
         "read_chain_state": {
             "required": ["chain", "method", "params_json"], "optional": [],
@@ -57,6 +60,8 @@ class InternalRpcServer:
         self.timeout_seconds = timeout_seconds
         self.operation_count = 0
         self.reads = []
+        self.verified_evidence = {}
+        self.evidence_scopes = set()
         self.tasks = set()
         self.lock = asyncio.Lock()
         self.server = None
@@ -151,6 +156,24 @@ class InternalRpcServer:
                             pending.cancel()
                     await asyncio.gather(execution, disconnected, return_exceptions=True)
             reply = {"ok": True, "result": result, "rpc_calls": self.budget.used, "budget_exhausted": self.budget.exhausted}
+            if query["operation"] in {"get_wallet_history", "get_withdrawal_instructions"} and result.startswith("{"):
+                from ysupport.execution.verified_evidence import evidence_from_read
+
+                try:
+                    data = json.loads(result)
+                    proofs = evidence_from_read(query["operation"], query["arguments"]["chain"].strip().lower(), data)
+                    if data.get("kind") == "v3_protected_redemption":
+                        self.evidence_scopes.add("redemption")
+                        if not data.get("wallet"):
+                            self.evidence_scopes.add("redemption_needs_wallet")
+                except (ValueError, TypeError, KeyError):
+                    proofs = []
+                if proofs:
+                    reply["evidence"] = []
+                    for proof in proofs:
+                        ref = uuid4().hex
+                        self.verified_evidence[ref] = proof
+                        reply["evidence"].append({"ref": ref, "kind": proof.kind, "summary": proof.summary})
         except (ValueError, TypeError) as exc:
             reply = {"ok": False, "error": self._redact(str(exc))[:500]}
         except asyncio.TimeoutError:
@@ -197,7 +220,7 @@ class InternalRpcServer:
                 raise ValueError("Log reads require a contract address.")
         if operation == "check_all_deposits" and not isinstance(args["user_address_or_ens"], str):
             raise ValueError("Position scans require a wallet address or ENS name.")
-        for name in ["tx_hash", "address", "to_address", "vault_address", "wallet_address", "token_address"]:
+        for name in ["tx_hash", "address", "to_address", "vault_address", "wallet_address", "token_address", "receiver_address"]:
             if args.get(name) is not None:
                 length = 64 if name == "tx_hash" else 40
                 if not isinstance(args[name], str) or not re.fullmatch(r"0x[0-9a-fA-F]{" + str(length) + "}", args[name]):
@@ -218,6 +241,8 @@ class InternalRpcServer:
             from ysupport.tools.vault_position_tools import core_get_withdrawal_instructions as helper
         inspect.signature(helper).bind(**args)
         self.reads.append(operation)
+        if operation == "get_wallet_history":
+            self.evidence_scopes.add("wallet_history")
         with chain_access.rpc_read_scope(self.budget):
             result = await asyncio.wait_for(helper(**args), timeout=min(90, self.timeout_seconds))
         text = self._redact(str(result))

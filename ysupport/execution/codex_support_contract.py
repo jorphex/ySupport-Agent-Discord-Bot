@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import re
 from typing import Any
@@ -68,6 +68,7 @@ CODEX_SUPPORT_RESULT_SCHEMA: dict[str, Any] = {
         "handoff_kind",
         "evidence_summary",
         "used_tools",
+        "evidence_refs",
     ],
     "properties": {
         "answer": {"type": "string"},
@@ -82,6 +83,7 @@ CODEX_SUPPORT_RESULT_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {"type": "string"},
         },
+        "evidence_refs": {"type": ["array", "null"], "items": {"type": "string"}},
     },
     "additionalProperties": False,
 }
@@ -244,6 +246,7 @@ class SupportTurnResult:
     evidence_summary: str
     used_tools: list[str]
     handoff_kind: str | None = None
+    evidence_refs: list[str] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -253,6 +256,7 @@ class SupportTurnResult:
             "handoff_kind": self.handoff_kind,
             "evidence_summary": self.evidence_summary,
             "used_tools": list(self.used_tools),
+            "evidence_refs": self.evidence_refs,
         }
 
     def to_json(self) -> str:
@@ -261,6 +265,9 @@ class SupportTurnResult:
     @classmethod
     def from_json(cls, raw_json: str) -> "SupportTurnResult":
         payload = json.loads(raw_json)
+        refs = payload.get("evidence_refs")
+        if refs is not None and (not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs)):
+            raise ValueError("Evidence references must be an array of strings or null.")
         return cls(
             answer=payload["answer"].strip(),
             requires_human_handoff=payload["requires_human_handoff"],
@@ -268,6 +275,7 @@ class SupportTurnResult:
             evidence_summary=payload["evidence_summary"].strip(),
             used_tools=_normalize_used_tools(payload.get("used_tools", [])),
             handoff_kind=_normalize_optional_text(payload.get("handoff_kind")),
+            evidence_refs=refs,
         )
 
 
@@ -283,7 +291,7 @@ def verify_support_turn_result(
     result: SupportTurnResult,
     request: SupportTurnRequest,
 ) -> SupportTurnResult:
-    if not result.answer:
+    if not result.answer and result.evidence_refs is None:
         raise ValueError("Support result answer cannot be empty.")
     if not result.evidence_summary:
         raise ValueError("Support result evidence summary cannot be empty.")
@@ -329,35 +337,22 @@ def verify_support_turn_result(
             + ", ".join(unexpected_tools)
         )
 
-    normalized_result = SupportTurnResult(
-        answer=result.answer,
-        requires_human_handoff=result.requires_human_handoff,
-        handoff_reason=result.handoff_reason,
-        evidence_summary=result.evidence_summary,
-        used_tools=result.used_tools,
-        handoff_kind=result.handoff_kind,
-    )
+    normalized_result = result
     if not normalized_result.requires_human_handoff and (
         normalized_result.handoff_reason or normalized_result.handoff_kind
     ):
-        normalized_result = SupportTurnResult(
-            answer=normalized_result.answer,
-            requires_human_handoff=False,
+        normalized_result = replace(normalized_result,
             handoff_reason=None,
-            evidence_summary=normalized_result.evidence_summary,
-            used_tools=normalized_result.used_tools,
             handoff_kind=None,
         )
     if normalized_result.requires_human_handoff and not _handoff_is_allowed(
         normalized_result,
         request,
     ):
-        normalized_result = SupportTurnResult(
+        normalized_result = replace(normalized_result,
             answer=_strip_optional_handoff_language(normalized_result.answer),
             requires_human_handoff=False,
             handoff_reason=None,
-            evidence_summary=normalized_result.evidence_summary,
-            used_tools=normalized_result.used_tools,
             handoff_kind=None,
         )
 
@@ -504,6 +499,8 @@ def _derive_expected_first_actions(
 def support_result_to_transport_result(
     result: SupportTurnResult,
     request: TicketExecutionTransportRequest,
+    *,
+    verified_evidence: list[str] | None = None,
 ) -> TicketExecutionTransportResult:
     updated_job = dict(request.investigation_job)
     updated_job["mode"] = (
@@ -521,6 +518,7 @@ def support_result_to_transport_result(
             "completed_agent_key": None,
             "requires_human_handoff": result.requires_human_handoff,
             "handoff_reason": result.handoff_reason,
+            **({"verified_evidence": verified_evidence} if verified_evidence else {}),
         },
         updated_job=updated_job,
     )

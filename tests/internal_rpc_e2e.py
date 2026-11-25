@@ -138,7 +138,8 @@ results=[]
 for query in json.loads(request["current_user_message"]):
  response=subprocess.run(command,input=json.dumps(query),text=True,capture_output=True,timeout=10)
  results.append(json.loads(response.stdout))
-result={"answer":json.dumps(results),"requires_human_handoff":False,"handoff_kind":None,"handoff_reason":None,"evidence_summary":"Real helper/provider E2E","used_tools":["shell"] if results else []}
+Path(__file__).with_name("observations.json").write_text(json.dumps(results))
+result={"answer":"Fixture reads complete.","requires_human_handoff":False,"handoff_kind":None,"handoff_reason":None,"evidence_summary":"Real helper/provider E2E","used_tools":["shell"] if results else []}
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":json.dumps(result)}}))
 ''')
         vault = {"address": VAULT, "chainId": 1, "origin": "yearn", "apiVersion": "3.0.0", "name": "Fixture USDC", "symbol": "yvUSDC", "decimals": 6, "asset": {"symbol": "USDC"}, "isRetired": True, "staking": {"available": True, "address": GAUGE}}
@@ -158,7 +159,9 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
             async def turn(queries):
                 request = replace(build_smoke_transport_request(), smoke_mode=None, aggregated_text=json.dumps(queries))
                 value = json.loads(await endpoint.execute_json_turn(request.to_json()))
-                replies = json.loads(value["flow_outcome"]["raw_final_reply"])
+                raw = (root / "observations.json").read_text()
+                replies = json.loads(raw)
+                assert SECRET not in raw
                 assert SECRET not in json.dumps(value)
                 assert not list((root / "exports").rglob("*.sock"))
                 return replies

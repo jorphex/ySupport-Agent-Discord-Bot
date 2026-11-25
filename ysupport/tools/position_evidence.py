@@ -102,6 +102,7 @@ async def core_get_wallet_history(
     from_block: str | int | None = None,
     to_block: str | int | None = None,
     max_results: int = 10,
+    verify_payout: bool = False,
 ) -> str:
     """Verify scoped transfer proofs, without asserting complete wallet history."""
     name = chain.strip().lower()
@@ -111,6 +112,8 @@ async def core_get_wallet_history(
     wallet, token = _address(wallet_address), _address(token_address)
     if type(max_results) is not int or not 1 <= max_results <= 25:
         raise ValueError("History output must contain at most 25 transfers.")
+    if type(verify_payout) is not bool:
+        raise ValueError("Payout verification requires a boolean flag.")
     if tx_hashes_json is not None and (from_block is not None or to_block is not None):
         raise ValueError("Choose supplied transactions or a block window.")
     if (from_block is None) != (to_block is None):
@@ -277,15 +280,24 @@ async def core_get_wallet_history(
                         and payout["to"] == wallet
                     ):
                         payouts.append(payout)
+                transaction = {"transaction_hash": tx_hash, "block_number": block, "status": "success"}
+                if verify_payout and payouts and any(row and row["receiver"] == wallet and int(row["assets_raw"]) > 0
+                                   for row in withdrawals):
+                    try:
+                        contract = web3.eth.contract(address=token, abi=[{
+                            "type": "function", "name": "asset", "stateMutability": "view",
+                            "inputs": [], "outputs": [{"name": "", "type": "address"}],
+                        }])
+                        asset = await asyncio.to_thread(contract.functions.asset().call, block_identifier=block)
+                        transaction["underlying_asset"] = _address(asset)
+                    except Exception:
+                        # The receipt facts are still useful without a verified underlying asset.
+                        pass
                 return (
                     [row for row in movements if row is not None],
                     [row for row in withdrawals if row is not None],
                     payouts,
-                    {
-                        "transaction_hash": tx_hash,
-                        "status": "success",
-                        "block_number": block,
-                    },
+                    transaction,
                     None,
                 )
             except Exception as exc:

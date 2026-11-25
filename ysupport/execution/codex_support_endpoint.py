@@ -46,6 +46,7 @@ from ysupport.execution.executor import (
 )
 from ysupport.execution.context import merge_explicit_evidence
 from ysupport.execution.internal_rpc import InternalRpcServer
+from ysupport.execution.verified_evidence import ground_material_claims
 from ysupport.execution.transport import (
     build_smoke_transport_result,
     TicketExecutionTransportRequest,
@@ -506,6 +507,14 @@ class CodexSupportTicketExecutionJsonEndpoint:
                             await self._retire_contaminated_session(
                                 rewrite_session_id
                             )
+                    grounded_result, verified_evidence = ground_material_claims(
+                        support_result, support_request, internal_rpc.verified_evidence, internal_rpc.evidence_scopes)
+                    if grounded_result.answer != support_result.answer:
+                        # A resumed turn should see the reply we sent, not the draft we replaced.
+                        persist_session = False
+                        if self.session_manager is not None and conversation_key is not None:
+                            self.session_manager.reset(conversation_key)
+                    support_result = grounded_result
                 except Exception as exc:
                     if (
                         self.session_manager is not None
@@ -531,6 +540,7 @@ class CodexSupportTicketExecutionJsonEndpoint:
                 response_json = support_result_to_transport_result(
                     support_result,
                     request,
+                    verified_evidence=verified_evidence,
                 ).to_json()
             except Exception as exc:
                 if (
@@ -865,6 +875,14 @@ def _codex_support_prompt(
         )
         + "Use support_state.internal_rpc.command for chain reads; its operations and parameters are in the request. "
         "Batch independent reads in one shell invocation. Preserve exact integer units; decimal strings are accepted for integer contract arguments. "
+        "For a requested V3 redemption amount or recipient, simulate the exact raw shares and recipient using the private withdrawal helper. "
+        "Executable maximum-redemption steps require an explicit request for the maximum in this turn. "
+        "Ask for an exact raw share amount, confirmation of the maximum, or a full recipient address when unclear. "
+        "For a confirmed withdrawal payout or an executable V3 redemption, put up to three current private-tool evidence refs in evidence_refs. "
+        "Use get_wallet_history with verify_payout=true when confirming a withdrawal payout. "
+        "For these protected conclusions the host writes the observed facts, any redemption steps, and missing evidence. Leave answer empty. "
+        "Use [] when a material payout or redemption amount remains unverified. Use null when neither claim applies. "
+        "Re-read the relevant receipt or simulation if only an earlier turn has a reference. "
         "Return only schema-valid JSON."
     )
 

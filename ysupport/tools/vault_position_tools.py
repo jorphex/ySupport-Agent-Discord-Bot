@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Dict, Optional
 
 from web3 import Web3
@@ -494,7 +495,7 @@ _V3_REDEMPTION_ABI = [
 ]
 
 
-async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explorer_url):
+async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explorer_url, *, shares_raw, receiver_address):
     observation = {
         "kind": "v3_protected_redemption", "status": "not_ready",
         "vault": vault, "wallet": owner, "yearn_url": yearn_url,
@@ -504,6 +505,18 @@ async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explo
     if not owner:
         observation["reason"] = "A valid wallet is required to verify protected redemption; no transaction instructions are available."
         return json.dumps(observation)
+    requested_shares = None
+    if shares_raw is not None:
+        if not re.fullmatch(r"[0-9]{1,78}", str(shares_raw)) or not 0 < int(shares_raw) < 2**256:
+            observation["reason"] = "The share amount must be a positive raw integer in the uint256 range."
+            return json.dumps(observation)
+        requested_shares = int(shares_raw)
+    receiver = owner
+    if receiver_address is not None:
+        if not isinstance(receiver_address, str) or not Web3.is_address(receiver_address) or int(receiver_address, 16) == 0:
+            observation["reason"] = "A valid nonzero recipient address is required."
+            return json.dumps(observation)
+        receiver = Web3.to_checksum_address(receiver_address)
     try:
         block = await asyncio.to_thread(lambda: web3_instance.eth.block_number)
         observation["as_of_block"] = block
@@ -517,8 +530,12 @@ async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explo
             asyncio.to_thread(contract.functions.maxRedeem(owner, 0).call, block_identifier=block),
             asyncio.to_thread(contract.functions.maxWithdraw(owner, 0).call, block_identifier=block),
         )
-        shares = min(balance, int(capacity))
+        available_shares = min(balance, int(capacity))
+        shares = available_shares if requested_shares is None else requested_shares
         observation.update(max_redeem_zero_loss_raw=str(capacity), max_withdraw_zero_loss_raw=str(assets_capacity))
+        if shares > available_shares:
+            observation["reason"] = "The requested shares exceed the verified zero-loss redemption capacity."
+            return json.dumps(observation)
         if shares <= 0 or int(assets_capacity) <= 0:
             observation["reason"] = "No lossless redemption was verified. Do not use the three-argument redeem default, which permits 100% loss. The cause and any remaining claim are unconfirmed."
             return json.dumps(observation)
@@ -528,21 +545,21 @@ async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explo
             observation["reason"] = "The preview is inconsistent with lossless withdrawal capacity; no transaction instructions are available."
             return json.dumps(observation)
         payout = int(await asyncio.to_thread(
-            contract.functions.redeem(shares, owner, owner, 0).call,
+            contract.functions.redeem(shares, receiver, owner, 0).call,
             {"from": owner}, block_identifier=block,
         ))
         observation["simulated_assets_raw"] = str(payout)
-        if payout < preview:
-            observation["reason"] = "Simulation did not confirm the previewed payout; no transaction instructions are available."
+        if not preview <= payout <= int(assets_capacity):
+            observation["reason"] = "Simulation disagreed with the preview or withdrawal capacity; no transaction instructions are available."
             return json.dumps(observation)
-        observation.update(status="ready", shares_to_redeem_raw=str(shares), partial=shares < balance)
+        observation.update(status="ready", receiver=receiver, shares_to_redeem_raw=str(shares), partial=shares < balance)
         observation["instructions"] = "\n".join([
             f"1. Open {explorer_url} and choose Contract → Write Contract as Proxy (or Write Contract).",
             f"2. Connect {owner}.",
             "3. Find the **'redeem'** function with four fields: redeem(uint256,address,address,uint256). Do not select the three-field default.",
-            f"4. Enter shares={shares}, receiver={owner}, owner={owner}, max_loss=0. Keep native value at 0.",
+            f"4. Enter shares={shares}, receiver={receiver}, owner={owner}, max_loss=0. Keep native value at 0.",
             "5. Click the **'Write'** button only if a fresh wallet simulation confirms the expected incoming assets. Keep max_loss=0; do not raise it to bypass a failure.",
-            f"Verified payout at block {block}: {payout} raw underlying units. State can change before submission.",
+            f"Simulation at block {block} returned {payout} raw underlying units. State can change before submission.",
         ])
         return json.dumps(observation)
     except Exception as exc:
@@ -551,7 +568,8 @@ async def _protected_v3_redemption(web3_instance, vault, owner, yearn_url, explo
 
 
 async def core_get_withdrawal_instructions(
-    user_address_or_ens: Optional[str], vault_address: str, chain: str
+    user_address_or_ens: Optional[str], vault_address: str, chain: str,
+    *, shares_raw: str | int | None = None, receiver_address: str | None = None,
 ) -> str:
     """
     Generates step-by-step instructions for withdrawing from a specific Yearn vault (v1, v2, or v3) using a block explorer.
@@ -596,6 +614,8 @@ async def core_get_withdrawal_instructions(
         return f"Invalid vault address format provided: {e}. Please provide a valid vault address."
 
     explorer_vault_url = f"{explorer_base_url}/address/{vault_checksum_addr}"
+    custom_redemption = shares_raw is not None or receiver_address is not None
+    unverified_custom = "This vault's exact-amount or recipient-specific withdrawal could not be verified."
 
     # --- Step 2: Check V1 List (Ethereum Only) ---
     if chain_lower == "ethereum":
@@ -609,6 +629,8 @@ async def core_get_withdrawal_instructions(
         )
 
         if v1_vault_info:
+            if custom_redemption:
+                return unverified_custom
             logging.info(
                 f"Vault {vault_checksum_addr} identified as V1. Generating V1 instructions."
             )
@@ -690,9 +712,12 @@ async def core_get_withdrawal_instructions(
         return await _protected_v3_redemption(
             web3_instance, vault_checksum_addr, user_checksum_addr,
             yearn_ui_link, explorer_vault_url,
+            shares_raw=shares_raw, receiver_address=receiver_address,
         )
 
     elif is_v2:
+        if custom_redemption:
+            return unverified_custom
         logging.info(
             f"Vault {vault_checksum_addr} identified as V2 (version: {api_version_str}). Generating 'withdraw' (no args) instructions."
         )
