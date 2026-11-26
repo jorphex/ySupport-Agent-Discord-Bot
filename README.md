@@ -1,301 +1,32 @@
-# ySupport Discord Bot
+# ySupport
 
-Yearn support for Discord tickets and public trigger conversations. The bot answers
-docs/process questions and performs bounded investigation of vaults, deposits,
-withdrawals, transactions and repository behavior. It prioritizes official sources
-for product/process answers and tool evidence for stateful issues. Human help is
-requested when the remaining action requires it. This repo includes the live bot,
-ticket execution boundary and manual transcript-review tools.
+AI-assisted Yearn support for Discord tickets and public channels. ySupport
+answers product questions, investigates vaults and transactions, and sends
+questions that need a person to the team on Telegram.
 
-Staff participation pauses automatic ticket replies. Pending Telegram handoffs
-retain their context. A later substantive Telegram reply sends one Discord update
-and closes the handoff; the bot stays paused. Telegram dismissal or Discord
-**Stop Bot** closes the handoff and prevents further team-reply delivery. Accepted
-Telegram replies are saved before acknowledgement. Bounded background workers
-deliver independent handoffs; polling and dismissal remain responsive.
-Explicit stop also cancels that handoff's queued or active investigation and
-releases its capacity. Staff takeover keeps an accepted Telegram reply eligible.
-Notice edits and deletion are ordered per message, including canceled HTTP calls.
-Private Telegram updates use recent Discord text and images in a fresh session.
-ySupport checks recorded input, fetches older messages by ID, and redrafts
-once if context changes before posting. Recorded screenshots take priority.
-It saves the update's fingerprint before posting a single Discord message.
-Delivery, recovery, and staff follow-ups preserve older ticket history. Staff
-summons read the directly referenced Discord message and refresh saved
-screenshots when the instruction calls for them.
-Uncertain delivery and missing Discord context go to staff review. Telegram
-notice edits retry independently of Discord delivery.
+## Find what you need
 
-Telegram notices use Discord channel names without server names. Issue summaries
-use the completed support answer; the action names the remaining team need.
+| If you want to | Read |
+| --- | --- |
+| Understand ticket replies, staff takeover, or Telegram handoffs | [Discord conversations](docs/conversations.md) |
+| Set up the bot, restart it, or refresh its knowledge | [Operations guide](docs/operate.md) |
+| Look up a runtime setting, tool, or evidence limit | [Runtime and tool reference](docs/reference.md) |
+| Test a change or replay a ticket | [Verification guide](docs/verification.md) |
+| Understand what ySupport stores or sends to providers | [Privacy policy](PRIVACY.md) |
 
-New public handoffs link to the original message and accept one substantive
-Telegram reply. A notice starts as **Preparing**; replies are enabled after its
-context is saved and the initial Discord response finishes. Early replies are
-saved after registration and wait for that response; earlier updates are retried
-without acknowledgement. Recovery does not replay the initial response. A pending
-snapshot retains the question, findings and attachments after the active public
-conversation is cleared, including across restarts. Each concern has its own
-record and synthesis session. Delivery checks the latest 50 messages for explicitly
-linked replies, uses current source images and drafts one response to the original
-message. If relevant replies change during synthesis, it refreshes the draft once;
-image changes count, while signed URL changes alone do not. An already addressed
-concern can close without another post.
+## Repository layout
 
-Public dismissal affects only that concern. Delivery or dismissal clears context;
-source/channel deletion events also clear it. Recovery checks retained sources;
-confirmed deletions clear context, while temporary and permission errors retain it.
-Failed delivery stays pending for manual review and dismissal. Before posting,
-the bot saves a content hash and the last observed message ID. After interruption,
-it checks up to 50 subsequent messages for one exact reply by this bot to the
-original message. Uncertain sends require manual review; they are never resent.
-Each handoff has its own nonce to deduplicate HTTP retries. Completed notice
-cleanup retries independently when a fresh trigger starts, including after
-restart. A confirmed missing notice completes terminal cleanup. Public follow-ups
-still need a trigger. Use Dismiss to retire pending context; deleting only a
-Telegram notice sends no callback. Existing alert-only notices remain alert-only.
+| Path | Contents |
+| --- | --- |
+| `ysupport/bot/` | Discord routing, ticket state, and handoffs |
+| `ysupport/execution/` | Codex execution, private RPC, and replay commands |
+| `ysupport/integrations/` | Discord and Telegram clients, transcript fetch, and MCP |
+| `ysupport/tools/` | Vault data and internal on-chain reads |
+| `ysupport/retrieval/` | Search, indexing, and the source manifest |
+| `ysupport/ingestion/` | Documentation and repository refresh commands |
+| `scripts/`, `systemd/`, `requirements/` | Launch scripts, the host unit, and MCP dependencies |
+| `tests/`, `assets/` | Verification runners and screenshots |
 
-## Layout
-
-- `ysupport/bot/`: Discord routing, ticket state and handoff control.
-- `ysupport/execution/`: native execution, steering, private RPC and replay CLIs.
-- `ysupport/integrations/`: Discord/Telegram clients, transcript fetch and MCP server.
-- `ysupport/tools/`: data and internal on-chain helpers; vault reference data.
-- `ysupport/retrieval/`: docs/repository queries, index builder and source manifest.
-- `ysupport/ingestion/`: docs fetch, processing, embedding and index-refresh commands.
-- `scripts/`, `systemd/`, `requirements/`: launch/refresh scripts, host service and
-  MCP dependency locks. Root `requirements.txt` installs the host bot dependencies.
-- `tests/`, `assets/`: verification runners and Discord screenshots.
-- `.cache/`: generated docs/checkouts, ingestion status, repository index and local
-  verification artifacts. Runtime state and auth retain their configured roots.
-
-Run Python entry points from the repo root with `python -m`, for example
-`.venv/bin/python -m ysupport.execution.status --help`. The host runner and docs
-refresh script set the working directory themselves.
-
-## Documentation ingestion
-
-- `scripts/update_docs.sh` runs daily. It requires the repo `.venv` and permits
-  one refresh at a time. Docs and repository stages run independently; either
-  failure makes the job fail. Neither stage publishes an incomplete corpus.
-- The generated docs checkout is shallow and sparse. Refresh preserves unchanged
-  file timestamps and refuses to discard local edits or commits.
-- Successful source fingerprints use `.cache/docs_ingestion/`. Unchanged sources
-  skip OpenAI embeddings and Pinecone writes only after verification of the live
-  namespace count and exact vector IDs. Current vectors are upserted before stale
-  IDs are removed, so provider failure cannot empty the namespace.
-- Repository indexing checks each source's current commit and the full manifest.
-  Unchanged sources reuse verified cached files and rows. Changed revisions,
-  settings, parser code or damaged caches trigger a rebuild. Artifact references
-  stay stable for unchanged sections.
-- Selected `yearn-metrics` and `yearn-envio` docs and source files provide accounting, product
-  relationships and event-coverage context as `support_data`. Relevant sections
-  remain eligible across product filters. Dated examples do not establish live
-  balances or yields; generated data and unrelated operations files are excluded.
-- Eight selected `governance-apps` files provide `frontend_code` context for
-  stYFI/stYFIx displays, APR/Vote Boost, veYFI claims and feature gates. Plans,
-  mocks and test evidence are excluded. Contracts remain the protocol reference;
-  UI code/default flags do not prove live deployment. The stYFI source includes
-  its root `deployment.json` for recorded deployment references. UI questions
-  favor frontend excerpts matching the query's topic tokens exactly, keeping
-  yvUSD distinct from yvUSDC. Explicit protocol or function requests retain normal
-  code ranking, including requests without a filename.
-- Python, TypeScript, GraphQL, YAML and other text sources use overlapping chunks
-  of at most 1,600 characters with a 200-character overlap. Later chunk titles
-  identify line and character ranges; fetch returns the exact bounded chunk.
-  Markdown, Solidity, Vyper and JSON keep their existing parsers.
-  Broad support questions favor methodology docs over code chunks; explicit
-  source filenames and identifiers retain code retrieval priority.
-- Set `DOCS_INGESTION_FORCE_REFRESH=1` for a full repair. Per-stage status and last
-  success use `.cache/docs_ingestion/{docs,repo}.status`. Production cron creates
-  the log directory before redirecting output. Each run overwrites the log to
-  bound growth:
-
-```cron
-0 3 * * * mkdir -p /root/bots/discord/ysupport/.cache/docs_ingestion && /root/bots/discord/ysupport/scripts/update_docs.sh > /root/bots/discord/ysupport/.cache/docs_ingestion/update_docs.log 2>&1
-```
-
-## Runtime and tools
-
-- Production and defaults use `codex_support_exec`. The outer classifier and prompt
-  live in `ysupport/bot/support_boundary.py`; native evaluations use the same classifier.
-- `TICKET_EXECUTION_MAX_CONCURRENT_TURNS` permits two investigations at once by
-  default (range 1–8); production sets it to 8. Turns within a conversation remain
-  serial. Session/cache maintenance starts only when idle and yields after its current deletion if
-  support work queues. Remaining cleanup resumes on an idle pass. Telegram workers
-  share the execution bound and claim each handoff once. Queue, setup and execution
-  timings include ticket IDs and completed/error/canceled outcomes. Native token
-  totals can include earlier turns in resumed sessions.
-- Native prompts include the current request, response schema and compact tool
-  map. Ordinary intake collects messages for two seconds. Ticket-owner follow-ups
-  use native app-server steering to enter the active Codex turn with text and
-  images. Boundary and intake checks still apply. Steering intake writes stay
-  isolated until native observation or admission to a fresh retry. Only observed
-  native user inputs leave the queue; late or uncertain input suppresses the old draft and runs next
-  without another collection delay. Unfinished input is saved in ticket state and
-  restored on the next interaction with a fresh session after restart. No replies
-  replay automatically. Staff takeover and Stop Bot preserve their cancellation
-  rules; staff, Telegram and other noninteractive turns retain one-shot exec.
-  `y:` also includes up to four recent user images from its bounded ticket history,
-  with staff attachments labeled separately.
-- The local specialist engine and JSON worker are retired; `local` fails explicitly.
-  An external JSON backend requires `subprocess` and an explicit
-  `TICKET_EXECUTION_SUBPROCESS_COMMAND`. `ysupport.execution.replay_cli` supports
-  native and explicit external backends; replay sessions are isolated by default.
-- RPC investigation runs inside the bot through a private per-turn command.
-  Transaction, contract, position and withdrawal helpers support bounded reads,
-  plus allowed balance, nonce, fee, block and storage queries. Operations, provider
-  calls, log ranges and time are limited. MCP has no RPC tools or credentials.
-  `read_contracts` batches up to eight targeted reads at one block; `tx_hash` pins
-  them to a receipt block. Block-end state does not prove the revert cause.
-  `get_wallet_history` verifies supplied receipts or a wallet-filtered window of
-  at most 5,000 blocks. Kong's latest 100 contract transfers provide discovery,
-  not complete wallet history. Katana Alchemy has no indexed transfer API;
-  yHelper's harvest/report index is not a wallet-transfer source. Missing history
-  remains unknown. Share burns alone do not prove a positive underlying payout.
-- V3 explorer guidance requires wallet-specific zero-loss limits and a successful
-  read-only simulation at one block. Ready recipes use four-argument `redeem`
-  with `max_loss=0`; partial capacity yields a partial amount. Failed verification
-  or an unknown vault version returns no write recipe. Simulations can become
-  stale before submission; the wallet must simulate again. V1/V2 handling stays
-  unchanged. Native child PATH includes the bot venv so `python` uses its interpreter.
-- Confirmed payouts and executable V3 redemption steps cite private tool results
-  from the current turn. The bot renders the verified amount, block and reference
-  from those results and includes the evidence in private Telegram handoffs.
-  Payout verification requires a matching positive underlying transfer in the
-  withdrawal receipt. Ordinary wallet-history reads skip the payout asset lookup.
-  A share burn can be reported separately when payment is unverified. A corrected
-  transaction hash supersedes the withdrawal target. The investigation retains
-  both hashes for reference.
-  A linked vault, named chain, and named wallet constrain evidence selection.
-  Confirmed payouts identify the verified wallet.
-  Exact V3 redemptions require matching raw shares and recipient in the simulation.
-  Maximum redemption steps require an explicit full-balance request in the current turn.
-- `ysupport/integrations/ticket_transcript_fetch.py` provides manual, read-only review;
-  live turns do not import it. Docs namespace discovery is cached for five minutes; this cache does
-  not store answers or wallet observations.
-- Idle session cleanup also removes expired generated plugin catalogs and staging
-  snapshots. It uses the configured session age and preserves auth, installed
-  plugins and recent cache files.
-- `support_dashboard_flex` reads yHelper's Ethereum Flex lending data through eight
-  views: `protocol`, `markets`, `market`, `redemption_priority`, `trove_health`,
-  `history`, `activity` and `performance`. Results retain freshness, units and partial
-  coverage; bounded lists report truncation. Trove health is market-wide. Historical
-  wallet-filtered performance does not establish current individual LTV.
-- Prefer `support_dashboard_discover` for browsing vaults and comparing current
-  yields. Use `search_vaults` for identity, exact details or known vaults outside
-  dashboard coverage. Search returns numeric rows and `pagination.next_offset`;
-  repeat the query, chain and sort for subsequent pages. Broad searches use the
-  cached catalog. Exact vault addresses get snapshot details; other searches can
-  set `include_details=true`. Sorts use `highest_apy` / `lowest_apy`; previous APR
-  names remain aliases. Missing snapshot measurements stay null; incomplete
-  snapshots are `partial`. Catalog age identifies the generation used by the call.
-  yBOLD reports its APY input sources separately. `ui_apy_observation` marks the
-  frontend metric and zero-rate cause as unverified; API fields alone cannot
-  explain a displayed zero.
-
-## Verification
-
-Run offline checks with `.venv/bin/python -B -m unittest discover -s tests`.
-OpenAI Agents remains a runtime dependency for the outer classifier.
-
-Run each deterministic E2E module with `.venv/bin/python -B -m <module>`:
-
-| Module | Coverage | JSON evidence under `.cache/verification/` |
-| --- | --- | --- |
-| `tests.layout_e2e` | Package imports, resource paths, CLI entry points and host launch script | `layout-e2e.json` |
-| `tests.optimization_e2e` | Support controllers, native execution protocol, persistence, Git refresh, SQLite indexing and evaluation fault detection | `optimization-e2e.json` |
-| `tests.evidence_e2e` | Native stdio/private socket/HTTP RPC: zero-loss redemption, payouts, scoped history, pinned batches, partial errors and ABI normalization | `evidence-e2e.json` |
-| `tests.internal_rpc_e2e` | Real helpers and private client: wallet/gauge/older-vault balances, withdrawals, receipts, partial scans, nonces, budgets, rejected writes and cancellation | `internal-rpc-e2e.json` |
-| `tests.latency_e2e` | Concurrent native processes, capacity and cancellation, idle cleanup, queued follow-ups, retained images and independent handoff delivery | `latency-e2e.json` |
-| `tests.steering_e2e` | Native stdio processes: owner text/images, intake, handoff context, completion/ACK races, recovery and cancellation | `steering-e2e.json` |
-| `tests.telegram_http_e2e` | Real local HTTP: source labels/links, findings in summaries, fallbacks, reply/dismissal behavior, notice ordering, cancellation and polling | `telegram-http-e2e.json` |
-| `tests.public_handoff_e2e` | Public triggers through native subprocesses and local Telegram HTTP: saved context, isolated concerns/sessions, linked replies/images, restart and ambiguous-send recovery, dismissal/deletion and failure cleanup | `public-handoff-e2e.json` |
-| `tests.flex_e2e` | Authenticated MCP and HTTP: identifiers, validation, errors, freshness, units, pagination and partial/truncated results | `flex-e2e.json` |
-| `tests.vault_lookup_e2e` | Authenticated MCP: pagination, catalog-only queries, exact details, fallbacks, units and yBOLD provenance | `vault-lookup-e2e.json` |
-
-These runners use controlled external responses, send no live Discord/Telegram
-messages and call no model or live RPC provider. Optimization probes must reject
-skipped/wrong lookups, unwanted handoffs, stale discovery coverage and a broken
-pending-team guard. Its evidence includes outcomes and source hashes.
-
-Real-model native evaluation:
-
-```sh
-RUN_NATIVE_SUPPORT_E2E=1 .venv/bin/python -B -m tests.native_support_e2e \
-  --output /private/native-support-e2e.json
-```
-
-Run as an unprivileged service user. Set an explicit, service-owned
-`TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` and `OPENAI_API_KEY` for the classifier.
-The runner imports code from a temporary working directory and uses explicit
-settings, without reading the checkout's protected `.env`. Homes, sessions, ticket
-state and provider observations stay private. Relative output paths are resolved
-before the working directory changes.
-
-The 44 former specialist LLM scenario IDs map to 42 distinct native cases, retaining
-IDs and combined assertions for equivalent inputs. Two additional cases cover
-confirmed bridge delivery and unavailable destination receipts. Eight more cover
-terse withdrawal support and the strategy, APY, migration and temporal replay gaps.
-Use `--case <id>`
-to select a scenario or alias.
-
-Native cases use real controllers, the outer classifier, native execution and
-production MCP schemas. Only Discord/Telegram I/O and data providers are fixtures.
-An internal read must match the wallet, chain, vault or hash to obtain an observation;
-report artifacts use read-only HTTP. Docs, repository and vault calls must match
-the fixture subject. Lookup answers are never injected into turn context. These
-cases verify collection and interpretation using controlled helper responses.
-
-Multi-turn messages pass through `TicketBot.on_message`. After handoff, follow-ups
-must stay in saved team context and make zero native calls. Checks cover handoff
-flags, including docs cases that forbid escalation. JSON evidence records actual
-requests, Discord output, state transitions, source/fixture hashes, failures and
-timings. No live Discord/Telegram messages are sent.
-
-For real-model helper/provider or Flex checks, add `--native` to
-`tests.internal_rpc_e2e` or `tests.flex_e2e` under the same service-user, auth and
-`RUN_NATIVE_SUPPORT_E2E=1` requirements. Internal RPC checks use a local HTTP
-JSON-RPC node and controlled Kong data; Flex checks use controlled yHelper data.
-Neither uses live RPC quota.
-
-## Deployment
-
-Production runs `python -m ysupport.bot.client` on the host under an unprivileged
-`ysupport` systemd user. `python -m ysupport.integrations.mcp_server` runs in Docker.
-Use a dedicated bot `CODEX_HOME` and service-owned auth; do not expose an operator's
-home directory.
-
-MCP listens on `127.0.0.1:8001` and requires the configured bearer token before
-executing tools. Its dedicated image pins the base image and full Python dependency
-graph, contains only MCP runtime files, and runs read-only as a non-root user.
-`compose.mcp.yaml` mounts only the generated repository SQLite database read-only
-and passes only listed provider settings, without Discord/Telegram credentials.
-Keep the existing `MCP_SERVER_API_KEY` in `.env`.
-
-Before rebuilding for dependency or MCP source changes, tag the current image as
-`ysupport-mcp:rollback`. `Dockerfile.mcp.dockerignore` permits only files copied by
-`Dockerfile.mcp`; credentials, caches, tests and evidence cannot enter the build
-context.
-
-```sh
-docker compose -f compose.mcp.yaml build
-docker compose -f compose.mcp.yaml up -d
-docker compose -f compose.mcp.yaml ps
-```
-
-Host setup:
-
-1. Create a host venv; run `pip install -r requirements.txt`. Direct dependencies
-   are pinned to reviewed versions. Verify `codex exec` and app-server steering
-   work for the service user (`tests/steering_native_e2e.py`).
-2. Keep `TICKET_EXECUTION_CODEX_HOME` on its dedicated bot path. The bot writes
-   `config.toml` and instructions there; do not use your normal `~/.codex`.
-3. Point `TICKET_EXECUTION_CODEX_AUTH_LINK_SOURCE` at a service-owned `0600` auth
-   file. Keep `.env` root-owned with mode `0600`; systemd loads it before dropping
-   privileges, then hides it from the service namespace.
-4. Use `scripts/run_ysupport_host.sh` and the hardened `systemd/ysupport.service`.
-   Keep the checkout and Codex installation read-only. Only dedicated state and
-   private temporary directories need writes.
-5. If checkout or Codex paths change, update `WorkingDirectory`, `EnvironmentFile`,
-   `ExecStart` and both `BindReadOnlyPaths` entries together.
+Use `requirements.txt` for host dependencies. Run Python entry points as modules
+from the repository root. Generated docs, indexes, and verification reports use
+`.cache/`. The bot keeps ticket state and auth in their configured directories.
