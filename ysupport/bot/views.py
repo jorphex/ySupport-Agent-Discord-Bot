@@ -19,6 +19,7 @@ from ysupport.bot.state import (
     mark_ticket_channel_stopped,
     pending_messages,
     pending_attachments_by_channel,
+    pending_ticket_sources,
     pending_tasks,
     persist_ticket_state,
     remember_team_handoff_followup,
@@ -67,6 +68,7 @@ async def take_over_ticket_for_staff(channel_id: int) -> bool:
         mark_ticket_channel_stopped(channel_id, reason="staff_takeover")
     task = pending_tasks.get(channel_id)
     await cancel_pending_ticket_task(channel_id)
+    pending_ticket_sources.pop(channel_id, None)
     if task is not None and active_ticket_executor_tasks.get(channel_id) is task:
         active_ticket_executor_tasks.pop(channel_id, None)
     pending_messages.pop(channel_id, None)

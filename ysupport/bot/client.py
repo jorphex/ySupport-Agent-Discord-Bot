@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import importlib
 import logging
 import re
@@ -36,12 +36,12 @@ from ysupport.bot.discord_support_runtime import (
     _handoff_delivery_failure_reply,
     _is_support_staff_member,
     _maybe_recover_runtime_stopped_ticket_for_message,
-    _merge_pending_ticket_payload,
     _message_text_for_turn,
     _normalize_staff_summon_prompt,
     _notify_handoff,
     _outer_support_boundary_result,
     _public_workflow_name,
+    _queue_ticket_source,
     _record_button_requested_intent,
     _record_waiting_for_team_followup,
     _refresh_discord_attachment_urls,
@@ -53,7 +53,9 @@ from ysupport.bot.discord_support_runtime import (
     _should_ack_waiting_for_team,
     _should_stop_for_boundary_output,
     _send_ticket_handoff_notice,
+    _set_pending_ticket_sources,
     _ticket_debounce_seconds,
+    _ticket_source_payload,
     _ticket_workflow_name,
     _waiting_for_team_reply,
 )
@@ -67,6 +69,7 @@ from ysupport.bot.state import (
     BotRunContext,
     PublicConversation,
     TicketInvestigationJob,
+    TicketInputSource,
     InvestigationEvidence,
     channels_awaiting_initial_button_press,
     bug_report_debounce_channels,
@@ -83,6 +86,7 @@ from ysupport.bot.state import (
     mark_ticket_channel_stopped,
     pending_messages,
     pending_attachments_by_channel,
+    pending_ticket_sources,
     pending_tasks,
     persist_public_conversation,
     persist_ticket_state,
@@ -138,10 +142,25 @@ logging.basicConfig(level=logging.INFO,
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+@dataclass
+class _TicketDraft:
+    task: asyncio.Task | None
+    sources: list[TicketInputSource]
+    job: TicketInvestigationJob
+    previous_evidence: InvestigationEvidence
+    previous_intake: TicketIntakeState
+    revised: bool = False
+
+    def restore_intake(self, channel_id: int) -> None:
+        self.job.evidence = self.previous_evidence
+        self.previous_intake.apply(channel_id)
+
+
 class TicketBot(discord.Client):
     def __init__(self, *, intents: discord.Intents, **options):
         super().__init__(intents=intents, **options)
         self._ticket_steering: dict[int, tuple[asyncio.Task, TicketSteeringInbox]] = {}
+        self._ticket_drafts: dict[int, _TicketDraft] = {}
         self._state_cleanup_task: asyncio.Task[None] | None = None
         self._public_turn_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
         self.investigation_json_endpoint = build_ticket_execution_json_endpoint()
@@ -495,15 +514,16 @@ class TicketBot(discord.Client):
         run_context: BotRunContext,
         *,
         skip_debounce: bool = False,
-    ) -> tuple[str | None, list[dict[str, Any]]]:
+    ) -> tuple[str | None, list[dict[str, Any]], list[TicketInputSource]]:
         debounce_seconds = 0 if skip_debounce else _ticket_debounce_seconds(channel_id, run_context)
         try:
             await asyncio.sleep(debounce_seconds)
         except asyncio.CancelledError:
             logging.debug(f"Processing task for channel {channel_id} cancelled (new message arrived).")
-            return None, []
+            return None, [], []
         aggregated_text = pending_messages.pop(channel_id, None)
         attachments = pending_attachments_by_channel.pop(channel_id, [])
+        sources = pending_ticket_sources.pop(channel_id, [])
         current_task = asyncio.current_task()
         if aggregated_text and current_task is not None:
             active_ticket_payloads[channel_id] = (
@@ -511,7 +531,7 @@ class TicketBot(discord.Client):
                 aggregated_text,
                 attachments,
             )
-        return aggregated_text, attachments
+        return aggregated_text, attachments, sources
 
     def _finish_ticket_task(
         self,
@@ -531,6 +551,7 @@ class TicketBot(discord.Client):
             return
         if is_ticket_waiting_for_team(channel_id):
             pending_messages.pop(channel_id, None)
+            pending_ticket_sources.pop(channel_id, None)
             queued_attachments = pending_attachments_by_channel.pop(channel_id, [])
             conversation_threads.setdefault(channel_id, []).append(
                 {"role": "user", "content": queued_text}
@@ -559,6 +580,14 @@ class TicketBot(discord.Client):
         pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
             [*attachments, *pending_attachments_by_channel.get(channel_id, [])]
         )
+        if sources := pending_ticket_sources.get(channel_id):
+            represented = {item.get("url") for source in sources for item in source.attachments}
+            inherited: dict[int | None, list[dict[str, Any]]] = {}
+            for attachment in attachments:
+                if attachment.get("url") and attachment["url"] not in represented:
+                    inherited.setdefault(attachment.get("source_message_id"), []).append(attachment)
+            sources[:0] = [TicketInputSource(message_id, "", images, carried_attachment=True)
+                           for message_id, images in inherited.items()]
         replace_ticket_history(channel_id, [*history, {
             "role": "system",
             "content": (
@@ -775,16 +804,22 @@ class TicketBot(discord.Client):
         channel: discord.TextChannel,
         channel_id: int,
         run_context: BotRunContext,
-        investigation_job,
+        investigation_job: TicketInvestigationJob,
         aggregated_text: str,
+        intake_state: TicketIntakeState,
+        draft: _TicketDraft,
     ) -> tuple[List[TResponseInputItem], List[TResponseInputItem]]:
         preparation = await prepare_ticket_turn_input(
             channel_id=channel_id,
             run_context=run_context,
             investigation_job=investigation_job,
             aggregated_text=aggregated_text,
+            intake_state=intake_state,
+            source_texts=tuple(source.text for source in draft.sources if source.text),
         )
         for ack_message in preparation.ack_messages:
+            if draft.revised:
+                break
             try:
                 await channel.send(ack_message, suppress_embeds=True)
                 last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
@@ -994,10 +1029,15 @@ class TicketBot(discord.Client):
             return
         logging.info(f"Processing ticket message in {channel_id} from {message.author.name} (Context: {ticket_run_context.project_context}, Intent: {current_intent_from_map})")
 
-        normalized_message_text = _message_text_for_turn(message)
         message_attachments = _attachment_payloads_from_message(message)
+        source = TicketInputSource(message.id, (message.content or "").strip(), message_attachments)
         existing_task = pending_tasks.get(channel_id)
         if existing_task and not existing_task.done():
+            draft = self._ticket_drafts.get(channel_id)
+            if draft is not None and draft.task is existing_task and draft.revised:
+                _queue_ticket_source(channel_id, source)
+                persist_ticket_state(channel_id)
+                return
             if active_ticket_executor_tasks.get(channel_id) is existing_task:
                 binding = self._ticket_steering.get(channel_id)
                 if binding is not None and binding[0] is existing_task:
@@ -1005,9 +1045,9 @@ class TicketBot(discord.Client):
                     if any(entry.message_id == receipt_id for entry in binding[1].inputs):
                         return
                     if not binding[1].closed:
-                        binding[1].offer(receipt_id, normalized_message_text, message_attachments)
+                        binding[1].offer(receipt_id, source.text, source.attachments)
                 first_followup = not pending_messages.get(channel_id)
-                _merge_pending_ticket_payload(channel_id, normalized_message_text, message_attachments)
+                _queue_ticket_source(channel_id, source)
                 persist_ticket_state(channel_id)
                 if first_followup:
                     try:
@@ -1022,17 +1062,24 @@ class TicketBot(discord.Client):
                         pass
                 return
             if channel_id not in active_ticket_payloads:
-                _merge_pending_ticket_payload(channel_id, normalized_message_text, message_attachments)
+                _queue_ticket_source(channel_id, source)
                 persist_ticket_state(channel_id)
                 return
-            _restore_active_ticket_payload(channel_id)
+            self._restore_draft_input(channel_id, draft)
             existing_task.cancel()
 
-        _merge_pending_ticket_payload(channel_id, normalized_message_text, message_attachments)
+        _queue_ticket_source(channel_id, source)
         persist_ticket_state(channel_id)
         pending_tasks[channel_id] = asyncio.create_task(self.process_ticket_message(channel_id, ticket_run_context))
         debounce_seconds = _ticket_debounce_seconds(channel_id, ticket_run_context)
         logging.debug(f"Scheduled processing task for channel {channel_id} in {debounce_seconds}s")
+
+    def _restore_draft_input(self, channel_id: int, draft: _TicketDraft | None) -> None:
+        _restore_active_ticket_payload(channel_id)
+        if draft is not None:
+            self._ticket_drafts.pop(channel_id, None)
+            pending = pending_ticket_sources.get(channel_id, [])
+            pending_ticket_sources[channel_id] = [*draft.sources, *pending]
 
     async def process_ticket_message(
         self,
@@ -1042,16 +1089,44 @@ class TicketBot(discord.Client):
         skip_debounce: bool = False,
     ) -> None:
         current_task = asyncio.current_task()
+        draft = None
         try:
             investigation_job = get_or_create_ticket_investigation_job(channel_id)
-            aggregated_text, attachments = await self._collect_aggregated_ticket_payload(
+            aggregated_text, attachments, sources = await self._collect_aggregated_ticket_payload(
                 channel_id,
                 run_context,
                 skip_debounce=skip_debounce,
             )
             if not aggregated_text:
                 return
-            merge_explicit_evidence(investigation_job, aggregated_text)
+            draft = _TicketDraft(
+                current_task, sources or [TicketInputSource(None, aggregated_text, attachments)],
+                investigation_job, investigation_job.evidence, TicketIntakeState.from_channel(channel_id),
+            )
+            self._ticket_drafts[channel_id] = draft
+
+            def retry_revised_draft() -> bool:
+                if not draft.revised:
+                    return False
+                if pending_tasks.get(channel_id) is current_task and channel_id not in stopped_channels:
+                    draft.restore_intake(channel_id)
+                    reset_ticket_codex_session(channel_id)
+                    active_ticket_payloads.pop(channel_id, None)
+                    _retire_uncommitted_ticket_payload(channel_id)
+                    self._ticket_drafts.pop(channel_id, None)
+                    _set_pending_ticket_sources(channel_id, [*draft.sources, *pending_ticket_sources.get(channel_id, [])])
+                    persist_ticket_state(channel_id)
+                return True
+
+            def begin_handoff_delivery() -> bool:
+                if draft.revised or self._ticket_drafts.get(channel_id) is not draft:
+                    return False
+                self._ticket_drafts.pop(channel_id, None)
+                return True
+
+            prepared_job = deepcopy(investigation_job)
+            initial_intake = deepcopy(draft.previous_intake)
+            merge_explicit_evidence(prepared_job, aggregated_text)
 
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -1062,9 +1137,15 @@ class TicketBot(discord.Client):
                 channel=channel,
                 channel_id=channel_id,
                 run_context=run_context,
-                investigation_job=investigation_job,
+                investigation_job=prepared_job,
                 aggregated_text=aggregated_text,
+                intake_state=initial_intake,
+                draft=draft,
             )
+            if retry_revised_draft():
+                return
+            investigation_job.evidence = prepared_job.evidence
+            initial_intake.apply(channel_id)
 
             logging.info(f"Processing for ticket {channel_id} (Context: {run_context.project_context}, Initial Button Intent: {run_context.initial_button_intent}): '{aggregated_text[:100]}...'")
 
@@ -1081,6 +1162,8 @@ class TicketBot(discord.Client):
                     aggregated_text, project_context=run_context.project_context,
                     initial_button_intent=run_context.initial_button_intent,
                 )
+                if retry_revised_draft():
+                    return
                 boundary_reply = _boundary_reply_from_output(boundary_output)
                 if boundary_reply is not None:
                     final_reply = boundary_reply
@@ -1114,7 +1197,7 @@ class TicketBot(discord.Client):
                         return True
 
                     def commit_intake(entry):
-                        if pending_tasks.get(channel_id) is not current_task or channel_id in stopped_channels:
+                        if draft.revised or pending_tasks.get(channel_id) is not current_task or channel_id in stopped_channels:
                             return
                         if entry.intake_state is not None:
                             entry.intake_state.apply(channel_id)
@@ -1147,8 +1230,17 @@ class TicketBot(discord.Client):
                             ),
                         )
                         steering.closed = True
+                        if retry_revised_draft():
+                            return
                         consumed = steering.consumed
                         if consumed:
+                            consumed_ids = {entry.message_id for entry in consumed}
+                            queued_sources = pending_ticket_sources.get(channel_id, [])
+                            draft.sources.extend(source for source in queued_sources if f"discord:{source.message_id}" in consumed_ids)
+                            pending_ticket_sources.pop(channel_id, None)
+                            remaining = [source for source in queued_sources if f"discord:{source.message_id}" not in consumed_ids]
+                            if remaining:
+                                pending_ticket_sources[channel_id] = remaining
                             consumed_text = "\n".join(entry.text for entry in consumed)
                             queued = pending_messages.get(channel_id, "")
                             if queued == consumed_text:
@@ -1175,13 +1267,11 @@ class TicketBot(discord.Client):
                         proposed_history = flow_outcome.conversation_history
 
                         raw_final_reply = flow_outcome.raw_final_reply
-                        if self._defer_ticket_reply_for_followups(
+                        if flow_outcome.requires_human_handoff and self._defer_ticket_reply_for_followups(
                             channel_id, [*current_history, {"role": "user", "content": aggregated_text}],
                             attachments,
                         ):
-                            if not flow_outcome.requires_human_handoff:
-                                investigation_job.apply_snapshot(proposed_job)
-                                persist_ticket_state(channel_id)
+                            self._ticket_drafts.pop(channel_id, None)
                             return
                         if flow_outcome.requires_human_handoff:
                             handoff_reason = (
@@ -1197,7 +1287,10 @@ class TicketBot(discord.Client):
                                 channel_name=getattr(channel, "name", None),
                                 support_reply=raw_final_reply,
                                 verified_evidence=flow_outcome.verified_evidence,
+                                before_send=begin_handoff_delivery,
                             )
+                            if retry_revised_draft():
+                                return
                             handoff_sent = notice is not None
                             if handoff_sent:
                                 proposed_job.mark_escalated_to_human()
@@ -1226,6 +1319,8 @@ class TicketBot(discord.Client):
                                 channel_id,
                             )
                     except Exception as e:
+                        if retry_revised_draft():
+                            return
                         logging.error(f"Unexpected error during ticket processing for channel {channel_id}: {e}", exc_info=True)
                         if pending_messages.get(channel_id):
                             reset_ticket_codex_session(channel_id)
@@ -1237,7 +1332,7 @@ class TicketBot(discord.Client):
                                 commit_intake(prepared)
                             active_ticket_payloads.setdefault(channel_id, (current_task, aggregated_text, attachments))
                             _retire_uncommitted_ticket_payload(channel_id)
-                            _restore_active_ticket_payload(channel_id)
+                            self._restore_draft_input(channel_id, draft)
                             return
                         final_reply = "An unexpected error occurred."
                         should_stop_processing = True
@@ -1248,6 +1343,8 @@ class TicketBot(discord.Client):
                             self._ticket_steering.pop(channel_id, None)
                         await progress_reporter.close()
 
+                if retry_revised_draft():
+                    return
                 active_payload = active_ticket_payloads.get(channel_id)
                 if active_payload is not None and active_payload[0] is current_task:
                     active_ticket_payloads.pop(channel_id, None)
@@ -1262,6 +1359,7 @@ class TicketBot(discord.Client):
 
                 try:
                     reply_view = StopBotView() if not should_stop_processing else None
+                    self._ticket_drafts.pop(channel_id, None)
                     await send_long_message(channel, final_reply, view=reply_view)
                     if proposed_job is not None and not handoff_state_committed:
                         investigation_job.apply_snapshot(proposed_job)
@@ -1323,6 +1421,8 @@ class TicketBot(discord.Client):
             logging.info(f"Processing task for channel {channel_id} cancelled mid-run.")
             return
         finally:
+            if self._ticket_drafts.get(channel_id) is draft:
+                self._ticket_drafts.pop(channel_id, None)
             active_payload = active_ticket_payloads.get(channel_id)
             if active_payload is not None and active_payload[0] is current_task:
                 active_ticket_payloads.pop(channel_id, None)
@@ -1337,10 +1437,45 @@ class TicketBot(discord.Client):
         await self.telegram_handoffs.public.discard_channel(channel.id)
         await clear_deleted_ticket_channel(channel)
 
+    def _revise_ticket_sources(self, channel_id: int, ids: set[int], edit: discord.RawMessageUpdateEvent | None = None) -> None:
+        if channel_id in stopped_channels:
+            return
+        draft = self._ticket_drafts.get(channel_id)
+        queued = pending_ticket_sources.get(channel_id, [])
+        changed = False
+        for source in [*(draft.sources if draft else []), *queued]:
+            if source.message_id not in ids:
+                continue
+            if edit is None:
+                content, attachments = "", []
+            else:
+                content = source.content
+                if "content" in edit.data and not source.carried_attachment:
+                    content = (edit.message.content or "").strip()
+                attachments = _attachment_payloads_from_message(edit.message) if "attachments" in edit.data else source.attachments
+            if content != source.content or _attachment_identity(attachments) != _attachment_identity(source.attachments):
+                source.content, source.attachments = content, attachments
+                changed = True
+        if changed:
+            if draft:
+                draft.revised = True
+                draft.restore_intake(channel_id)
+                text, attachments = _ticket_source_payload(draft.sources)
+                for payloads in (active_ticket_payloads, uncommitted_ticket_payloads):
+                    if (payload := payloads.get(channel_id)) and payload[0] is draft.task:
+                        payloads[channel_id] = (payload[0], text, attachments)
+            _set_pending_ticket_sources(channel_id, queued)
+            persist_ticket_state(channel_id)
+
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent):
+        self._revise_ticket_sources(payload.channel_id, {payload.message_id}, payload)
+
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        self._revise_ticket_sources(payload.channel_id, {payload.message_id})
         await self.telegram_handoffs.public.discard_message(payload.message_id)
 
     async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
+        self._revise_ticket_sources(payload.channel_id, payload.message_ids)
         for message_id in payload.message_ids:
             await self.telegram_handoffs.public.discard_message(message_id)
 

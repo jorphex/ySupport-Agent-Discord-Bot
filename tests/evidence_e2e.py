@@ -651,7 +651,8 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                     "chain": "ethereum", "wallet_address": WALLET, "token_address": VAULT,
                     "tx_hashes_json": json.dumps(hashes),
                 }}
-                if compare_receipts or mode in {"matching_wallet", "explicit_wallet", "remembered_wallet"}:
+                chain_correction = mode in {"chain_only_correction", "stale_tag_after_chain_correction"}
+                if compare_receipts or chain_correction or mode in {"matching_wallet", "explicit_wallet", "remembered_wallet"}:
                     history["arguments"]["verify_payout"] = True
                 redemption = {"operation": "get_withdrawal_instructions", "arguments": {
                     "chain": "ethereum", "vault_address": VAULT,
@@ -766,6 +767,10 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                         "", [history], True),
                     "matching_wallet": (f"Did {BURN_TX} pay this wallet {WALLET}?",
                         "", [history], True),
+                    "chain_only_correction": ("Correction, chain: Base. Did my withdrawal pay out?",
+                        "", [history], True),
+                    "stale_tag_after_chain_correction": ("Actually, it's on Base. Did my withdrawal pay out?",
+                        "", [history], True),
                     "remembered_wallet": (f"Did the transaction {BURN_TX} pay out?",
                         "", [history], True),
                     "missing_wallet": (f"How do I withdraw from {VAULT}?",
@@ -792,12 +797,20 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 }))
                 request = replace(build_smoke_transport_request(), smoke_mode=None, aggregated_text=question)
                 request.run_context["is_public_trigger"] = True
+                if chain_correction:
+                    job = TicketInvestigationJob(request.run_context["channel_id"])
+                    merge_explicit_evidence(job, f"My withdrawal was https://etherscan.io/tx/{BURN_TX}")
+                    if mode == "chain_only_correction":
+                        merge_explicit_evidence(job, question)
+                        assert job.evidence.tx_chains == {BURN_TX: "base"}, job.evidence
+                    request.investigation_job = serialize_investigation_job(job)
                 if mode == "additive_deposit_correction":
                     job = TicketInvestigationJob(request.run_context["channel_id"])
-                    merge_explicit_evidence(job, f"Here is the first deposit transaction {BURN_TX}.")
+                    merge_explicit_evidence(job, f"Here is the first deposit transaction https://arbiscan.io/tx/{BURN_TX}.")
                     merge_explicit_evidence(job, question)
                     request.investigation_job = serialize_investigation_job(job)
                     assert job.evidence.tx_hashes == [BURN_TX, TX] and job.evidence.chain == "base"
+                    assert job.evidence.tx_chains == {BURN_TX: "arbitrum", TX: "base"}
                 if mode in {"remembered_wallet_after_correction", "confirmed_bare_wallet", "recipient_as_wallet_owner"}:
                     request.investigation_job["evidence"]["wallet"] = ALPHA if mode == "recipient_as_wallet_owner" else WALLET
                 if mode in {"remembered_wallet_after_correction", "confirmed_bare_wallet"}:
@@ -880,7 +893,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                          "multiline_withdraw", "withdrawal_hash_plain_confirmation", "remembered_wallet_after_correction",
                          "confirmed_bare_wallet", "recipient_as_wallet_owner", "recipient_wallet_label", "raw_amount_overridden",
                          "named_withdrawal_arguments", "withdrawn_funds_destination", "read_only_share_balance",
-                         "additive_deposit_correction"):
+                         "additive_deposit_correction", "chain_only_correction", "stale_tag_after_chain_correction"):
                 await check("scope_" + mode, lambda mode=mode: claim_scope(mode))
 
             async def indexed_case(mode):

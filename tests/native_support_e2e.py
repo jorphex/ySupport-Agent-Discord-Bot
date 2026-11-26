@@ -29,6 +29,28 @@ SOURCE_ROOT = Path(__file__).resolve().parent.parent
 CASE_PATH = Path(__file__).with_name("native_support_cases.json")
 
 
+def _apy_issue(claim, answer, calls):
+    """Read the single claim format requested by the APY fixture."""
+    text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", answer.lower()).replace("**", "").replace("`", "").strip()
+    match = re.fullmatch(
+        r"(?P<vault>[^\n:]+?) on (?P<chain>[a-z0-9 -]+):[ \t]*"
+        r"(?P<metric>[a-z0-9 -]+?):[ \t]*(?P<percent>[+-]?\d+(?:\.\d+)?)[ \t]*%\.?",
+        text,
+    )
+    if match is None:
+        return "APY answer does not match the requested format"
+    if Decimal(match["percent"]) != Decimal(claim["percent"]):
+        return "APY percentage does not match the requested figure"
+    metric = f"{claim['days']}-day realized apy" if "days" in claim else "estimated apy"
+    if match["metric"].strip() != metric:
+        return "APY label or historical window does not match the request"
+    if match["vault"].strip() not in claim["vault_labels"] or match["chain"].strip() != claim["chain_label"]:
+        return "APY answer does not identify the requested vault and chain"
+    if not any(call.get("turn", 0) <= claim["turn"] and (claim["chain_id"], claim["vault_address"]) in map(tuple, call.get("returned_vaults", ())) for call in calls):
+        return "APY answer lacks an observed lookup for the requested vault"
+    return None
+
+
 def failures(case, calls, turns):
     """Grade delivered native answers, controller transitions and observed I/O."""
     checks = case["checks"]
@@ -64,6 +86,11 @@ def failures(case, calls, turns):
     for word in checks.get("none", []):
         if includes(word):
             errors.append(f"Unwanted answer: {word}")
+    for claim in checks.get("apy", []):
+        turn = claim["turn"]
+        issue = _apy_issue(claim, turns[turn - 1]["answer"], calls) if 0 < turn <= len(turns) else "APY answer turn missing"
+        if issue:
+            errors.append(f"Turn {turn}: {issue}")
     if "handoff" in checks and graded_turn["handoff"] != checks["handoff"]:
         errors.append(f"Expected handoff={checks['handoff']}, got {graded_turn['handoff']}")
     if "boundary" in checks and graded_turn["boundary"] != checks["boundary"]:
@@ -82,6 +109,7 @@ def failures(case, calls, turns):
         if not lookup.get("required", True):
             continue
         if not any(call["tool"] == lookup["operation"] and call["fixture_matched"]
+                   and ("turn" not in lookup or call.get("turn") == lookup["turn"])
                    and call.get("transport") == ("http" if lookup["operation"] == "report" else "internal_rpc")
                    and {k: v.lower() for k, v in call.get("query", {}).items()}
                    == {k: v.lower() for k, v in lookup["query"].items()} for call in calls):
@@ -252,7 +280,7 @@ async def run(args, *, command_override=None, cases_override=None):
                 query = json.dumps([positional, keywords]).lower()
                 matched = name in fixtures and (not terms or any(term.lower() in query for term in terms))
                 value = fixtures.get(name)
-                record = {"tool": name, "args": list(positional), "kwargs": keywords, "fixture_matched": matched}
+                record = {"tool": name, "args": list(positional), "kwargs": keywords, "fixture_matched": matched, "turn": current["turn"]}
                 if name == "search_vaults" and matched:
                     value = deepcopy(value)
                     search = (positional[0] if positional else keywords["query"]).strip().lower()
@@ -285,7 +313,6 @@ async def run(args, *, command_override=None, cases_override=None):
             payload = current["providers"].get("support_dashboard_discover")
             terms = current.get("provider_query_terms", {}).get("support_dashboard_discover", [])
             matched = isinstance(payload, dict) and (not terms or any(term.lower() in json.dumps(params).lower() for term in terms))
-            calls.append({"tool": "support_dashboard_discover", "args": [], "kwargs": params, "fixture_matched": matched})
             payload = deepcopy(payload) if matched else {"rows": [], "filters": {}}
             rows = [row for row in payload["rows"]
                     if (params.get("chain_id") is None or row["chain_id"] == params["chain_id"])
@@ -303,6 +330,9 @@ async def run(args, *, command_override=None, cases_override=None):
                 "coverage_ratio": with_realized_apy / len(rows) if rows else None,
             }
             payload["rows"] = rows[:params.get("limit", 10)]
+            calls.append({"tool": "support_dashboard_discover", "args": [], "kwargs": params,
+                          "fixture_matched": matched, "turn": current["turn"],
+                          "returned_vaults": [(row["chain_id"], row["vault_address"]) for row in payload["rows"]]})
             payload["filters"].update(params)
             payload["pagination"] = {"limit": params.get("limit", 10), "total": len(rows)}
             return payload
@@ -311,7 +341,7 @@ async def run(args, *, command_override=None, cases_override=None):
             matched = next((entry for entry in current.get("lookups", []) if entry["operation"] == operation
                             and {k: v.lower() for k, v in entry["query"].items()} == {k: v.lower() for k, v in query.items()}), None)
             valid = (nonce is None or nonce == current.get("nonce")) and matched is not None
-            calls.append({"tool": operation, "query": query, "fixture_matched": valid, "transport": transport})
+            calls.append({"tool": operation, "query": query, "fixture_matched": valid, "transport": transport, "turn": current["turn"]})
             return matched if valid else None
 
         async def lookup(request):
@@ -500,6 +530,7 @@ async def run(args, *, command_override=None, cases_override=None):
                 state.ticket_owner_user_id_by_channel[channel.id] = 777
                 try:
                     for turn_index, turn in enumerate(case["turns"]):
+                        current["turn"] = turn_index + 1
                         if "history" in turn:
                             state.conversation_threads[channel.id] = list(turn["history"])
                         job = state.get_or_create_ticket_investigation_job(channel.id)

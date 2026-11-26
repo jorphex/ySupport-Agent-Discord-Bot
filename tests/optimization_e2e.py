@@ -915,7 +915,15 @@ async def tools():
     return json.dumps({"returned_rows":len(data["rows"]),"total":data["pagination"]["total"],**data["coverage"]})
    if mode.startswith("apy"):
     await session.call_tool("search_vaults",{"query":"usdc"})
-    return "yvUSDC APY: "+("14.2%" if mode=="apy_wrong" else "4.2%")
+    if "30-day" in text:
+     if mode=="apy_misattributed":return "Yearn USDC on Ethereum has no 30-day realized APY, and its current estimate is 2.8%."
+     if mode=="apy_wrong_subject":return "For Yearn USDC on Ethereum, the 30-day realized APY for Yearn DAI is 2.8%."
+     window="7-day" if mode=="apy_window" else "30-day"
+     return f"yvUSDC on Ethereum: {window} realized APY: 2.8%."
+    name="Yearn DAI" if mode=="apy_vault" else "yvUSDC"
+    metric="historical" if mode=="apy_metric" else "estimated"
+    percent="14.2%" if mode=="apy_wrong" else "4.2%"
+    return f"{name} on Ethereum: {metric} APY: {percent}."
    if mode.startswith("docs_apy"):
     await session.call_tool("search_documentation",{"query":"vault APY price per share weekly window"})
     correct="Vault APY annualizes backward-looking PPS performance."
@@ -930,6 +938,15 @@ async def tools():
    return "\n".join(item.text for item in result.content if hasattr(item,"text"))
 if mode.startswith(("apy","docs_apy","coverage")):
  answer=asyncio.run(tools());used=["ysupport_mcp"]
+elif mode=="bridge":
+ answer="I'll wait for your question."
+ if text.startswith("Did both"):
+  chains=[]
+  for tx,chain in request["evidence"].get("tx_chains",{}).items():
+   query={"operation":"inspect_onchain","arguments":{"chain":chain,"tx_hash":tx,"mode":"receipt"}}
+   read=subprocess.run(request["support_state"]["internal_rpc"]["command"],input=json.dumps(query),text=True,capture_output=True,timeout=10)
+   if "status: success" in read.stdout:chains.append(chain)
+  answer="Receipts succeeded on "+" and ".join(chains);used=["shell"]
 elif mode.startswith("batch_"):
  wallet,vault=re.findall(r"0x[0-9a-fA-F]{40}(?![0-9a-fA-F])",text)[:2]
  tx=re.search(r"0x[0-9a-fA-F]{64}",text).group()
@@ -993,8 +1010,15 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
         "onboarding_question_uses_docs_backed_getting_started_answer_without_yfi_detour",
     ):
         probe("handoff", name, "Expected handoff=False")
-    probe("apy", "combined_data_button_routes_vault_query_to_search_tool")
-    probe("apy_wrong", "combined_data_button_routes_vault_query_to_search_tool", "Missing answer fact")
+    apy = "combined_data_button_routes_vault_query_to_search_tool"
+    probe("apy", apy)
+    probe("apy_wrong", apy, "APY percentage does not match")
+    probe("apy_metric", apy, "APY label or historical window does not match")
+    probe("apy_window", apy, "APY label or historical window does not match")
+    probe("apy_vault", apy, "APY answer does not identify the requested vault and chain")
+    probe("apy_misattributed", apy, "APY answer does not match the requested format")
+    probe("apy_wrong_subject", apy, "APY answer does not match the requested format")
+    probe("bridge", "bridge_followup_reads_each_supplied_receipt_on_its_chain")
     probe("docs_apy", "apy_mechanics_question_routes_to_docs_not_vault_search")
     probe("docs_apy_wrong", "apy_mechanics_question_routes_to_docs_not_vault_search", "Missing answer concept")
     historical = "ticket_1625_failure_diagnosis_uses_transaction_block"

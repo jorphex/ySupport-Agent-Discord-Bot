@@ -504,7 +504,10 @@ async def verify_reply_recovery(root, mode):
     import subprocess
 
     root.mkdir()
-    (root / "mode").write_text("normal")
+    revised_handoff = mode == "edit_handoff_summary"
+    deferred_image = mode == "delete_deferred_image"
+    wallet_confirmation = mode in ("wallet_shutdown", "edit_steered_wallet", "edit_keeps_wallet")
+    (root / "mode").write_text("handoff" if revised_handoff else "normal")
     model = root / "server.py"
     model.write_text(SERVER)
     endpoint = CodexSupportTicketExecutionJsonEndpoint(
@@ -547,37 +550,53 @@ async def verify_reply_recovery(root, mode):
             attachments=attachments,
         )
 
+    downloaded_sources = []
+
     async def download(*, attachment, attachments_dir, index):
+        downloaded_sources.append(attachment.get("source_message_id"))
         path = attachments_dir / "fixture.png"
         path.write_bytes(b"controlled screenshot")
         return path
 
     deleting, release = asyncio.Event(), asyncio.Event()
+    deferred_ready, deferred_release = asyncio.Event(), asyncio.Event()
     close_count = 0
 
     async def close_progress(_):
         nonlocal close_count
         close_count += 1
-        if close_count == 1:
+        if close_count == 1 and not revised_handoff:
             deleting.set()
             await release.wait()
+        if close_count == 2 and deferred_image:
+            deferred_ready.set()
+            await deferred_release.wait()
+
+    async def summarize(**_):
+        assert revised_handoff
+        deleting.set()
+        await release.wait()
+        return None
 
     try:
         with (
             patch.object(config, "CATEGORY_CONTEXT_MAP", {1: "yearn"}),
             patch.object(config, "COOLDOWN_SECONDS", 0.01),
+            patch.object(config, "TICKET_EXECUTION_CODEX_SESSION_DIR", str(root / "sessions")),
             patch('ysupport.bot.client.discord.TextChannel', _FakeDiscordChannel),
             patch(
                 'ysupport.bot.client._outer_support_boundary_result',
                 new=AsyncMock(return_value={"tripwire_triggered": False}),
             ),
             patch('ysupport.bot.client._DiscordProgressReporter.close', new=close_progress),
+            patch('ysupport.bot.discord_support_runtime.summarize_handoff_summary', new=summarize),
+            patch('ysupport.bot.discord_support_runtime.send_handoff_notice', new_callable=AsyncMock) as notify,
             patch(
                 'ysupport.execution.codex_support_attachments._download_attachment_image',
                 new=download,
             ),
         ):
-            if mode == "wallet_shutdown":
+            if wallet_confirmation:
                 old_wallet, new_wallet = "0x" + "1" * 40, "0x" + "2" * 40
                 state.last_wallet_by_channel[channel.id] = old_wallet
                 state.pending_wallet_confirmation_by_channel[channel.id] = new_wallet
@@ -587,13 +606,70 @@ async def verify_reply_recovery(root, mode):
             state.remember_ticket_owner_user_id(channel.id, owner.id)
             await bot.on_message(message("withdraw", 1, image=True))
             await eventually(lambda: bool(list(root.glob("7982.*.started"))))
-            followup = "yes" if mode == "wallet_shutdown" else "Actually on katana"
-            await bot.on_message(message(followup, 2, image=True))
-            await eventually(lambda: bool(bot._ticket_steering[channel.id][1].consumed))
+            followup = "yes" if wallet_confirmation else "Actually on katana"
+            if mode not in ("delete_only", "edit_handoff_summary", "delete_deferred_image"):
+                await bot.on_message(message(followup, 2, image=True))
+                await eventually(lambda: bool(bot._ticket_steering[channel.id][1].consumed))
             (root / "7982.release").touch()
             await eventually(deleting.is_set)
-            await bot.on_message(message("latest detail", 3))
+            if mode != "delete_only":
+                await bot.on_message(message("latest detail", 3))
             snapshot = json.loads((state._TICKET_STATE_DIR / "7982.json").read_text())
+            if deferred_image:
+                release.set()
+                await eventually(deferred_ready.is_set)
+                await bot.on_raw_message_delete(SimpleNamespace(channel_id=channel.id, message_id=1))
+                saved = json.loads((state._TICKET_STATE_DIR / "7982.json").read_text())["pending_ticket_input"]
+                assert saved == {"text": "latest detail", "attachments": []}, saved
+                deferred_release.set()
+                await eventually(lambda: channel.id not in state.pending_tasks)
+                assert len(list(root.glob("7982.*.started"))) == 3 and downloaded_sources == [1, 1]
+                assert [text for text in channel.sent_messages if text.startswith(("Updated:", "Outdated:"))] == ["Updated: latest detail"]
+                return {"deleted_deferred_image_excluded": True, "queued_input_preserved": True}
+            if mode in ("edit_input", "delete_input", "delete_only", "edit_steered_wallet", "edit_keeps_wallet", "edit_handoff_summary"):
+                if mode.startswith("edit"):
+                    msg_id = 2 if mode == "edit_steered_wallet" else 1
+                    revised = message("check the corrected transaction", msg_id)
+                    await bot.on_raw_message_edit(SimpleNamespace(
+                        channel_id=channel.id, message_id=msg_id, message=revised,
+                        data={"content": revised.content, "attachments": []},
+                    ))
+                else:
+                    await bot.on_raw_message_delete(SimpleNamespace(channel_id=channel.id, message_id=1))
+                expected = {
+                    "edit_input": "check the corrected transaction\nActually on katana\nlatest detail",
+                    "delete_input": "Actually on katana\nlatest detail",
+                    "delete_only": "",
+                    "edit_steered_wallet": "withdraw\ncheck the corrected transaction\nlatest detail",
+                    "edit_keeps_wallet": "check the corrected transaction\nyes\nlatest detail",
+                    "edit_handoff_summary": "check the corrected transaction\nlatest detail",
+                }[mode]
+                revised_state = json.loads((state._TICKET_STATE_DIR / "7982.json").read_text())
+                assert (revised_state["pending_ticket_input"] or {}).get("text", "") == expected
+                if wallet_confirmation:
+                    assert snapshot["last_wallet"] == new_wallet
+                    assert revised_state["last_wallet"] == old_wallet
+                if revised_handoff:
+                    (root / "mode").write_text("normal")
+                release.set()
+                await eventually(lambda: channel.id not in state.pending_tasks)
+                visible = [text for text in channel.sent_messages if text.startswith(("Updated:", "Outdated:"))]
+                assert [text.strip() for text in visible] == (["Updated: " + expected] if expected else []), visible
+                stored = json.loads((state._TICKET_STATE_DIR / "7982.json").read_text())
+                assert stored["pending_ticket_input"] is None
+                assert [row["content"] for row in stored["history"] if row["role"] == "user"] == ([expected] if expected else [])
+                if mode == "edit_steered_wallet":
+                    assert stored["last_wallet"] == old_wallet
+                elif mode == "edit_keeps_wallet":
+                    assert stored["last_wallet"] == new_wallet, stored["last_wallet"]
+                    assert stored["investigation_job"]["evidence"]["wallet"] == new_wallet
+                elif revised_handoff:
+                    notify.assert_not_awaited()
+                elif mode != "delete_only":
+                    assert downloaded_sources == [1, 2, 2], downloaded_sources
+                starts = [json.loads(path.read_text())["method"] for path in root.glob("7982.*.started")]
+                assert starts == ["thread/start"] * (2 if expected else 1), starts
+                return {"only_current_input_delivered": True, "queued_input_preserved": True, "fresh_session": True}
             if mode in ("shutdown", "wallet_shutdown"):
                 await bot.close()
                 script = "import json;from ysupport.bot import state;state.hydrate_ticket_state(7982);print(json.dumps({'pending':state.pending_messages.get(7982),'images':state.pending_attachments_by_channel.get(7982),'history':state.conversation_threads.get(7982),'wallet':state.get_or_create_ticket_investigation_job(7982).evidence.wallet,'last_wallet':state.last_wallet_by_channel.get(7982)}))"
@@ -657,6 +733,7 @@ async def verify_reply_recovery(root, mode):
             }
     finally:
         release.set()
+        deferred_release.set()
         await state.cancel_pending_ticket_task(channel.id)
         state.clear_ticket_channel_state(channel.id, delete_persisted=True)
         await bot.close()
@@ -714,7 +791,7 @@ async def main(artifact):
                     "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
-        for mode in ("shutdown", "wallet_shutdown", "commit", "stop", "delete"):
+        for mode in ("shutdown", "wallet_shutdown", "commit", "stop", "delete", "edit_input", "delete_input", "delete_only", "edit_steered_wallet", "edit_handoff_summary", "edit_keeps_wallet", "delete_deferred_image"):
             name = "recovery_" + mode
             try:
                 report["scenarios"][name] = {

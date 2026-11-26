@@ -236,7 +236,7 @@ async def verify(root, mode):
                 and payload['reply_markup']['inline_keyboard'] for method, payload in w.http.requests)
             if mode == 'deletion_events':
                 other = await w.trigger(bot, 8300, user=44)
-                await bot.on_raw_bulk_message_delete(SimpleNamespace(message_ids={source.id, other.id}))
+                await bot.on_raw_bulk_message_delete(SimpleNamespace(channel_id=w.channel.id, message_ids={source.id, other.id}))
                 assert not public.records
                 await w.trigger(bot, 8400)
                 await w.trigger(bot, 8500, user=44)

@@ -186,6 +186,7 @@ class SupportTurnRequest:
                     "wallet": evidence.get("wallet"),
                     "chain": evidence.get("chain"),
                     "tx_hashes": list(evidence.get("tx_hashes", [])),
+                    "tx_chains": dict(evidence.get("tx_chains", {})),
                     "withdrawal_target": withdrawal_target,
                 },
                 "repo_context": {

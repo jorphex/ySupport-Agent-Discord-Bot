@@ -1663,8 +1663,11 @@
     "legacy_suite": "test_llm_ticket_flow_e2e",
     "turns": [
       {
-        "message": "What is the current estimated APY for the USDC vault?",
+        "message": "What is the current estimated APY for the Yearn USDC vault on Ethereum? Reply on one line in this format: Yearn USDC on Ethereum: estimated APY: <percent>%",
         "initial_button_intent": "data_deposits_withdrawals_start"
+      },
+      {
+        "message": "What was the 30-day realized APY for that same Ethereum USDC vault? Reply on one line in this format: Yearn USDC on Ethereum: 30-day realized APY: <percent>%"
       }
     ],
     "providers": {
@@ -1691,6 +1694,8 @@
             "yearn_url": "https://yearn.fi/vaults/1/0x2222222222222222222222222222222222222222",
             "estimated_apy": 0.042,
             "estimated_apy_source": "controlled_kong_fixture",
+            "realized_apy_7d": 0.073,
+            "realized_apy_30d": 0.028,
             "tvl_usd": null,
             "is_retired": false,
             "is_hidden": false,
@@ -1711,7 +1716,8 @@
             "symbol": "yvUSDC",
             "tvl_usd": null,
             "est_apy": 0.042,
-            "realized_apy_30d": null,
+            "realized_apy_7d": 0.073,
+            "realized_apy_30d": 0.028,
             "momentum_7d_30d": null,
             "market": "stablecoins",
             "token_symbol": "USDC"
@@ -1725,14 +1731,30 @@
         },
         "coverage": {
           "visible_vaults": 1,
-          "with_realized_apy": 0,
-          "without_realized_apy": 1
+          "with_realized_apy": 1,
+          "without_realized_apy": 0
         }
       }
     },
     "checks": {
-      "all": [
-        "4.20%"
+      "apy": [
+        {
+          "turn": 1,
+          "vault_labels": ["yearn usdc", "yvusdc", "usdc vault"],
+          "chain_label": "ethereum",
+          "chain_id": 1,
+          "vault_address": "0x2222222222222222222222222222222222222222",
+          "percent": "4.2"
+        },
+        {
+          "turn": 2,
+          "vault_labels": ["yearn usdc", "yvusdc", "usdc vault"],
+          "chain_label": "ethereum",
+          "chain_id": 1,
+          "vault_address": "0x2222222222222222222222222222222222222222",
+          "percent": "2.8",
+          "days": 30
+        }
       ],
       "tools_any": [
         [
@@ -1913,6 +1935,46 @@
         "styfi"
       ]
     }
+  },
+  {
+    "id": "bridge_followup_reads_each_supplied_receipt_on_its_chain",
+    "turns": [
+      {
+        "message": "I need to check a bridge transfer. Here's the source receipt https://arbiscan.io/tx/0x1111111111111111111111111111111111111111111111111111111111111111 . Please wait for the second link and my question before checking."
+      },
+      {
+        "message": "Here's the destination receipt https://basescan.org/tx/0x2222222222222222222222222222222222222222222222222222222222222222 . Please wait for my question before checking."
+      },
+      {
+        "message": "Did both go through? Check both receipts now."
+      }
+    ],
+    "providers": {},
+    "checks": {
+      "all": ["arbitrum", "base"],
+      "any": [["confirm", "succeed", "success", "went through"]],
+      "handoff": false
+    },
+    "lookups": [
+      {
+        "turn": 3,
+        "operation": "transaction",
+        "query": {
+          "chain": "arbitrum",
+          "tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "result": "Arbitrum source receipt status: success. Bridge destination: Base."
+      },
+      {
+        "turn": 3,
+        "operation": "transaction",
+        "query": {
+          "chain": "base",
+          "tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "result": "Base destination receipt status: success. USDC transfer to the recipient confirmed."
+      }
+    ]
   },
   {
     "id": "ticket_1565667516926402663_bridge_destination_verified",

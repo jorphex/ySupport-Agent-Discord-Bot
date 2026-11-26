@@ -66,6 +66,7 @@ class InvestigationEvidence:
     wallet: Optional[str] = None
     chain: Optional[str] = None
     tx_hashes: List[str] = field(default_factory=list)
+    tx_chains: dict[str, str | None] = field(default_factory=dict)
     withdrawal_tx_hash: str | None = None
     withdrawal_target_chain: Optional[str] = None
     withdrawal_target_vault: Optional[str] = None
@@ -151,9 +152,24 @@ class TicketInvestigationJob:
         self.evidence.wallet = other.evidence.wallet
         self.evidence.chain = other.evidence.chain
         self.evidence.tx_hashes = list(other.evidence.tx_hashes)
+        self.evidence.tx_chains = dict(other.evidence.tx_chains)
         self.evidence.withdrawal_tx_hash = other.evidence.withdrawal_tx_hash
         self.evidence.withdrawal_target_chain = other.evidence.withdrawal_target_chain
         self.evidence.withdrawal_target_vault = other.evidence.withdrawal_target_vault
+
+
+@dataclass
+class TicketInputSource:
+    message_id: int | None
+    content: str
+    attachments: list[dict[str, Any]]
+    carried_attachment: bool = False
+
+    @property
+    def text(self) -> str:
+        if self.carried_attachment:
+            return ""
+        return self.content or ("(attachment only)" if self.message_id is not None and self.attachments else "")
 
 
 # Globals
@@ -163,6 +179,7 @@ conversation_threads: Dict[int, List[TResponseInputItem]] = {}
 history_discord_offsets_by_channel: dict[int, dict[int, int]] = {}
 pending_messages: Dict[int, str] = {}
 pending_attachments_by_channel: Dict[int, List[Dict[str, Any]]] = {}
+pending_ticket_sources: dict[int, list[TicketInputSource]] = {}
 pending_tasks: Dict[int, asyncio.Task] = {}
 handoff_delivery_tasks: Dict[int, asyncio.Task[bool]] = {}
 active_ticket_executor_tasks: Dict[int, asyncio.Task] = {}
@@ -452,6 +469,7 @@ def clear_ticket_channel_state(
     ticket_investigation_jobs.pop(channel_id, None)
     pending_messages.pop(channel_id, None)
     pending_attachments_by_channel.pop(channel_id, None)
+    pending_ticket_sources.pop(channel_id, None)
     active_ticket_executor_tasks.pop(channel_id, None)
     active_ticket_payloads.pop(channel_id, None)
     uncommitted_ticket_payloads.pop(channel_id, None)
@@ -774,6 +792,7 @@ def _serialize_investigation_job(job: TicketInvestigationJob | None) -> dict[str
             "wallet": job.evidence.wallet,
             "chain": job.evidence.chain,
             "tx_hashes": list(job.evidence.tx_hashes),
+            "tx_chains": dict(job.evidence.tx_chains),
             "withdrawal_tx_hash": job.evidence.withdrawal_tx_hash,
             "withdrawal_target_chain": job.evidence.withdrawal_target_chain,
             "withdrawal_target_vault": job.evidence.withdrawal_target_vault,
@@ -815,6 +834,7 @@ def _deserialize_investigation_job(payload: dict[str, Any]) -> TicketInvestigati
             wallet=evidence.get("wallet"),
             chain=evidence.get("chain"),
             tx_hashes=list(evidence.get("tx_hashes", [])),
+            tx_chains=dict(evidence.get("tx_chains", {})),
             withdrawal_tx_hash=evidence.get("withdrawal_tx_hash"),
             withdrawal_target_chain=evidence.get("withdrawal_target_chain"),
             withdrawal_target_vault=evidence.get("withdrawal_target_vault"),

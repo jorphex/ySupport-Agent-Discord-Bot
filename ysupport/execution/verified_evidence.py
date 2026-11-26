@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import re
 
 from ysupport import config
-from ysupport.execution.context import CHAIN_NAMES, TX_HASH_RE, corrected_tx_hash
+from ysupport.execution.context import CHAIN_NAMES, TX_HASH_RE, corrected_transaction_chain, corrected_tx_hash
 from ysupport.tools.yearn_targets import extract_yearn_vault_url_target
 
 
@@ -237,7 +237,7 @@ def _requested_vault(request, messages):
             break
     target = request.evidence
     return (
-        network or target.get("withdrawal_target_chain") or target.get("chain"),
+        network or target.get("withdrawal_target_chain"),
         vault or target.get("withdrawal_target_vault"),
     )
 
@@ -346,10 +346,27 @@ def ground_material_claims(result, request, observations, read_scopes):
     hashes = _requested_hashes(request)
     messages = tuple(part for text in (current, *_prior_user_messages(request)) for part in _current_target_messages(text))
     wallets = _requested_wallets(request, messages)
-    network, vault = _requested_vault(request, messages)
+    explicit_network, vault = _requested_vault(request, messages)
+    network = explicit_network or request.evidence.get("chain")
+    tx_chains = request.evidence.get("tx_chains", {})
+    receipt_correction = corrected_transaction_chain(current) if len(hashes) == 1 else None
+
+    def matches(proof):
+        if proof is None:
+            return False
+        tx = proof.tx_hash.lower() if proof.tx_hash else None
+        chain = network
+        if tx and (receipt_correction or tx in tx_chains):
+            if tx in tx_chains and tx_chains[tx] is None:
+                return False
+            chain = receipt_correction or tx_chains[tx]
+            if vault and explicit_network and chain != explicit_network.lower():
+                return False
+        return _matches_target(proof, chain, vault, hashes, wallets)
+
     proofs = [observations.get(ref) for ref in refs]
     if (len(refs) > 3 or len(set(refs)) != len(refs) or
-        any(proof is None or not _matches_target(proof, network, vault, hashes, wallets) for proof in proofs)):
+        not all(map(matches, proofs))):
         proofs = []
     payouts = list(dict.fromkeys(proof for proof in proofs if proof.kind == "payout"))
     shares, receiver, clarification = (
@@ -369,7 +386,7 @@ def ground_material_claims(result, request, observations, read_scopes):
             sections.append("I couldn't verify the remaining payouts from the available receipts.")
     elif "payout" in scopes or not ("redemption" in scopes or redemptions):
         burns = list(dict.fromkeys(proof.summary for proof in observations.values()
-                                  if proof.kind == "burn" and _matches_target(proof, network, vault, hashes, wallets)))[:3]
+                                  if proof.kind == "burn" and matches(proof)))[:3]
         sections.extend(burns)
         summaries.extend(burns)
         sections.append("I couldn't verify a payout to this wallet from the available receipts. "

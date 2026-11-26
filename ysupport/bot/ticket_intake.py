@@ -132,6 +132,7 @@ async def prepare_ticket_turn_input(
     investigation_job: TicketInvestigationJob,
     aggregated_text: str,
     intake_state: TicketIntakeState | None = None,
+    source_texts: tuple[str, ...] = (),
 ) -> TicketTurnInputPreparation:
     wallets = (
         intake_state.last_wallets
@@ -180,15 +181,18 @@ async def prepare_ticket_turn_input(
 
     pending_wallet = pending_confirmations.get(channel_id)
     if pending_wallet:
-        if is_wallet_confirmation(aggregated_text):
-            wallets[channel_id] = pending_wallet
-            investigation_job.remember_wallet(pending_wallet)
-            pending_confirmations.pop(channel_id, None)
-        elif is_wallet_rejection(aggregated_text):
-            pending_confirmations.pop(channel_id, None)
-            preparation.system_hints.append(
-                "User rejected the suggested wallet address. Ask for the correct wallet address if needed."
-            )
+        for text in source_texts or (aggregated_text,):
+            if is_wallet_confirmation(text):
+                wallets[channel_id] = pending_wallet
+                investigation_job.remember_wallet(pending_wallet)
+                pending_confirmations.pop(channel_id, None)
+                break
+            if is_wallet_rejection(text):
+                pending_confirmations.pop(channel_id, None)
+                preparation.system_hints.append(
+                    "User rejected the suggested wallet address. Ask for the correct wallet address if needed."
+                )
+                break
 
     extracted_address_or_ens = None
     if vault_url_address:

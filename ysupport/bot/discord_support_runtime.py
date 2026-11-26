@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from ysupport.bot.state import (
     last_bot_reply_ts_by_channel,
     pending_attachments_by_channel,
     pending_messages,
+    pending_ticket_sources,
     persist_ticket_state,
     recover_ticket_channel_from_runtime_stop,
     remember_team_handoff_followup,
@@ -41,6 +43,7 @@ from ysupport.bot.state import (
     TeamHandoffNotice,
     team_handoff_notice_by_channel,
     TicketInvestigationJob,
+    TicketInputSource,
 )
 from ysupport.bot.support_boundary import evaluate_support_boundary
 from ysupport.execution.codex_support_attachments import attachment_is_image
@@ -248,6 +251,33 @@ def _merge_pending_ticket_payload(
     )
 
 
+def _queue_ticket_source(channel_id: int, source: TicketInputSource) -> None:
+    if channel_id not in pending_ticket_sources:
+        previous = pending_messages.get(channel_id, "")
+        images = pending_attachments_by_channel.get(channel_id, [])
+        pending_ticket_sources[channel_id] = [TicketInputSource(None, previous, images)] if previous or images else []
+    pending_ticket_sources[channel_id].append(source)
+    _merge_pending_ticket_payload(channel_id, source.text, source.attachments)
+
+
+def _ticket_source_payload(sources: list[TicketInputSource]) -> tuple[str, list[dict[str, Any]]]:
+    return "\n".join(source.text for source in sources if source.text), _dedupe_attachment_payloads([
+        attachment for source in sources for attachment in source.attachments
+    ])
+
+
+def _set_pending_ticket_sources(channel_id: int, sources: list[TicketInputSource]) -> None:
+    pending_messages.pop(channel_id, None)
+    pending_attachments_by_channel.pop(channel_id, None)
+    pending_ticket_sources.pop(channel_id, None)
+    text, attachments = _ticket_source_payload(sources)
+    if text:
+        pending_ticket_sources[channel_id] = [source for source in sources if source.text or source.attachments]
+        pending_messages[channel_id] = text
+    if attachments:
+        pending_attachments_by_channel[channel_id] = attachments
+
+
 def _restore_active_ticket_payload(channel_id: int) -> None:
     active_payload = active_ticket_payloads.pop(channel_id, None)
     if active_payload is None:
@@ -273,6 +303,7 @@ def _retire_uncommitted_ticket_payload(channel_id: int) -> None:
 def _discard_pending_ticket_payload(channel_id: int) -> None:
     pending_messages.pop(channel_id, None)
     pending_attachments_by_channel.pop(channel_id, None)
+    pending_ticket_sources.pop(channel_id, None)
     active_ticket_payloads.pop(channel_id, None)
     uncommitted_ticket_payloads.pop(channel_id, None)
 
@@ -426,6 +457,7 @@ async def _notify_handoff(
     recent_user_messages: list[str] | None = None,
     known_facts: list[str] | None = None,
     verified_evidence: list[str] | None = None,
+    before_send: Callable[[], bool] | None = None,
 ) -> TelegramSentMessage | None:
     can_reply = source == "ticket" if reply_enabled is None else reply_enabled
     summarized_text = await summarize_handoff_summary(
@@ -447,6 +479,8 @@ async def _notify_handoff(
         verified_evidence=verified_evidence,
     )
     preparing = prepare_reply and source == "public" and can_reply
+    if before_send is not None and not before_send():
+        return None
     sent = await send_handoff_notice(
         build_preparing_handoff_notice(notice_text) if preparing else notice_text,
         dismiss_enabled=can_reply and not preparing)
@@ -489,6 +523,7 @@ async def _send_ticket_handoff_notice(
     channel_name: str | None = None,
     support_reply: str | None = None,
     verified_evidence: list[str] | None = None,
+    before_send: Callable[[], bool] | None = None,
 ) -> TelegramSentMessage | None:
     recent_user_messages = _recent_user_messages_for_handoff(channel_id, summary)
     known_facts = _handoff_known_facts(investigation_job)
@@ -503,6 +538,7 @@ async def _send_ticket_handoff_notice(
         recent_user_messages=recent_user_messages,
         known_facts=known_facts,
         verified_evidence=verified_evidence,
+        before_send=before_send,
     )
     return notice
 
