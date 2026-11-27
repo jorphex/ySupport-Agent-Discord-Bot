@@ -45,6 +45,7 @@ support data is limited to authorized operators and contributors who need it.
 | Pending public handoff | The bot retains separate context until delivery, dismissal, or confirmed deletion of the source. It keeps failed deliveries for team review. |
 | Resumable AI session | Expires after seven days by default. The bot removes expired sessions during maintenance. |
 | Per-turn workspace | The bot deletes temporary files, including downloaded attachments, after the turn. |
+| Monthly statistics | The bot retains aggregate counts and timings. It removes temporary ticket fingerprints on channel deletion or monthly rollover, and handoff counting keys when delivery state is saved. Reports contain no ticket IDs or conversation content. |
 | Diagnostic exports | Disabled by default. Operators who enable them limit and delete the exported records. |
 
 ## Your choices and requests

@@ -180,6 +180,7 @@ history_discord_offsets_by_channel: dict[int, dict[int, int]] = {}
 pending_messages: Dict[int, str] = {}
 pending_attachments_by_channel: Dict[int, List[Dict[str, Any]]] = {}
 pending_ticket_sources: dict[int, list[TicketInputSource]] = {}
+deferred_ticket_reply_input_ids: dict[int, int] = {}
 pending_tasks: Dict[int, asyncio.Task] = {}
 handoff_delivery_tasks: Dict[int, asyncio.Task[bool]] = {}
 active_ticket_executor_tasks: Dict[int, asyncio.Task] = {}
@@ -329,6 +330,9 @@ def hydrate_ticket_state(channel_id: int) -> None:
             pending_attachments_by_channel[channel_id] = list(unfinished.get("attachments", []))
             if text:
                 pending_messages[channel_id] = str(text)
+                first_input_id = unfinished.get("first_input_id")
+                if type(first_input_id) is int and first_input_id > 0:
+                    deferred_ticket_reply_input_ids[channel_id] = first_input_id
                 reset_ticket_codex_session(channel_id)
     handoff_payload = payload.get("team_handoff_notice")
     history_offsets = payload.get("history_discord_offsets")
@@ -398,7 +402,12 @@ def _unfinished_ticket_input(channel_id: int) -> dict[str, Any] | None:
     if queued:
         text = f"{text}\n{queued}" if text else queued
     attachments.extend(pending_attachments_by_channel.get(channel_id, []))
-    return {"text": text, "attachments": attachments} if text or attachments else None
+    if not text and not attachments:
+        return None
+    payload = {"text": text, "attachments": attachments}
+    if text and (first_input_id := deferred_ticket_reply_input_ids.get(channel_id)) is not None:
+        payload["first_input_id"] = first_input_id
+    return payload
 
 
 def persist_ticket_state(channel_id: int) -> bool:
@@ -470,6 +479,7 @@ def clear_ticket_channel_state(
     pending_messages.pop(channel_id, None)
     pending_attachments_by_channel.pop(channel_id, None)
     pending_ticket_sources.pop(channel_id, None)
+    deferred_ticket_reply_input_ids.pop(channel_id, None)
     active_ticket_executor_tasks.pop(channel_id, None)
     active_ticket_payloads.pop(channel_id, None)
     uncommitted_ticket_payloads.pop(channel_id, None)
@@ -528,6 +538,7 @@ def mark_ticket_channel_stopped(
 ) -> None:
     stopped_channels.add(channel_id)
     stop_reasons_by_channel[channel_id] = reason
+    deferred_ticket_reply_input_ids.pop(channel_id, None)
     persist_ticket_state(channel_id)
 
 

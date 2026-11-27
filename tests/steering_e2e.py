@@ -620,9 +620,10 @@ async def verify_reply_recovery(root, mode):
                 await eventually(deferred_ready.is_set)
                 await bot.on_raw_message_delete(SimpleNamespace(channel_id=channel.id, message_id=1))
                 saved = json.loads((state._TICKET_STATE_DIR / "7982.json").read_text())["pending_ticket_input"]
-                assert saved == {"text": "latest detail", "attachments": []}, saved
+                assert saved == {"text": "latest detail", "attachments": [], "first_input_id": 1}, saved
                 deferred_release.set()
                 await eventually(lambda: channel.id not in state.pending_tasks)
+                assert channel.id not in state.deferred_ticket_reply_input_ids
                 assert len(list(root.glob("7982.*.started"))) == 3 and downloaded_sources == [1, 1]
                 assert [text for text in channel.sent_messages if text.startswith(("Updated:", "Outdated:"))] == ["Updated: latest detail"]
                 return {"deleted_deferred_image_excluded": True, "queued_input_preserved": True}

@@ -18,7 +18,7 @@ from agents import (
     set_default_openai_key,
 )
 
-from ysupport import config
+from ysupport import config, stats
 from ysupport.bot.discord_support_runtime import (
     _attachment_identity,
     _DiscordProgressReporter,
@@ -75,6 +75,7 @@ from ysupport.bot.state import (
     bug_report_debounce_channels,
     clear_public_conversation,
     conversation_threads,
+    deferred_ticket_reply_input_ids,
     get_or_create_ticket_investigation_job,
     has_team_handoff_context,
     history_discord_offsets_by_channel,
@@ -221,6 +222,7 @@ class TicketBot(discord.Client):
             config.PUBLIC_TRIGGER_TIMEOUT_MINUTES * 60,
         )
         while not self.is_closed():
+            stats.maintain()
             removed = prune_expired_public_conversations()
             if removed:
                 logging.info(
@@ -255,6 +257,7 @@ class TicketBot(discord.Client):
         public_lock_acquired = False
         preserve_public_state_on_error = False
         public_source = None
+        stats.record("public_requests")
         logging.info(
             "Stateful public trigger '%s' detected by %s in channel %s",
             trigger_char_used,
@@ -333,6 +336,7 @@ class TicketBot(discord.Client):
                     mention_author=False,
                     suppress_embeds=True,
                 )
+                stats.record_reply("public_replies", discord.utils.snowflake_time(message.id))
                 clear_public_conversation(original_author_id)
                 return True
 
@@ -425,6 +429,7 @@ class TicketBot(discord.Client):
                     await send_long_message(message.channel, final_reply,
                         reference=discord.MessageReference(message_id=message.reference.message_id,
                             channel_id=message.channel.id, fail_if_not_exists=True))
+                    stats.record_reply("public_replies", discord.utils.snowflake_time(message.id))
                     if handoff_sent:
                         clear_public_conversation(original_author_id)
                     else:
@@ -545,11 +550,13 @@ class TicketBot(discord.Client):
         pending_tasks.pop(channel_id, None)
         queued_text = pending_messages.get(channel_id)
         if not queued_text:
+            deferred_ticket_reply_input_ids.pop(channel_id, None)
             return
         if channel_id in stopped_channels:
             _discard_pending_ticket_payload(channel_id)
             return
         if is_ticket_waiting_for_team(channel_id):
+            deferred_ticket_reply_input_ids.pop(channel_id, None)
             pending_messages.pop(channel_id, None)
             pending_ticket_sources.pop(channel_id, None)
             queued_attachments = pending_attachments_by_channel.pop(channel_id, [])
@@ -574,7 +581,9 @@ class TicketBot(discord.Client):
             self.process_ticket_message(channel_id, followup_context, skip_debounce=True)
         )
 
-    def _defer_ticket_reply_for_followups(self, channel_id, history, attachments) -> bool:
+    def _defer_ticket_reply_for_followups(
+        self, channel_id, history, attachments, *, first_input_id: int | None = None,
+    ) -> bool:
         if not pending_messages.get(channel_id):
             return False
         pending_attachments_by_channel[channel_id] = _dedupe_attachment_payloads(
@@ -597,6 +606,8 @@ class TicketBot(discord.Client):
             ),
         }])
         _retire_uncommitted_ticket_payload(channel_id)
+        if first_input_id is not None:
+            deferred_ticket_reply_input_ids[channel_id] = first_input_id
         persist_ticket_state(channel_id)
         logging.info("Deferred outdated ticket draft in %s for queued follow-up.", channel_id)
         return True
@@ -727,6 +738,9 @@ class TicketBot(discord.Client):
                 message.channel,
                 turn_result.reply,
                 view=StopBotView() if not was_stopped else None,
+            )
+            stats.record_reply(
+                "ticket_staff_replies", discord.utils.snowflake_time(message.id), ticket_id=channel_id,
             )
             last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
             if (
@@ -1099,6 +1113,11 @@ class TicketBot(discord.Client):
             )
             if not aggregated_text:
                 return
+            input_ids = [
+                source.message_id for source in sources if not source.carried_attachment
+            ]
+            input_ids.append(deferred_ticket_reply_input_ids.get(channel_id))
+            first_input_id = min((value for value in input_ids if value is not None), default=None)
             draft = _TicketDraft(
                 current_task, sources or [TicketInputSource(None, aggregated_text, attachments)],
                 investigation_job, investigation_job.evidence, TicketIntakeState.from_channel(channel_id),
@@ -1269,7 +1288,7 @@ class TicketBot(discord.Client):
                         raw_final_reply = flow_outcome.raw_final_reply
                         if flow_outcome.requires_human_handoff and self._defer_ticket_reply_for_followups(
                             channel_id, [*current_history, {"role": "user", "content": aggregated_text}],
-                            attachments,
+                            attachments, first_input_id=first_input_id,
                         ):
                             self._ticket_drafts.pop(channel_id, None)
                             return
@@ -1351,6 +1370,7 @@ class TicketBot(discord.Client):
 
                 if proposed_job is not None and not handoff_state_committed and self._defer_ticket_reply_for_followups(
                     channel_id, [*current_history, {"role": "user", "content": aggregated_text}], attachments,
+                    first_input_id=first_input_id,
                 ):
                     if not flow_outcome.requires_human_handoff:
                         investigation_job.apply_snapshot(proposed_job)
@@ -1361,6 +1381,10 @@ class TicketBot(discord.Client):
                     reply_view = StopBotView() if not should_stop_processing else None
                     self._ticket_drafts.pop(channel_id, None)
                     await send_long_message(channel, final_reply, view=reply_view)
+                    deferred_ticket_reply_input_ids.pop(channel_id, None)
+                    if stop_reason != "runtime_error":
+                        started_at = discord.utils.snowflake_time(first_input_id) if first_input_id is not None else None
+                        stats.record_reply("ticket_auto_replies", started_at, ticket_id=channel_id)
                     if proposed_job is not None and not handoff_state_committed:
                         investigation_job.apply_snapshot(proposed_job)
                         if proposed_history is not None:
@@ -1499,6 +1523,7 @@ def _reload_runtime_env_and_config() -> None:
 def _run_ticket_bot_once() -> None:
     config.validate_runtime_environment_config()
     config.validate_ticket_execution_runtime_config()
+    stats.enable_recording()
     client = TicketBot(intents=_build_discord_intents())
     client.run(config.DISCORD_BOT_TOKEN, log_handler=None)
 

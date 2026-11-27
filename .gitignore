@@ -19,3 +19,6 @@ OPERATOR_MAINTAINER_REFERENCE.md
 /.cache/verification/
 .tmp_replay/
 /.cache/docs_sources/
+
+# Runtime statistics and monthly exports
+support-stats/

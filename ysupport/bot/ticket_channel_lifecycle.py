@@ -6,7 +6,7 @@ import logging
 
 import discord
 
-from ysupport import config
+from ysupport import config, stats
 from ysupport.bot.discord_support_runtime import _detect_ticket_owner_user_id
 from ysupport.integrations.handoff import build_archived_handoff_notice, edit_handoff_notice
 from ysupport.bot.state import (
@@ -29,6 +29,7 @@ async def initialize_ticket_channel(channel: discord.abc.GuildChannel) -> None:
         return
 
     project_context = config.CATEGORY_CONTEXT_MAP.get(channel.category.id, "unknown")
+    stats.record("tickets_opened", ticket_id=channel.id)
     logging.info(
         "New %s ticket channel created: %s (ID: %s). Initializing state.",
         project_context.capitalize(),
@@ -89,6 +90,7 @@ async def clear_deleted_ticket_channel(channel: discord.abc.GuildChannel) -> Non
     clear_team_handoff_notice(channel.id)
     await cancel_pending_ticket_task(channel.id)
     await cancel_handoff_delivery(channel.id)
+    stats.forget_ticket(channel.id)
     if notice is not None:
         try:
             await edit_handoff_notice(

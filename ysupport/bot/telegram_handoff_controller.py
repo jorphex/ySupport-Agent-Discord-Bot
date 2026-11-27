@@ -18,7 +18,7 @@ from ysupport.bot.discord_support_runtime import (
     _message_text_for_turn,
     _run_internal_instruction_turn,
 )
-from ysupport import config
+from ysupport import config, stats
 from ysupport.integrations.handoff import (
     answer_telegram_callback_query,
     build_closed_handoff_notice,
@@ -364,6 +364,7 @@ class TelegramHandoffController:
             ),
         )
         if retired:
+            stats.record("ticket_handoff_dismissed")
             return
 
         team_handoff_notice_by_channel[matched_channel_id] = matched_notice
@@ -729,12 +730,17 @@ class TelegramHandoffController:
         notice.status = "review"
         if not persist_ticket_state(channel_id):
             notice.status = previous_status
+        elif previous_status != "review":
+            stats.record("ticket_handoff_delivery_failed")
         logging.warning("Telegram update for ticket %s needs staff review: %s.", channel_id, reason)
         return False
 
     async def _complete_ticket_update(self, channel_id, notice):
         get_or_create_ticket_investigation_job(channel_id).mark_waiting_for_user()
         last_bot_reply_ts_by_channel[channel_id] = datetime.now(timezone.utc)
+        stats.record_handoff_outcome(
+            "ticket_handoff_replies_delivered", self._delivery_nonce(channel_id, notice), channel_id,
+        )
         if not mark_team_handoff_notice_delivered(channel_id):
             raise RuntimeError(
                 "Delivered the Telegram handoff reply, but could not persist its state."
@@ -755,6 +761,7 @@ class TelegramHandoffController:
     ) -> bool:
         if not self._can_deliver_handoff(channel_id, notice):
             return False
+        stats.settle_handoff_outcome(self._delivery_nonce(channel_id, notice))
         edited = await edit_handoff_notice(
             chat_id=notice.telegram_chat_id,
             message_id=notice.telegram_message_id,

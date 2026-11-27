@@ -37,6 +37,35 @@ means validation and the smoke request passed.
 .venv/bin/python -m ysupport.execution.status --smoke
 ```
 
+## Export monthly support statistics
+
+Run with access to the service's state directory. Omit the month for the current
+UTC month. The command prints JSON. Add `--write` to save `YYYY-MM.json` beside
+the database.
+
+```sh
+.venv/bin/python -m ysupport.stats 2026-11
+.venv/bin/python -m ysupport.stats 2026-11 --write
+```
+
+The database and saved reports live in `support-stats/` under
+`TICKET_EXECUTION_STATE_ROOT` and are excluded from Git. The report gives the
+first recording date. Historical logs and replays are outside its coverage.
+
+- Ticket milestones count distinct channels within the month. Selecting an
+  automated support category counts as opt-in.
+- Replies count delivered batches, including handoff acknowledgements. Each
+  batch belongs to the UTC month when delivery completes. Latency starts at
+  the oldest unanswered input for automatic ticket replies and at the staff
+  trigger for public and staff-invoked replies. It ends at Discord delivery.
+  Codex queue and execution timings cover completed native turns. Each timing
+  includes the sample count, median, and p90 in milliseconds.
+- Handoff counts distinguish notices, dismissals, contributor replies delivered
+  to Discord, and delivery failures that need review. Progress posts, generic
+  error replies, and resolution rates are outside the report.
+
+Statistics are best-effort. Storage write errors appear in the service journal.
+
 ## Start or rebuild MCP
 
 1. Set the provider variables in `.env` and keep the existing `MCP_SERVER_API_KEY`.

@@ -3,7 +3,7 @@ import logging
 import discord
 from discord.ui import View, Button, button
 
-from ysupport import config
+from ysupport import config, stats
 from ysupport.bot.bot_behavior import BUSINESS_INQUIRY_REDIRECT_MESSAGE
 from ysupport.integrations.handoff import build_dismissed_handoff_notice, retire_handoff_notice
 from ysupport.bot.state import (
@@ -172,6 +172,7 @@ class InitialInquiryView(_TicketOwnerView):
             ),
             bug_report_debounce=intent_category == "investigate_issue",
         )
+        stats.record("tickets_opted_in", ticket_id=interaction.channel.id)
 
         if interaction.channel:
             await interaction.channel.send(prompt_message, suppress_embeds=True)
@@ -234,6 +235,7 @@ class InitialInquiryView(_TicketOwnerView):
             investigation_mode="waiting_for_user",
             bug_report_debounce=False,
         )
+        stats.record("tickets_opted_in", ticket_id=interaction.channel.id)
         logging.info(f"User selected 'Other' in {interaction.channel.id}. Awaiting free-form input.")
 
     async def handle_button_click(self, interaction: discord.Interaction, button_custom_id: str):

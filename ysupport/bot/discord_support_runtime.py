@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 import discord
 from agents import TResponseInputItem
 
-from ysupport import config
+from ysupport import config, stats
 from ysupport.integrations.handoff import (
     TelegramSentMessage,
     build_handoff_notice,
@@ -35,6 +35,7 @@ from ysupport.bot.state import (
     pending_attachments_by_channel,
     pending_messages,
     pending_ticket_sources,
+    deferred_ticket_reply_input_ids,
     persist_ticket_state,
     recover_ticket_channel_from_runtime_stop,
     remember_team_handoff_followup,
@@ -304,6 +305,7 @@ def _discard_pending_ticket_payload(channel_id: int) -> None:
     pending_messages.pop(channel_id, None)
     pending_attachments_by_channel.pop(channel_id, None)
     pending_ticket_sources.pop(channel_id, None)
+    deferred_ticket_reply_input_ids.pop(channel_id, None)
     active_ticket_payloads.pop(channel_id, None)
     uncommitted_ticket_payloads.pop(channel_id, None)
 
@@ -485,12 +487,14 @@ async def _notify_handoff(
         build_preparing_handoff_notice(notice_text) if preparing else notice_text,
         dismiss_enabled=can_reply and not preparing)
     if isinstance(sent, TelegramSentMessage):
+        stats.record(f"{source}_handoff_notices_sent")
         logging.info(
             "Sent Telegram handoff notice for %s channel %s.",
             source,
             channel_id,
         )
         return TelegramSentMessage(sent.chat_id, sent.message_id, notice_text) if preparing else sent
+    stats.record(f"{source}_handoff_notices_failed")
     return None
 
 

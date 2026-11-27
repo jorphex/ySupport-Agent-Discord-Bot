@@ -12,6 +12,7 @@ from time import monotonic
 from typing import Sequence
 from weakref import WeakValueDictionary
 
+from ysupport import stats
 from ysupport.execution.codex_support_home import prepare_codex_support_home, prune_codex_support_caches
 from ysupport.execution.codex_support_contract import (
     CODEX_SUPPORT_RESULT_SCHEMA,
@@ -363,6 +364,9 @@ class CodexSupportTicketExecutionJsonEndpoint:
             raise
         finally:
             total_ms = round((monotonic() - started) * 1000)
+            queue_ms, execution_ms = timings["queue_ms"], timings["execution_ms"]
+            if outcome == "completed" and queue_ms is not None and execution_ms is not None:
+                stats.record_codex_timing(queue_ms, execution_ms)
             logging.info(
                 "Support turn timings channel_id=%s conversation=%s outcome=%s "
                 "queue_ms=%s setup_ms=%s execution_ms=%s total_ms=%s",

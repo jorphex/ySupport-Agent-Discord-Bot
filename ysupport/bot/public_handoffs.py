@@ -11,7 +11,7 @@ from typing import Any
 
 import discord
 
-from ysupport import config
+from ysupport import config, stats
 from ysupport.bot import state
 from ysupport.bot.discord_support_runtime import (
     _attachment_identity,
@@ -227,6 +227,7 @@ class PublicHandoffs:
             if record.status not in {"activating", "open", "failed"}:
                 text = "This handoff already has an accepted reply."
             elif await self.discard_message(record.message_id, close_notice=False):
+                stats.record("public_handoff_dismissed")
                 text = "Handoff dismissed. Handle this concern in Discord."
             else:
                 text = "Could not save dismissal. Please try again."
@@ -460,6 +461,10 @@ class PublicHandoffs:
                     record.response_id = posted.id
             if not self._current(record):
                 return
+            stats.record_handoff_outcome(
+                "public_handoff_replies_delivered" if record.response_id is not None else "public_handoff_no_update",
+                record.delivery_nonce, record.channel_id,
+            )
             record.status, record.history, record.attachments, record.pending_reply_text = "delivered_pending_close", [], [], None
             if not self._save(record):
                 raise RuntimeError("Could not persist completed public delivery")
@@ -472,7 +477,8 @@ class PublicHandoffs:
             logging.exception("Public handoff delivery failed for message %s.", record.message_id)
             if self._current(record) and record.status != "delivered_pending_close":
                 record.status = "failed"
-                self._save(record)
+                if self._save(record):
+                    stats.record("public_handoff_delivery_failed")
                 await self._show_failure(record)
         finally:
             if self.records.get(record.message_id) is record:
@@ -495,6 +501,7 @@ class PublicHandoffs:
             return
         if not self._save(record):
             return
+        stats.settle_handoff_outcome(record.delivery_nonce)
         if record.status == "dismissed":
             closed = await handoff.retire_handoff_notice(chat_id=record.telegram_chat_id,
                 message_id=record.telegram_message_id,
